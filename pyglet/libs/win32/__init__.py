@@ -93,6 +93,7 @@ _gdi32 = DebugLibrary(windll.gdi32)
 _kernel32 = DebugLibrary(windll.kernel32)
 _user32 = DebugLibrary(windll.user32)
 _dwmapi = DebugLibrary(windll.dwmapi)
+_shcore = DebugLibrary(windll.shcore)
 
 # _gdi32
 _gdi32.AddFontMemResourceEx.restype = HANDLE
@@ -139,6 +140,8 @@ _gdi32.SetTextColor.restype = COLORREF
 _gdi32.SetTextColor.argtypes = [HDC, COLORREF]
 _gdi32.SwapBuffers.restype = BOOL
 _gdi32.SwapBuffers.argtypes = [HDC]
+_gdi32.GetDeviceCaps.restype = UINT
+_gdi32.GetDeviceCaps.argtypes = [HDC, INT]
 
 _kernel32.CloseHandle.restype = BOOL
 _kernel32.CloseHandle.argtypes = [HANDLE]
@@ -273,9 +276,18 @@ _user32.RegisterRawInputDevices.restype = BOOL
 _user32.RegisterRawInputDevices.argtypes = [PCRAWINPUTDEVICE, UINT, UINT]
 _user32.GetRawInputData.restype = UINT
 _user32.GetRawInputData.argtypes = [HRAWINPUT, UINT, LPVOID, PUINT, UINT]
+_user32.SetProcessDPIAware.argtypes = []
+_user32.SetProcessDPIAware.restypes = BOOL
 
 #dwmapi
 _dwmapi.DwmIsCompositionEnabled.restype = c_int
 _dwmapi.DwmIsCompositionEnabled.argtypes = [POINTER(INT)]
 _dwmapi.DwmFlush.restype = c_int
 _dwmapi.DwmFlush.argtypes = []
+
+#shcore
+_shcore.SetProcessDpiAwareness.argtypes = [PROCESS_DPI_AWARENESS]
+_shcore.SetProcessDpiAwareness.restype = HRESULT
+_shcore.GetDpiForMonitor.argtypes = [HMONITOR, MONITOR_DPI_TYPE, POINTER(UINT), POINTER(UINT)]
+_shcore.GetDpiForMonitor.restype = HRESULT
+

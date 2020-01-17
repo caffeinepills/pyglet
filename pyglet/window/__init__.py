@@ -462,6 +462,8 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
 
     _width = None
     _height = None
+    _scale = (1.0, 1.0)
+    _dpi = 97
     _caption = None
     _resizable = False
     _style = WINDOW_STYLE_DEFAULT
@@ -471,6 +473,7 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
     _screen = None
     _config = None
     _context = None
+    
     _projection = Projection2D()
 
     # Used to restore window size and position after fullscreen
@@ -804,6 +807,17 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
         viewport_width, viewport_height = self.get_framebuffer_size()
         self._projection.set(width, height, viewport_width, viewport_height)
 
+    def on_scale(self, scale_x, scale_y):
+        """A default scale event handler.
+
+        This default handler is called if the screen or system's DPI changes
+        during runtime.
+        """
+        width, height = self.get_size()
+        scaled_width = int(width * scale_x)
+        scaled_height = int(height * scale_y),
+        self._projection.set(scaled_width, scaled_height, scaled_width, scaled_height)
+
     def on_close(self):
         """Default on_close handler."""
         self.has_exit = True
@@ -981,6 +995,22 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
     @height.setter
     def height(self, new_height):
         self.set_size(self.width, new_height)
+
+    @property
+    def scale(self):
+        """The scale of the window axi, inherited from the screen.  Read only.
+
+        :type: list
+        """
+        return self._screen.get_dpi_scale()
+
+    @property
+    def dpi(self):
+        """The DPI values of the window axi, inherited from the screen, in DPI.  Read only.
+
+        :type: list
+        """
+        return self._screen.get_dpi()
 
     @property
     def projection(self):

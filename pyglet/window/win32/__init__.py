@@ -1093,3 +1093,35 @@ class Win32Window(BaseWindow):
     def _event_erasebkgnd_view(self, msg, wParam, lParam):
         # Prevent flicker during resize.
         return 1
+
+        
+    @Win32EventHandler(WM_DPICHANGED)
+    def _event_dpi_change(self, msg, wParam, lParam):
+        ydpi, xdpi = self._get_location(wParam)
+
+        x_scale = xdpi / USER_DEFAULT_SCREEN_DPI
+        y_scale = ydpi / USER_DEFAULT_SCREEN_DPI
+
+        # Newer Windows pass a recommended position and size for the window.
+        if WINDOWS_10_CREATORS_UPDATE_OR_GREATER:
+            recommended = cast(lParam, POINTER(RECT)).contents
+
+            x = recommended.left
+            y = recommended.top
+            width = recommended.right - recommended.left
+            height = recommended.bottom - recommended.top
+
+            if self._fullscreen:
+                hwnd_after = HWND_TOPMOST
+            else:
+                hwnd_after = HWND_NOTOPMOST
+
+            if self._fullscreen:
+                _user32.SetWindowPos(self._hwnd, hwnd_after,
+                    x, y, width, height, SWP_FRAMECHANGED)
+            else:
+                _user32.SetWindowPos(self._hwnd, hwnd_after,
+                    x, y, width, height, SWP_NOMOVE | SWP_FRAMECHANGED)
+                
+        self.dispatch_event('on_scale', x_scale, y_scale)
+

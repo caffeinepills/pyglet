@@ -34,6 +34,7 @@
 # ----------------------------------------------------------------------------
 # Most of this file is win32con.py from Python for Windows Extensions:
 # http://www.python.net/crew/mhammond/win32/
+import sys
 
 # From Windows 2000 API SuperBible:
 
@@ -1511,6 +1512,8 @@ WM_IME_KEYDOWN = 656
 WM_IME_KEYUP = 657
 WM_MOUSEHOVER = 673
 WM_MOUSELEAVE = 675
+WM_DPICHANGED = 736
+WM_GETDPISCALEDSIZE = 740
 WM_CUT = 768
 WM_COPY = 769
 WM_PASTE = 770
@@ -5035,3 +5038,11 @@ RI_MOUSE_BUTTON_5_DOWN = 0x0100
 RI_MOUSE_BUTTON_5_UP = 0x0200
 
 RI_MOUSE_WHEEL = 0x0400
+
+USER_DEFAULT_SCREEN_DPI = 96
+
+WINDOWS_VISTA_OR_GREATER = sys.getwindowsversion() >= (6, 0)
+WINDOWS_7_OR_GREATER = sys.getwindowsversion() >= (6, 1)
+WINDOWS_8_OR_GREATER = sys.getwindowsversion() >= (6, 2)
+WINDOWS_8_1_OR_GREATER = sys.getwindowsversion() >= (6, 3)
+WINDOWS_10_CREATORS_UPDATE_OR_GREATER = sys.getwindowsversion() >= (10, 0, 15063)
