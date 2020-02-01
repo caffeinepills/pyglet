@@ -72,16 +72,6 @@ class Win32Display(Display):
         _user32.EnumDisplayMonitors(None, None, enum_proc_ptr, 0)
         return screens
 
-    def get_primary_screen(self):
-        """ Primary screen is not always the first in the index, as order is changeable,
-            it's always at 0, 0.
-        """
-        for screen in self.get_screens():
-            if screen.x == 0 and screen.y == 0:
-                return screen
-
-        raise Exception("Primary screen not found.")
-
 class Win32Screen(Screen):
     _initial_mode = None
 

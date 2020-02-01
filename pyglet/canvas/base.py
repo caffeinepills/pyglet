@@ -100,21 +100,19 @@ class Display(object):
         """
         raise NotImplementedError('abstract')
 
-    def get_primary_screen(self):
-        """Get the primary screen as specified by the user's operating system
-        preferences. Not always at index 0.
-
-        :rtype: :class:`Screen`
-        """
-        raise NotImplementedError('abstract')
-
     def get_default_screen(self):
         """Get the default screen as specified by the user's operating system
         preferences.
 
         :rtype: :class:`Screen`
         """
-        return self.get_primary_screen()
+        screens = self.get_screens()
+        for screen in screens:
+            if screen.x == 0 and screen.y == 0:
+                return screen
+
+        # No Primary screen found?
+        return screens[0]
 
     def get_windows(self):
         """Get the windows currently attached to this display.
