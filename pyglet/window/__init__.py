@@ -463,7 +463,6 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
     _width = None
     _height = None
     _scale = (1.0, 1.0)
-    _dpi = 97
     _caption = None
     _resizable = False
     _style = WINDOW_STYLE_DEFAULT
@@ -807,16 +806,13 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
         viewport_width, viewport_height = self.get_framebuffer_size()
         self._projection.set(width, height, viewport_width, viewport_height)
 
-    def on_scale(self, scale_x, scale_y):
+    def on_scale(self, scale_x, scale_y, x_dpi, y_dpi):
         """A default scale event handler.
 
         This default handler is called if the screen or system's DPI changes
         during runtime.
         """
-        width, height = self.get_size()
-        scaled_width = int(width * scale_x)
-        scaled_height = int(height * scale_y),
-        self._projection.set(scaled_width, scaled_height, scaled_width, scaled_height)
+        pass
 
     def on_close(self):
         """Default on_close handler."""
@@ -998,15 +994,15 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
 
     @property
     def scale(self):
-        """The scale of the window axi, inherited from the screen.  Read only.
+        """The scale of the window factoring in DPI.  Read only.
 
         :type: list
         """
-        return self._screen.get_dpi_scale()
+        return self._scale
 
     @property
     def dpi(self):
-        """The DPI values of the window axi, inherited from the screen, in DPI.  Read only.
+        """DPI values of the window, inherited from the screen.  Read only.
 
         :type: list
         """
@@ -1781,6 +1777,7 @@ BaseWindow.register_event_type('on_mouse_leave')
 BaseWindow.register_event_type('on_close')
 BaseWindow.register_event_type('on_expose')
 BaseWindow.register_event_type('on_resize')
+BaseWindow.register_event_type('on_scale')
 BaseWindow.register_event_type('on_move')
 BaseWindow.register_event_type('on_activate')
 BaseWindow.register_event_type('on_deactivate')

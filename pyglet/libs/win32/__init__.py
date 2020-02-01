@@ -276,8 +276,16 @@ _user32.RegisterRawInputDevices.restype = BOOL
 _user32.RegisterRawInputDevices.argtypes = [PCRAWINPUTDEVICE, UINT, UINT]
 _user32.GetRawInputData.restype = UINT
 _user32.GetRawInputData.argtypes = [HRAWINPUT, UINT, LPVOID, PUINT, UINT]
+_user32.SetProcessDPIAware.restype = BOOL
 _user32.SetProcessDPIAware.argtypes = []
-_user32.SetProcessDPIAware.restypes = BOOL
+_user32.SetProcessDpiAwarenessContext.restype = BOOL
+_user32.SetProcessDpiAwarenessContext.argtypes = [DPI_AWARENESS_CONTEXT]
+_user32.EnableNonClientDpiScaling.restype = BOOL
+_user32.EnableNonClientDpiScaling.argtypes = [HWND]
+_user32.GetDpiForWindow.restype = UINT
+_user32.GetDpiForWindow.argtypes = [HWND]
+_user32.MonitorFromWindow.restype = HMONITOR
+_user32.MonitorFromWindow.argtypes = [HWND, DWORD]
 
 #dwmapi
 _dwmapi.DwmIsCompositionEnabled.restype = c_int

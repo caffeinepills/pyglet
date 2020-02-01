@@ -170,8 +170,9 @@ class Win32Window(BaseWindow):
             width = self.screen.width
             height = self.screen.height
         else:
+            x_dpi, y_dpi = self._screen.get_dpi()
             width, height = \
-                self._client_to_window_size(self._width, self._height)
+                self._client_to_window_size(self._width, self._height, x_dpi)
 
         if not self._window_class:
             module = _kernel32.GetModuleHandleW(None)
@@ -219,18 +220,7 @@ class Win32Window(BaseWindow):
                 self._window_class.hInstance,
                 0)
 
-            self._view_hwnd = _user32.CreateWindowExW(
-                0,
-                self._view_window_class.lpszClassName,
-                u'',
-                WS_CHILD | WS_VISIBLE,
-                0, 0, 0, 0,
-                self._hwnd,
-                0,
-                self._view_window_class.hInstance,
-                0)
-
-            self._dc = _user32.GetDC(self._view_hwnd)
+            self._dc = _user32.GetDC(self._hwnd)
         else:
             # Window already exists, update it with new style
 
@@ -262,11 +252,11 @@ class Win32Window(BaseWindow):
             _user32.SetWindowPos(self._hwnd, hwnd_after,
                 0, 0, width, height, SWP_NOMOVE | SWP_FRAMECHANGED)
 
-        self._update_view_location(self._width, self._height)
+        #self._update_view_location(self._width, self._height)
 
         # Context must be created after window is created.
         if not self._wgl_context:
-            self.canvas = Win32Canvas(self.display, self._view_hwnd, self._dc)
+            self.canvas = Win32Canvas(self.display, self._hwnd, self._dc)
             self.context.attach(self.canvas)
             self._wgl_context = self.context._context
 
@@ -287,7 +277,7 @@ class Win32Window(BaseWindow):
             y = (self.screen.height - height) // 2
         else:
             x = y = 0
-        _user32.SetWindowPos(self._view_hwnd, 0,
+        _user32.SetWindowPos(self._hwnd, 0,
             x, y, width, height, SWP_NOZORDER | SWP_NOOWNERZORDER)
 
     def close(self):
@@ -365,7 +355,8 @@ class Win32Window(BaseWindow):
     def set_size(self, width, height):
         if self._fullscreen:
             raise WindowException('Cannot set size of fullscreen window.')
-        width, height = self._client_to_window_size(width, height)
+
+        width, height = self._client_to_window_size_dpi(width, height)
         _user32.SetWindowPos(self._hwnd, 0, 0, 0, width, height,
             (SWP_NOZORDER |
              SWP_NOMOVE |
@@ -406,6 +397,11 @@ class Win32Window(BaseWindow):
     def maximize(self):
         _user32.ShowWindow(self._hwnd, SW_MAXIMIZE)
 
+    def get_screen(self):
+        """Gets the current screen the Window is on."""
+        handle = _user32.MonitorFromWindow(self._hwnd, MONITOR_DEFAULTTONEAREST)
+        return [screen for screen in self.display.get_screens() if screen._handle == handle][0]
+
     def set_caption(self, caption):
         self._caption = caption
         _user32.SetWindowTextW(self._hwnd, c_wchar_p(caption))
@@ -423,7 +419,7 @@ class Win32Window(BaseWindow):
                 cursor = self._mouse_cursor.cursor
             else:
                 cursor = _user32.LoadCursorW(None, MAKEINTRESOURCE(IDC_ARROW))
-            _user32.SetClassLongW(self._view_hwnd, GCL_HCURSOR, cursor)
+            _user32.SetClassLongW(self._hwnd, GCL_HCURSOR, cursor)
             _user32.SetCursor(cursor)
 
         if platform_visible == self._mouse_platform_visible:
@@ -443,8 +439,8 @@ class Win32Window(BaseWindow):
         mouse.'''
         p = POINT()
         rect = RECT()
-        _user32.GetClientRect(self._view_hwnd, byref(rect))
-        _user32.MapWindowPoints(self._view_hwnd, HWND_DESKTOP, byref(rect), 2)
+        _user32.GetClientRect(self._hwnd, byref(rect))
+        _user32.MapWindowPoints(self._hwnd, HWND_DESKTOP, byref(rect), 2)
         p.x = (rect.left + rect.right) // 2
         p.y = (rect.top + rect.bottom) // 2
 
@@ -461,7 +457,7 @@ class Win32Window(BaseWindow):
         raw_mouse = RAWINPUTDEVICE(0x01, 0x02, 0, None)
         if exclusive:
             raw_mouse.dwFlags = RIDEV_NOLEGACY
-            raw_mouse.hwndTarget = self._view_hwnd
+            raw_mouse.hwndTarget = self._hwnd
         else:
             raw_mouse.dwFlags = RIDEV_REMOVE
             raw_mouse.hwndTarget = None
@@ -476,8 +472,8 @@ class Win32Window(BaseWindow):
             # Clip to client area, to prevent large mouse movements taking
             # it outside the client area.
             rect = RECT()
-            _user32.GetClientRect(self._view_hwnd, byref(rect))
-            _user32.MapWindowPoints(self._view_hwnd, HWND_DESKTOP,
+            _user32.GetClientRect(self._hwnd, byref(rect))
+            _user32.MapWindowPoints(self._hwnd, HWND_DESKTOP,
                                     byref(rect), 2)
             _user32.ClipCursor(byref(rect))
             # Release mouse capture in case is was acquired during mouse click
@@ -493,8 +489,8 @@ class Win32Window(BaseWindow):
     def set_mouse_position(self, x, y, absolute=False):
         if not absolute:
             rect = RECT()
-            _user32.GetClientRect(self._view_hwnd, byref(rect))
-            _user32.MapWindowPoints(self._view_hwnd, HWND_DESKTOP, byref(rect), 2)
+            _user32.GetClientRect(self._hwnd, byref(rect))
+            _user32.MapWindowPoints(self._hwnd, HWND_DESKTOP, byref(rect), 2)
 
             x = x + rect.left
             y = rect.top + (rect.bottom - rect.top) - y
@@ -613,23 +609,54 @@ class Win32Window(BaseWindow):
         _user32.SetClassLongPtrW(self._hwnd, GCL_HICONSM, icon)
 
     # Private util
-
-    def _client_to_window_size(self, width, height):
+    def _client_to_window_size(self, width, height, dpi):
+        """This returns the true window size factoring in styles, borders, title bars"""
         rect = RECT()
         rect.left = 0
         rect.top = 0
         rect.right = width
         rect.bottom = height
-        _user32.AdjustWindowRectEx(byref(rect),
-            self._ws_style, False, self._ex_ws_style)
+
+        if WINDOWS_10_ANNIVERSARY_UPDATE_OR_GREATER:
+            _user32.AdjustWindowRectExForDpi(byref(rect),
+                self._ws_style, False, self._ex_ws_style, dpi)
+        else:
+            _user32.AdjustWindowRectEx(byref(rect),
+                self._ws_style, False, self._ex_ws_style)
+
+        return rect.right - rect.left, rect.bottom - rect.top
+
+
+    def _client_to_window_size_dpi(self, width, height):
+        """ This returns the true window size factoring in styles, borders, title bars.
+            Retrieves DPI directly from the Window hwnd, used after window creation.
+        """
+        rect = RECT()
+        rect.left = 0
+        rect.top = 0
+        rect.right = width
+        rect.bottom = height
+
+        if WINDOWS_10_ANNIVERSARY_UPDATE_OR_GREATER:
+            _user32.AdjustWindowRectExForDpi(byref(rect),
+                self._ws_style, False, self._ex_ws_style, _user32.GetDpiForWindow(self._hwnd))
+        else:
+            _user32.AdjustWindowRectEx(byref(rect),
+                self._ws_style, False, self._ex_ws_style)
+
         return rect.right - rect.left, rect.bottom - rect.top
 
     def _client_to_window_pos(self, x, y):
         rect = RECT()
         rect.left = x
         rect.top = y
-        _user32.AdjustWindowRectEx(byref(rect),
-            self._ws_style, False, self._ex_ws_style)
+
+        if WINDOWS_10_ANNIVERSARY_UPDATE_OR_GREATER:
+            _user32.AdjustWindowRectExForDpi(byref(rect),
+                self._ws_style, False, self._ex_ws_style, _user32.GetDpiForWindow(self._hwnd))
+        else:
+            _user32.AdjustWindowRectEx(byref(rect),
+                self._ws_style, False, self._ex_ws_style)
         return rect.left, rect.top
 
     # Event dispatching
@@ -756,7 +783,6 @@ class Win32Window(BaseWindow):
             self.dispatch_event('on_text', text)
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(WM_INPUT)
     def _event_raw_input(self, msg, wParam, lParam):
         if not self._exclusive_mouse:
@@ -833,7 +859,6 @@ class Win32Window(BaseWindow):
 
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(WM_MOUSEMOVE)
     def _event_mousemove(self, msg, wParam, lParam):
         if self._exclusive_mouse and self._has_focus:
@@ -857,7 +882,7 @@ class Win32Window(BaseWindow):
             track = TRACKMOUSEEVENT()
             track.cbSize = sizeof(track)
             track.dwFlags = TME_LEAVE
-            track.hwndTrack = self._view_hwnd
+            track.hwndTrack = self._hwnd
             _user32.TrackMouseEvent(byref(track))
 
         # Don't generate motion/drag events when mouse hasn't moved. (Issue
@@ -886,12 +911,11 @@ class Win32Window(BaseWindow):
             self.dispatch_event('on_mouse_motion', x, y, dx, dy)
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(WM_MOUSELEAVE)
     def _event_mouseleave(self, msg, wParam, lParam):
         point = POINT()
         _user32.GetCursorPos(byref(point))
-        _user32.ScreenToClient(self._view_hwnd, byref(point))
+        _user32.ScreenToClient(self._hwnd, byref(point))
         x = point.x
         y = self._height - point.y
         self._tracking = False
@@ -902,7 +926,7 @@ class Win32Window(BaseWindow):
 
     def _event_mousebutton(self, ev, button, lParam):
         if ev == 'on_mouse_press':
-            _user32.SetCapture(self._view_hwnd)
+            _user32.SetCapture(self._hwnd)
         else:
             _user32.ReleaseCapture()
         x, y = self._get_location(lParam)
@@ -910,37 +934,31 @@ class Win32Window(BaseWindow):
         self.dispatch_event(ev, x, y, button, self._get_modifiers())
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(WM_LBUTTONDOWN)
     def _event_lbuttondown(self, msg, wParam, lParam):
         return self._event_mousebutton(
             'on_mouse_press', mouse.LEFT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(WM_LBUTTONUP)
     def _event_lbuttonup(self, msg, wParam, lParam):
         return self._event_mousebutton(
             'on_mouse_release', mouse.LEFT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(WM_MBUTTONDOWN)
     def _event_mbuttondown(self, msg, wParam, lParam):
         return self._event_mousebutton(
             'on_mouse_press', mouse.MIDDLE, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(WM_MBUTTONUP)
     def _event_mbuttonup(self, msg, wParam, lParam):
         return self._event_mousebutton(
             'on_mouse_release', mouse.MIDDLE, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(WM_RBUTTONDOWN)
     def _event_rbuttondown(self, msg, wParam, lParam):
         return self._event_mousebutton(
             'on_mouse_press', mouse.RIGHT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(WM_RBUTTONUP)
     def _event_rbuttonup(self, msg, wParam, lParam):
         return self._event_mousebutton(
@@ -958,7 +976,6 @@ class Win32Window(BaseWindow):
         self.dispatch_event('on_close')
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(WM_PAINT)
     def _event_paint(self, msg, wParam, lParam):
         self.dispatch_event('on_expose')
@@ -994,10 +1011,11 @@ class Win32Window(BaseWindow):
             # Restored
             self._hidden = False
             self.dispatch_event('on_show')
+
         w, h = self._get_location(lParam)
         if not self._fullscreen:
             self._width, self._height = w, h
-        self._update_view_location(self._width, self._height)
+
         self.switch_to()
         self.dispatch_event('on_resize', self._width, self._height)
         return 0
@@ -1071,13 +1089,15 @@ class Win32Window(BaseWindow):
 
     @Win32EventHandler(WM_GETMINMAXINFO)
     def _event_getminmaxinfo(self, msg, wParam, lParam):
+        """Used to determine the minimum or maximum sized window if configured."""
         info = MINMAXINFO.from_address(lParam)
+
         if self._minimum_size:
             info.ptMinTrackSize.x, info.ptMinTrackSize.y = \
-                self._client_to_window_size(*self._minimum_size)
+                self._client_to_window_size_dpi(*self._minimum_size)
         if self._maximum_size:
             info.ptMaxTrackSize.x, info.ptMaxTrackSize.y = \
-                self._client_to_window_size(*self._maximum_size)
+                self._client_to_window_size_dpi(*self._maximum_size)
         return 0
 
     @Win32EventHandler(WM_ERASEBKGND)
@@ -1088,40 +1108,62 @@ class Win32Window(BaseWindow):
         else:
             return 1
 
-    @ViewEventHandler
     @Win32EventHandler(WM_ERASEBKGND)
     def _event_erasebkgnd_view(self, msg, wParam, lParam):
         # Prevent flicker during resize.
         return 1
 
-        
+    @Win32EventHandler(WM_GETDPISCALEDSIZE)
+    def _event_dpi_scaled_size(self, msg, wParam, lParam):
+        size = cast(lParam, POINTER(SIZE)).contents
+
+        dpi = wParam
+
+        #print("WM_GETDPISCALEDSIZE")
+        #print("CURRENT", size.cx, size.cy)
+
+        if WINDOWS_10_CREATORS_UPDATE_OR_GREATER:
+            current = RECT()
+            result = RECT()
+
+            # Size between current size and future.
+            _user32.AdjustWindowRectExForDpi(byref(current),
+                                             self._ws_style, False, self._ex_ws_style,
+                                             _user32.GetDpiForWindow(self._hwnd))
+
+            _user32.AdjustWindowRectExForDpi(byref(result),
+                                             self._ws_style, False, self._ex_ws_style, dpi)
+
+            size.cx += (result.right - result.left) - (current.right - current.left)
+            size.cy += (result.bottom - result.top) - (current.bottom - current.top)
+
+            #print("RESULT", size.cx, size.cy)
+
+            return 1
+
     @Win32EventHandler(WM_DPICHANGED)
     def _event_dpi_change(self, msg, wParam, lParam):
-        ydpi, xdpi = self._get_location(wParam)
+        y_dpi, x_dpi = self._get_location(wParam)
 
-        x_scale = xdpi / USER_DEFAULT_SCREEN_DPI
-        y_scale = ydpi / USER_DEFAULT_SCREEN_DPI
+        #print("DPICHANGED", x_dpi, y_dpi, lParam)
 
-        # Newer Windows pass a recommended position and size for the window.
+        scale = (x_dpi / USER_DEFAULT_SCREEN_DPI,
+                 y_dpi / USER_DEFAULT_SCREEN_DPI)
+
+        # Only windows 10 creators
         if WINDOWS_10_CREATORS_UPDATE_OR_GREATER:
-            recommended = cast(lParam, POINTER(RECT)).contents
+            suggested_rect = cast(lParam, POINTER(RECT)).contents
 
-            x = recommended.left
-            y = recommended.top
-            width = recommended.right - recommended.left
-            height = recommended.bottom - recommended.top
+            x = suggested_rect.left
+            y = suggested_rect.top
+            width = suggested_rect.right - suggested_rect.left
+            height = suggested_rect.bottom - suggested_rect.top
 
-            if self._fullscreen:
-                hwnd_after = HWND_TOPMOST
-            else:
-                hwnd_after = HWND_NOTOPMOST
+            _user32.SetWindowPos(self._hwnd, 0,
+                                 x, y, width, height, SWP_NOZORDER | SWP_NOOWNERZORDER)
 
-            if self._fullscreen:
-                _user32.SetWindowPos(self._hwnd, hwnd_after,
-                    x, y, width, height, SWP_FRAMECHANGED)
-            else:
-                _user32.SetWindowPos(self._hwnd, hwnd_after,
-                    x, y, width, height, SWP_NOMOVE | SWP_FRAMECHANGED)
-                
-        self.dispatch_event('on_scale', x_scale, y_scale)
+        self._scale = scale
+        self._dpi = x_dpi, y_dpi
 
+        self.switch_to()
+        self.dispatch_event('on_scale', *scale, x_dpi, y_dpi)

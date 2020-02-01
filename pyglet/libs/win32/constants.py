@@ -5045,4 +5045,5 @@ WINDOWS_VISTA_OR_GREATER = sys.getwindowsversion() >= (6, 0)
 WINDOWS_7_OR_GREATER = sys.getwindowsversion() >= (6, 1)
 WINDOWS_8_OR_GREATER = sys.getwindowsversion() >= (6, 2)
 WINDOWS_8_1_OR_GREATER = sys.getwindowsversion() >= (6, 3)
-WINDOWS_10_CREATORS_UPDATE_OR_GREATER = sys.getwindowsversion() >= (10, 0, 15063)
+WINDOWS_10_ANNIVERSARY_UPDATE_OR_GREATER = sys.getwindowsversion() >= (10, 0, 14393)  # 1607
+WINDOWS_10_CREATORS_UPDATE_OR_GREATER = sys.getwindowsversion() >= (10, 0, 15063)  # 1703
