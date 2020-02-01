@@ -397,8 +397,10 @@ class Win32Window(BaseWindow):
     def maximize(self):
         _user32.ShowWindow(self._hwnd, SW_MAXIMIZE)
 
-    def get_screen(self):
-        """Gets the current screen the Window is on."""
+    def get_window_screen(self):
+        """ Gets the current screen the window is on.
+            If between monitors will retrieve the screen with the most screen space.
+        """
         handle = _user32.MonitorFromWindow(self._hwnd, MONITOR_DEFAULTTONEAREST)
         return [screen for screen in self.display.get_screens() if screen._handle == handle][0]
 
