@@ -478,6 +478,9 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
     # Used to restore window size and position after fullscreen
     _windowed_size = None
     _windowed_location = None
+    
+    # Used to tell if window is currently being resized.
+    _window_resizing = False
 
     # Subclasses should update these after relevant events
     _mouse_cursor = DefaultMouseCursor()
@@ -1661,6 +1664,20 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
 
             :event:
             """
+            
+        def on_resize_stop(self, width, height):
+            """The window is done being resized.
+
+            Called when the window is done resizing.
+
+            :Parameters:
+                `width` : int
+                    The new width of the window, in pixels.
+                `height` : int
+                    The new height of the window, in pixels.
+
+            :event:
+            """
 
         def on_move(self, x, y):
             """The window was moved.
@@ -1777,6 +1794,7 @@ BaseWindow.register_event_type('on_mouse_leave')
 BaseWindow.register_event_type('on_close')
 BaseWindow.register_event_type('on_expose')
 BaseWindow.register_event_type('on_resize')
+BaseWindow.register_event_type('on_resize_stop')
 BaseWindow.register_event_type('on_scale')
 BaseWindow.register_event_type('on_move')
 BaseWindow.register_event_type('on_activate')

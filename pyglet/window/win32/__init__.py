@@ -991,6 +991,8 @@ class Win32Window(BaseWindow):
     def _event_sizing(self, msg, wParam, lParam):
         # rect = cast(lParam, POINTER(RECT)).contents
         # width, height = self.get_size()
+        
+        self._window_resizing = True
 
         from pyglet import app
         if app.event_loop is not None:
@@ -1047,6 +1049,13 @@ class Win32Window(BaseWindow):
         from pyglet import app
         if app.event_loop is not None:
             app.event_loop.exit_blocking()
+            
+        # _window_resizing is needed in combination with WM_EXITSIZEMOVE as
+        # it is also called when the Window is done being moved, not just resized.
+        if self._window_resizing is True:
+            self.dispatch_event('on_resize_stop', self._width, self._height)
+            self._window_resizing = False
+
 
     '''
     # Alternative to using WM_SETFOCUS and WM_KILLFOCUS.  Which
