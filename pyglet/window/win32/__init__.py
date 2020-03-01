@@ -149,7 +149,7 @@ class Win32Window(BaseWindow):
         # Ensure style is set before determining width/height.
         if self._fullscreen:
             self._ws_style = WS_POPUP
-            self._ex_ws_style = 0 # WS_EX_TOPMOST
+            self._ex_ws_style = 0  # WS_EX_TOPMOST
         else:
             styles = {
                 self.WINDOW_STYLE_DEFAULT: (WS_OVERLAPPEDWINDOW, 0),
@@ -176,7 +176,6 @@ class Win32Window(BaseWindow):
 
         if not self._window_class:
             module = _kernel32.GetModuleHandleW(None)
-            white = _gdi32.GetStockObject(WHITE_BRUSH)
             black = _gdi32.GetStockObject(BLACK_BRUSH)
             self._window_class = WNDCLASS()
             self._window_class.lpszClassName = u'GenericAppClass%d' % id(self)
@@ -190,20 +189,6 @@ class Win32Window(BaseWindow):
             self._window_class.cbClsExtra = 0
             self._window_class.cbWndExtra = 0
             _user32.RegisterClassW(byref(self._window_class))
-
-            self._view_window_class = WNDCLASS()
-            self._view_window_class.lpszClassName = \
-                u'GenericViewClass%d' % id(self)
-            self._view_window_class.lpfnWndProc = WNDPROC(
-                self._get_window_proc(self._view_event_handlers))
-            self._view_window_class.style = 0
-            self._view_window_class.hInstance = 0
-            self._view_window_class.hIcon = 0
-            self._view_window_class.hbrBackground = white
-            self._view_window_class.lpszMenuName = None
-            self._view_window_class.cbClsExtra = 0
-            self._view_window_class.cbWndExtra = 0
-            _user32.RegisterClassW(byref(self._view_window_class))
 
         if not self._hwnd:
             self._hwnd = _user32.CreateWindowExW(
@@ -226,11 +211,17 @@ class Win32Window(BaseWindow):
 
             # We need to hide window here, otherwise Windows forgets
             # to redraw the whole screen after leaving fullscreen.
-            _user32.ShowWindow(self._hwnd, SW_HIDE)
 
+            #_user32.ShowWindow(self._hwnd, SW_HIDE)
+
+            currentStyle = _user32.GetWindowLongW(self._hwnd, GWL_STYLE)
+
+            #print("LONGW", self._hwnd, self._ws_style, currentStyle)
             _user32.SetWindowLongW(self._hwnd,
                 GWL_STYLE,
                 self._ws_style)
+
+            #print("LONGW2", self._ex_ws_style)
             _user32.SetWindowLongW(self._hwnd,
                 GWL_EXSTYLE,
                 self._ex_ws_style)
@@ -242,15 +233,21 @@ class Win32Window(BaseWindow):
 
         # Position and size window
         if self._fullscreen:
+            print("SET FULL WINDOW POS")
             _user32.SetWindowPos(self._hwnd, hwnd_after,
-                self._screen.x, self._screen.y, width, height, SWP_FRAMECHANGED)
+                self._screen.x, self._screen.y, width, height, SWP_FRAMECHANGED | SWP_NOCOPYBITS)
         elif False: # TODO location not in pyglet API
+            print("---FALSE")
             x, y = self._client_to_window_pos(*factory.get_location())
             _user32.SetWindowPos(self._hwnd, hwnd_after,
                 x, y, width, height, SWP_FRAMECHANGED)
         else:
+            flags = SWP_NOMOVE | SWP_FRAMECHANGED | SWP_NOCOPYBITS
+            if self._visible:
+                flags |= SWP_SHOWWINDOW
+
             _user32.SetWindowPos(self._hwnd, hwnd_after,
-                0, 0, width, height, SWP_NOMOVE | SWP_FRAMECHANGED)
+                0, 0, width, height, flags)
 
         #self._update_view_location(self._width, self._height)
 
@@ -265,11 +262,12 @@ class Win32Window(BaseWindow):
         self.switch_to()
         self.set_vsync(self._vsync)
 
-        if self._visible:
-            self.set_visible()
+        #if self._visible:
+        #    print("SET VISIBLE")
+            #self.set_visible()
             # Might need resize event if going from fullscreen to fullscreen
-            self.dispatch_event('on_resize', self._width, self._height)
-            self.dispatch_event('on_expose')
+            #self.dispatch_event('on_resize', self._width, self._height)
+            #self.dispatch_event('on_expose')
 
     def _update_view_location(self, width, height):
         if self._fullscreen:
@@ -999,6 +997,7 @@ class Win32Window(BaseWindow):
 
     @Win32EventHandler(WM_SIZE)
     def _event_size(self, msg, wParam, lParam):
+        print("WMSIZE!", msg, wParam)
         if not self._dc:
             # Ignore window creation size event (appears for fullscreen
             # only) -- we haven't got DC or HWND yet.
