@@ -167,6 +167,7 @@ options = {
     'xlib_fullscreen_override_redirect': False,
     'darwin_cocoa': True,
     'search_local_libs': True,
+    'scale_window_with_dpi': False
 }
 
 _option_types = {

@@ -457,6 +457,8 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
 
     _width = None
     _height = None
+    _scale = 1.0
+    _dpi = 96
     _caption = None
     _resizable = False
     _style = WINDOW_STYLE_DEFAULT
@@ -800,6 +802,16 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
         viewport_width, viewport_height = self.get_framebuffer_size()
         self._projection.set(width, height, viewport_width, viewport_height)
 
+    def on_dpi_change(self, pixel_ratio, dpi):
+        """A default DPI change event handler.
+
+        This default handler is called if the screen or system's DPI changes
+        during runtime. This may be called when moving the Window to a new display,
+        or the user has changed DPI while running the application.
+
+        Event includes the new pixel ratio and DPI values.
+        """
+
     def on_close(self):
         """Default on_close handler."""
         self.has_exit = True
@@ -978,6 +990,22 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
     @height.setter
     def height(self, new_height):
         self.set_size(self.width, new_height)
+
+    @property
+    def scale(self):
+        """The scale of the window factoring in DPI.  Read only.
+
+        :type: list
+        """
+        return self._scale
+
+    @property
+    def dpi(self):
+        """DPI values of the window, inherited from the screen.  Read only.
+
+        :type: list
+        """
+        return self._dpi
 
     @property
     def projection(self):
@@ -1757,6 +1785,7 @@ BaseWindow.register_event_type('on_mouse_leave')
 BaseWindow.register_event_type('on_close')
 BaseWindow.register_event_type('on_expose')
 BaseWindow.register_event_type('on_resize')
+BaseWindow.register_event_type('on_dpi_change')
 BaseWindow.register_event_type('on_move')
 BaseWindow.register_event_type('on_activate')
 BaseWindow.register_event_type('on_deactivate')
