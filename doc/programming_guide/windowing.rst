@@ -130,7 +130,7 @@ in the constructor.  If you do this, you may also want to handle the
 
     @window.event
     def on_resize(width, height):
-        print 'The window was resized to %dx%d' % (width, height)
+        print('The window was resized to %dx%d' % (width, height))
 
 You can specify a minimum and maximum size that the window can be resized to
 by the user with the :py:meth:`~pyglet.window.Window.set_minimum_size` and
@@ -301,7 +301,7 @@ are several benefits:
 
 * You can load font and other resources from the constructor, ensuring the
   OpenGL context has already been created.
-* You can add event handlers simply be defining them on the class.  The
+* You can add event handlers simply by defining them on the class.  The
   :py:meth:`~pyglet.window.Window.on_resize` event will be called as soon as
   the window is created (this
   doesn't usually happen, as you must create the window before you can attach
@@ -358,7 +358,7 @@ Vertical retrace synchronisation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Double-buffering eliminates one cause of flickering: the user is unable to see
-the image as it painted, only the final rendering.  However, it does introduce
+the image as it is painted, only the final rendering.  However, it does introduce
 another source of flicker known as "tearing".
 
 Tearing becomes apparent when displaying fast-moving objects in an animation.

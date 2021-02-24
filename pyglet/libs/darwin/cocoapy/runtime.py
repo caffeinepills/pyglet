@@ -40,6 +40,7 @@ from .cocoatypes import *
 
 __LP64__ = (8*struct.calcsize("P") == 64)
 __i386__ = (platform.machine() == 'i386')
+__arm64__ = (platform.machine() == 'arm64')
 
 if sizeof(c_void_p) == 4:
     c_ptrdiff_t = c_int32
@@ -48,7 +49,13 @@ elif sizeof(c_void_p) == 8:
 
 ######################################################################
 
-objc = cdll.LoadLibrary(util.find_library('objc'))
+lib = util.find_library('objc')
+
+# Hack for compatibility with macOS > 11.0
+if lib is None:
+    lib = '/usr/lib/libobjc.dylib'
+
+objc = cdll.LoadLibrary(lib)
 
 ######################################################################
 
@@ -129,9 +136,11 @@ objc.class_getIvarLayout.argtypes = [c_void_p]
 objc.class_getMethodImplementation.restype = c_void_p
 objc.class_getMethodImplementation.argtypes = [c_void_p, c_void_p]
 
-# IMP class_getMethodImplementation_stret(Class cls, SEL name)
-objc.class_getMethodImplementation_stret.restype = c_void_p
-objc.class_getMethodImplementation_stret.argtypes = [c_void_p, c_void_p]
+# The function is marked as OBJC_ARM64_UNAVAILABLE.
+if not __arm64__:
+    # IMP class_getMethodImplementation_stret(Class cls, SEL name)
+    objc.class_getMethodImplementation_stret.restype = c_void_p
+    objc.class_getMethodImplementation_stret.argtypes = [c_void_p, c_void_p]
 
 # const char * class_getName(Class cls)
 objc.class_getName.restype = c_char_p
@@ -278,14 +287,18 @@ objc.objc_getProtocol.argtypes = [c_char_p]
 # id objc_msgSend(id theReceiver, SEL theSelector, ...)
 # id objc_msgSendSuper(struct objc_super *super, SEL op,  ...)
 
-# void objc_msgSendSuper_stret(struct objc_super *super, SEL op, ...)
-objc.objc_msgSendSuper_stret.restype = None
+# The function is marked as OBJC_ARM64_UNAVAILABLE.
+if not __arm64__:
+    # void objc_msgSendSuper_stret(struct objc_super *super, SEL op, ...)
+    objc.objc_msgSendSuper_stret.restype = None
 
 # double objc_msgSend_fpret(id self, SEL op, ...)
 # objc.objc_msgSend_fpret.restype = c_double
 
-# void objc_msgSend_stret(void * stretAddr, id theReceiver, SEL theSelector,  ...)
-objc.objc_msgSend_stret.restype = None
+# The function is marked as OBJC_ARM64_UNAVAILABLE.
+if not __arm64__:
+    # void objc_msgSend_stret(void * stretAddr, id theReceiver, SEL theSelector,  ...)
+    objc.objc_msgSend_stret.restype = None
 
 # void objc_registerClassPair(Class cls)
 objc.objc_registerClassPair.restype = None
@@ -481,12 +494,19 @@ class OBJC_SUPER(Structure):
 
 OBJC_SUPER_PTR = POINTER(OBJC_SUPER)
 
-#http://stackoverflow.com/questions/3095360/what-exactly-is-super-in-objective-c
-def send_super(receiver, selName, *args, **kwargs):
-    #print 'send_super', receiver, selName, args
+# http://stackoverflow.com/questions/3095360/what-exactly-is-super-in-objective-c
+#
+# `superclass_name` is optional and can be used to force finding the superclass
+# by name. It is used to circumvent a bug in which the superclass was resolved
+# incorrectly which lead to an infinite recursion:
+# https://github.com/pyglet/pyglet/issues/5
+def send_super(receiver, selName, *args, superclass_name=None, **kwargs):
     if hasattr(receiver, '_as_parameter_'):
         receiver = receiver._as_parameter_
-    superclass = get_superclass_of_object(receiver)
+    if superclass_name is None:
+        superclass = get_superclass_of_object(receiver)
+    else:
+        superclass = get_class(superclass_name)
     super_struct = OBJC_SUPER(receiver, superclass)
     selector = get_selector(selName)
     restype = kwargs.get('restype', c_void_p)
@@ -651,7 +671,7 @@ def get_instance_variable(obj, varname, vartype):
 
 ######################################################################
 
-class ObjCMethod(object):
+class ObjCMethod:
     """This represents an unbound Objective-C method (really an IMP)."""
 
     # Note, need to map 'c' to c_byte rather than c_char, because otherwise
@@ -768,7 +788,7 @@ class ObjCMethod(object):
 
 ######################################################################
 
-class ObjCBoundMethod(object):
+class ObjCBoundMethod:
     """This represents an Objective-C method (an IMP) which has been bound
     to some id which will be passed as the first parameter to the method."""
 
@@ -786,7 +806,7 @@ class ObjCBoundMethod(object):
 
 ######################################################################
 
-class ObjCClass(object):
+class ObjCClass:
     """Python wrapper for an Objective-C class."""
 
     # We only create one Python object for each Objective-C class.
@@ -909,7 +929,7 @@ class ObjCClass(object):
 
 ######################################################################
 
-class ObjCInstance(object):
+class ObjCInstance:
     """Python wrapper for an Objective-C instance."""
 
     _cached_objects = {}
@@ -1056,7 +1076,7 @@ def convert_method_arguments(encoding, args):
 #     myclass = ObjCClass('MySubclassName')
 #     myinstance = myclass.alloc().init()
 #
-class ObjCSubclass(object):
+class ObjCSubclass:
     """Use this to create a subclass of an existing Objective-C class.
     It consists primarily of function decorators which you use to add methods
     to the subclass."""
@@ -1166,7 +1186,7 @@ class ObjCSubclass(object):
 # to be careful to not create another ObjCInstance here (which
 # happens when the usual method decorator turns the self argument
 # into an ObjCInstance), or else get trapped in an infinite recursion.
-class DeallocationObserver_Implementation(object):
+class DeallocationObserver_Implementation:
     DeallocationObserver = ObjCSubclass('NSObject', 'DeallocationObserver', register=False)
     DeallocationObserver.add_ivar('observed_object', c_void_p)
     DeallocationObserver.register()

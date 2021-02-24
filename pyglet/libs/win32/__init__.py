@@ -1,4 +1,3 @@
-#!/usr/bin/python
 # ----------------------------------------------------------------------------
 # pyglet
 # Copyright (c) 2006-2008 Alex Holkner
@@ -33,16 +32,13 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
-# $Id: $
 
-from __future__ import print_function
-from __future__ import absolute_import
-from builtins import object
 import struct
 
 import pyglet
 from . import constants
 from .types import *
+from pyglet import com
 
 IS64 = struct.calcsize("P") == 8
 
@@ -67,7 +63,7 @@ if _debug_win32:
                         c_void_p())
         return msg.value
     
-    class DebugLibrary(object):
+    class DebugLibrary:
         def __init__(self, lib):
             self.lib = lib
 
@@ -93,6 +89,8 @@ _gdi32 = DebugLibrary(windll.gdi32)
 _kernel32 = DebugLibrary(windll.kernel32)
 _user32 = DebugLibrary(windll.user32)
 _dwmapi = DebugLibrary(windll.dwmapi)
+_shell32 = DebugLibrary(windll.shell32)
+_ole32 = DebugLibrary(windll.ole32)
 _shcore = DebugLibrary(windll.shcore)
 
 # _gdi32
@@ -276,6 +274,8 @@ _user32.RegisterRawInputDevices.restype = BOOL
 _user32.RegisterRawInputDevices.argtypes = [PCRAWINPUTDEVICE, UINT, UINT]
 _user32.GetRawInputData.restype = UINT
 _user32.GetRawInputData.argtypes = [HRAWINPUT, UINT, LPVOID, PUINT, UINT]
+_user32.ChangeWindowMessageFilterEx.restype = BOOL
+_user32.ChangeWindowMessageFilterEx.argtypes = [HWND, UINT, DWORD, c_void_p]
 _user32.SetProcessDPIAware.restype = BOOL
 _user32.SetProcessDPIAware.argtypes = []
 _user32.SetProcessDpiAwarenessContext.restype = BOOL
@@ -293,9 +293,29 @@ _dwmapi.DwmIsCompositionEnabled.argtypes = [POINTER(INT)]
 _dwmapi.DwmFlush.restype = c_int
 _dwmapi.DwmFlush.argtypes = []
 
-#shcore
-_shcore.SetProcessDpiAwareness.argtypes = [PROCESS_DPI_AWARENESS]
-_shcore.SetProcessDpiAwareness.restype = HRESULT
-_shcore.GetDpiForMonitor.argtypes = [HMONITOR, MONITOR_DPI_TYPE, POINTER(UINT), POINTER(UINT)]
-_shcore.GetDpiForMonitor.restype = HRESULT
+#_shell32
+_shell32.DragAcceptFiles.restype = c_void
+_shell32.DragAcceptFiles.argtypes = [HWND, BOOL]
+_shell32.DragFinish.restype = c_void
+_shell32.DragFinish.argtypes = [HDROP]
+_shell32.DragQueryFileW.restype = UINT
+_shell32.DragQueryFileW.argtypes = [HDROP, UINT, LPWSTR, UINT]
+_shell32.DragQueryPoint.restype = BOOL
+_shell32.DragQueryPoint.argtypes = [HDROP, LPPOINT]
 
+# ole32
+_ole32.CreateStreamOnHGlobal.argtypes = [HGLOBAL, BOOL, LPSTREAM]
+_ole32.CoInitializeEx.restype = HRESULT
+_ole32.CoInitializeEx.argtypes = [LPVOID, DWORD]
+_ole32.CoUninitialize.restype = HRESULT
+_ole32.CoUninitialize.argtypes = []
+_ole32.PropVariantClear.restype = HRESULT
+_ole32.PropVariantClear.argtypes = [c_void_p]
+_ole32.CoCreateInstance.restype = HRESULT
+_ole32.CoCreateInstance.argtypes = [com.REFIID, c_void_p, DWORD, com.REFIID, c_void_p]
+
+#dwmapi
+_dwmapi.DwmIsCompositionEnabled.restype = c_int
+_dwmapi.DwmIsCompositionEnabled.argtypes = [POINTER(INT)]
+_dwmapi.DwmFlush.restype = c_int
+_dwmapi.DwmFlush.argtypes = []

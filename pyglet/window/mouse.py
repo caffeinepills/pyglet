@@ -35,8 +35,6 @@
 
 """Mouse constants and utilities for pyglet.window.
 """
-__docformat__ = 'restructuredtext'
-__version__ = '$Id$'
 
 
 class MouseStateHandler(dict):
@@ -45,7 +43,7 @@ class MouseStateHandler(dict):
 
     For example::
 
-        >>> win = window.Window
+        >>> win = window.Window()
         >>> mousebuttons = mouse.MouseStateHandler()
         >>> win.push_handlers(mousebuttons)
 
@@ -90,7 +88,8 @@ def buttons_string(buttons):
         button_names.append('RIGHT')
     return '|'.join(button_names)
 
+
 # Symbolic names for the mouse buttons
-LEFT =   1 << 0
+LEFT = 1 << 0
 MIDDLE = 1 << 1
-RIGHT =  1 << 2
+RIGHT = 1 << 2

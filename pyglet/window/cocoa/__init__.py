@@ -33,15 +33,6 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
 
-'''
-'''
-from __future__ import absolute_import
-from __future__ import division
-from past.utils import old_div
-
-__docformat__ = 'restructuredtext'
-__version__ = '$Id: $'
-
 from ctypes import *
 
 import pyglet
@@ -70,12 +61,15 @@ NSImage = cocoapy.ObjCClass('NSImage')
 quartz = cocoapy.quartz
 cf = cocoapy.cf
 
+
 class CocoaMouseCursor(MouseCursor):
-    drawable = False
+    gl_drawable = False
+
     def __init__(self, cursorName):
         # cursorName is a string identifying one of the named default NSCursors
         # e.g. 'pointingHandCursor', and can be sent as message to NSCursor class.
         self.cursorName = cursorName
+
     def set(self):
         cursor = getattr(NSCursor, self.cursorName)()
         cursor.set()
@@ -217,6 +211,10 @@ class CocoaWindow(BaseWindow):
             self.set_minimum_size(*self._minimum_size)
         if self._maximum_size is not None:
             self.set_maximum_size(*self._maximum_size)
+
+        # TODO: Add support for file drops.
+        if self._file_drops:
+            raise NotImplementedError("File drops are not implemented on MacOS")
 
         self.context.update_geometry()
         self.switch_to()
@@ -522,9 +520,9 @@ class CocoaWindow(BaseWindow):
             elif isinstance(self._mouse_cursor, CocoaMouseCursor):
                 self._mouse_cursor.set()
                 SystemCursor.unhide()
-            # If the mouse cursor is drawable, then it we need to hide
+            # If the mouse cursor is OpenGL drawable, then it we need to hide
             # the system mouse cursor, so that the cursor can draw itself.
-            elif self._mouse_cursor.drawable:
+            elif self._mouse_cursor.gl_drawable:
                 SystemCursor.hide()
             # Otherwise, show the default cursor.
             else:

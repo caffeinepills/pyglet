@@ -46,7 +46,7 @@ To set up a window, simply `import pyglet`, create a new instance of
 :class:`pyglet.window.Window`, and call `pyglet.app.run()`::
 
     import pyglet
-    game_window = pyglet.window.Window()
+    game_window = pyglet.window.Window(800, 600)
 
     if __name__ == '__main__':
         pyglet.app.run()
@@ -1085,7 +1085,7 @@ like they come from the same object::
 
     import random
 
-    class Asteroid(object):
+    class Asteroid:
         def handle_collision_with(self, other_object):
             super(Asteroid, self).handle_collision_with(other_object)
             if self.dead and self.scale > 0.25:

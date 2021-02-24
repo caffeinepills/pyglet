@@ -35,11 +35,8 @@
 
 """Use ffmpeg to decode audio and video media.
 """
-from __future__ import print_function
-from __future__ import division
-from builtins import range
-from builtins import object
 
+import tempfile
 from ctypes import (c_int, c_uint16, c_int32, c_int64, c_uint32, c_uint64,
                     c_uint8, c_uint, c_double, c_float, c_ubyte, c_size_t, c_char, c_char_p,
                     c_void_p, addressof, byref, cast, POINTER, CFUNCTYPE, Structure, Union,
@@ -50,7 +47,7 @@ import pyglet
 import pyglet.lib
 
 from pyglet import image
-from pyglet.compat import asbytes, asbytes_filename, asstr
+from pyglet.util import asbytes, asbytes_filename, asstr
 from ..events import MediaEvent
 from ..exceptions import MediaFormatException
 from .base import StreamingSource, VideoFormat, AudioFormat
@@ -59,7 +56,7 @@ from .ffmpeg_lib import *
 from . import MediaEncoder, MediaDecoder
 
 
-class FileInfo(object):
+class FileInfo:
     def __init__(self):
         self.n_streams = None
         self.start_time = None
@@ -74,7 +71,7 @@ class FileInfo(object):
         self.genre = ""
 
 
-class StreamVideoInfo(object):
+class StreamVideoInfo:
     def __init__(self, width, height, sample_aspect_num, sample_aspect_den,
                  frame_rate_num, frame_rate_den, codec_id):
         self.width = width
@@ -86,7 +83,7 @@ class StreamVideoInfo(object):
         self.codec_id = codec_id
 
 
-class StreamAudioInfo(object):
+class StreamAudioInfo:
     def __init__(self, sample_format, sample_rate, channels):
         self.sample_format = sample_format
         self.sample_rate = sample_rate
@@ -140,7 +137,9 @@ def ffmpeg_open_filename(filename):
                                           None,
                                           None)
     if result != 0:
-        raise FFmpegException('Error opening file ' + filename.decode("utf8"))
+        raise FFmpegException('avformat_open_input in ffmpeg_open_filename returned an error opening file '
+                              + filename.decode("utf8")
+                              + ' Error code: ' + str(result))
 
     result = avformat.avformat_find_stream_info(file.context, None)
     if result < 0:
@@ -423,14 +422,15 @@ def timestamp_to_ffmpeg(timestamp):
     return int(timestamp * 1000000)
 
 
-class _Packet(object):
+class _Packet:
     def __init__(self, packet, timestamp):
         self.packet = AVPacket()
         ffmpeg_transfer_packet(byref(self.packet), packet)
         self.timestamp = timestamp
 
     def __del__(self):
-        ffmpeg_unref_packet(self.packet)
+        if ffmpeg_unref_packet is not None:
+            ffmpeg_unref_packet(self.packet)
 
 
 class VideoPacket(_Packet):
@@ -454,16 +454,22 @@ class FFmpegSource(StreamingSource):
     SAMPLE_CORRECTION_PERCENT_MAX = 10
 
     def __init__(self, filename, file=None):
-        if file is not None:
-            raise NotImplementedError('Loading from file stream is not supported')
+        self._packet = None
+        self._video_stream = None
+        self._audio_stream = None
+        self._file = None
+
+        if file:
+            file.seek(0)
+            self._tempfile = tempfile.NamedTemporaryFile(buffering=False)
+            self._tempfile.write(file.read())
+            filename = self._tempfile.name
 
         self._file = ffmpeg_open_filename(asbytes_filename(filename))
         if not self._file:
             raise FFmpegException('Could not open "{0}"'.format(filename))
 
-        self._video_stream = None
         self._video_stream_index = None
-        self._audio_stream = None
         self._audio_stream_index = None
         self._audio_format = None
 
@@ -573,17 +579,18 @@ class FFmpegSource(StreamingSource):
             self.seek(0.0)
 
     def __del__(self):
-        if _debug:
-            print('del ffmpeg source')
-
-        ffmpeg_free_packet(self._packet)
-        if self._video_stream:
+        if hasattr(self, '_tempfile'):
+            self._tempfile.close()
+        if self._packet and ffmpeg_free_packet is not None:
+            ffmpeg_free_packet(self._packet)
+        if self._video_stream and swscale is not None:
             swscale.sws_freeContext(self.img_convert_ctx)
             ffmpeg_close_stream(self._video_stream)
         if self._audio_stream:
             swresample.swr_free(self.audio_convert_ctx)
             ffmpeg_close_stream(self._audio_stream)
-        ffmpeg_close_file(self._file)
+        if self._file and ffmpeg_close_file is not None:
+            ffmpeg_close_file(self._file)
 
     def seek(self, timestamp):
         if _debug:

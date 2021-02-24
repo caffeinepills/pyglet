@@ -112,9 +112,6 @@ autosummary_generate = False
 
 inheritance_graph_attrs = dict(rankdir="LR", size='""')
 
-# If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = '1.3'
-
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 extensions = ['sphinx.ext.autodoc',
@@ -123,7 +120,7 @@ extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.todo',
               'sphinx.ext.napoleon']
 
-autodoc_member_order='groupwise'
+autodoc_member_order = 'groupwise'
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -131,22 +128,19 @@ templates_path = ['_templates']
 # The suffix of source filenames.
 source_suffix = '.rst'
 
-# The encoding of source files.
-#source_encoding = 'utf-8-sig'
-
 # The master toctree document.
 master_doc = 'index'
 
 # General information about the project.
 project = u'pyglet'
-copyright = u'2006-2008, Alex Holkner. 2008-2019 pyglet contributors'
+copyright = u'2006-2008, Alex Holkner. 2008-2020 pyglet contributors'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
 # built documents.
 #
 # The short X.Y version.
-version = '1.4'
+version = '1.5'
 # The full version, including alpha/beta/rc tags.
 release = pyglet.version
 

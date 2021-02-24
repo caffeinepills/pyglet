@@ -1,8 +1,8 @@
-from __future__ import division
-from builtins import map
-from tests import mock
 import os
+import ctypes
 import unittest
+from unittest import mock
+
 from tests.base.future_test import FutureTestCase
 
 import pyglet

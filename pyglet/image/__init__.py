@@ -128,24 +128,17 @@ Retrieving data with the format and pitch given in `ImageData.format` and
 use of the data in this arbitrary format).
 
 """
-
-from __future__ import division
-from builtins import bytes
-from builtins import zip
-
-__docformat__ = 'restructuredtext'
-__version__ = '$Id$'
-
-from io import open
 import re
 import weakref
 
 from ctypes import *
+from io import open, BytesIO
+from functools import lru_cache
 
 from pyglet.gl import *
 from pyglet.gl import gl_info
 from pyglet.window import *
-from pyglet.compat import asbytes, bytes_type, BytesIO
+from pyglet.util import asbytes
 
 from .codecs import ImageEncodeException, ImageDecodeException
 from .codecs import add_default_image_codecs, add_decoders, add_encoders
@@ -274,6 +267,7 @@ def create(width, height, pattern=None):
     return pattern.create_image(width, height)
 
 
+@lru_cache()
 def get_max_texture_size():
     """Query the maximum texture size available"""
     size = c_int()
@@ -281,15 +275,14 @@ def get_max_texture_size():
     return size.value
 
 
+@lru_cache()
 def _color_as_bytes(color):
-    if sys.version.startswith('2'):
-        return '%c%c%c%c' % color
-    else:
-        if len(color) != 4:
-            raise TypeError("color is expected to have 4 components")
-        return bytes(color)
+    if len(color) != 4:
+        raise TypeError("color is expected to have 4 components")
+    return bytes(color)
 
 
+@lru_cache()
 def _nearest_pow2(v):
     # From http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
     # Credit: Sean Anderson
@@ -302,12 +295,13 @@ def _nearest_pow2(v):
     return v + 1
 
 
+@lru_cache()
 def _is_pow2(v):
     # http://graphics.stanford.edu/~seander/bithacks.html#DetermineIfPowerOf2
     return (v & (v - 1)) == 0
 
 
-class ImagePattern(object):
+class ImagePattern:
     """Abstract image creation class."""
 
     def create_image(self, width, height):
@@ -373,7 +367,7 @@ class CheckerImagePattern(ImagePattern):
         return ImageData(width, height, 'RGBA', data)
 
 
-class AbstractImage(object):
+class AbstractImage:
     """Abstract class representing an image.
 
     :Parameters:
@@ -545,7 +539,7 @@ class AbstractImage(object):
         raise ImageException('Cannot blit %r to a texture.' % self)
 
 
-class AbstractImageSequence(object):
+class AbstractImageSequence:
     """Abstract sequence of images.
 
     The sequence is useful for storing image animations or slices of a volume.
@@ -1088,7 +1082,7 @@ class ImageData(AbstractImage):
         return asbytes(data)
 
     def _ensure_string_data(self):
-        if type(self._current_data) is not bytes_type:
+        if type(self._current_data) is not bytes:
             buf = create_string_buffer(len(self._current_data))
             memmove(buf, self._current_data, len(self._current_data))
             self._current_data = buf.raw
@@ -1894,7 +1888,7 @@ class DepthTexture(Texture):
         source.blit_to_texture(self.level, x, y, z)
 
 
-class BufferManager(object):
+class BufferManager:
     """Manages the set of framebuffers for a context.
 
     Use :py:func:`~pyglet.image.get_buffer_manager` to obtain the instance of this class for the

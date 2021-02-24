@@ -36,11 +36,6 @@
 
 These extend and correct ctypes functions.
 """
-from __future__ import print_function
-from builtins import object, str
-
-__docformat__ = 'restructuredtext'
-__version__ = '$Id: $'
 
 import os
 import re
@@ -54,7 +49,7 @@ import pyglet
 _debug_lib = pyglet.options['debug_lib']
 _debug_trace = pyglet.options['debug_trace']
 
-_is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
+_is_pyglet_doc_run = getattr(sys, "is_pyglet_doc_run", False)
 
 if pyglet.options['search_local_libs']:
     script_path = pyglet.resource.get_script_home()
@@ -66,7 +61,7 @@ else:
     _local_lib_paths = None
 
 
-class _TraceFunction(object):
+class _TraceFunction:
     def __init__(self, func):
         self.__dict__['_func'] = func
 
@@ -83,7 +78,7 @@ class _TraceFunction(object):
         setattr(self._func, name, value)
 
 
-class _TraceLibrary(object):
+class _TraceLibrary:
     def __init__(self, library):
         self._library = library
         print(library)
@@ -95,7 +90,7 @@ class _TraceLibrary(object):
 
 
 if _is_pyglet_doc_run:
-    class LibraryMock(object):
+    class LibraryMock:
         """Mock library used when generating documentation."""
         def __getattr__(self, name):
             return LibraryMock()
@@ -107,7 +102,7 @@ if _is_pyglet_doc_run:
             return LibraryMock()
 
 
-class LibraryLoader(object):
+class LibraryLoader:
 
     platform = pyglet.compat_platform
     # this is only for library loading, don't include it in pyglet.platform
@@ -164,15 +159,15 @@ class LibraryLoader(object):
                     except OSError:
                         pass
                 elif self.platform == "win32" and o.winerror != 126:
-                    print("Unexpected error loading library %s: %s" % (name, str(o)))
-                    raise
+                    raise ImportError("Unexpected error loading library %s: %s" % (name, str(o)))
 
         raise ImportError('Library "%s" not found.' % names[0])
 
     def find_library(self, name):
         return ctypes.util.find_library(name)
 
-    def load_framework(self, path):
+    @staticmethod
+    def load_framework(name):
         raise RuntimeError("Can't load framework on this platform.")
 
 
@@ -196,10 +191,8 @@ class MachOLibraryLoader(LibraryLoader):
         if 'DYLD_FALLBACK_LIBRARY_PATH' in os.environ:
             self.dyld_fallback_library_path = os.environ['DYLD_FALLBACK_LIBRARY_PATH'].split(':')
         else:
-            self.dyld_fallback_library_path = [os.path.expanduser('~/lib'),
-                                               '/usr/local/lib',
-                                               '/usr/lib']
- 
+            self.dyld_fallback_library_path = [os.path.expanduser('~/lib'), '/usr/local/lib', '/usr/lib']
+
     def find_library(self, path):
         """Implements the dylib search as specified in Apple documentation:
 
@@ -250,39 +243,28 @@ class MachOLibraryLoader(LibraryLoader):
         return None
 
     @staticmethod
-    def find_framework(path):
-        """Implement runtime framework search as described by:
+    def load_framework(name):
+        path = ctypes.util.find_library(name)
 
-        http://developer.apple.com/library/content/documentation/MacOSX/Conceptual/BPFrameworks/Concepts/FrameworkBinding.html
-        """
+        # Hack for compatibility with macOS > 11.0
+        if path is None:
+            frameworks = {
+                'AGL': '/System/Library/Frameworks/AGL.framework/AGL',
+                'IOKit': '/System/Library/Frameworks/IOKit.framework/IOKit',
+                'OpenAL': '/System/Library/Frameworks/OpenAL.framework/OpenAL',
+                'OpenGL': '/System/Library/Frameworks/OpenGL.framework/OpenGL'
+            }
+            path = frameworks.get(name)
 
-        # e.g. path == '/System/Library/Frameworks/OpenGL.framework'
-        #      name == 'OpenGL'
-        # return '/System/Library/Frameworks/OpenGL.framework/OpenGL'
-        name = os.path.splitext(os.path.split(path)[1])[0]
-
-        realpath = os.path.join(path, name) 
-        if os.path.exists(realpath):
-            return realpath
-
-        for directory in ('/Library/Frameworks', '/System/Library/Frameworks'):
-            realpath = os.path.join(directory, '%s.framework' % name, name)
-            if os.path.exists(realpath):
-                return realpath
-
-        return None
-
-    def load_framework(self, path):
-        realpath = self.find_framework(path)
-        if realpath:
-            lib = ctypes.cdll.LoadLibrary(realpath)
+        if path:
+            lib = ctypes.cdll.LoadLibrary(path)
             if _debug_lib:
-                print(realpath)
+                print(path)
             if _debug_trace:
                 lib = _TraceLibrary(lib)
             return lib
 
-        raise ImportError("Can't find framework %s." % path)
+        raise ImportError("Can't find framework %s." % name)
 
 
 class LinuxLibraryLoader(LibraryLoader):

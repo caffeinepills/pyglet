@@ -84,21 +84,14 @@ The default path is ``['.']``.  If you modify the path, you must call
 
 .. versionadded:: 1.1
 """
-from future import standard_library
 
-standard_library.install_aliases()
-from builtins import object, str
-
-__docformat__ = 'restructuredtext'
-__version__ = '$Id: $'
-
+import io
 import os
-import weakref
 import sys
 import zipfile
+import weakref
 
 import pyglet
-from pyglet.compat import BytesIO
 
 
 class ResourceNotFoundException(Exception):
@@ -192,7 +185,7 @@ def get_settings_path(name):
         return os.path.expanduser('~/.%s' % name)
 
 
-class Location(object):
+class Location:
     """Abstract resource location.
 
     Given a location, a file can be loaded from that location with the `open`
@@ -261,7 +254,7 @@ class ZIPLocation(Location):
 
         forward_slash_path = path.replace(os.sep, '/')  # zip can only handle forward slashes
         text = self.zip.read(forward_slash_path)
-        return BytesIO(text)
+        return io.BytesIO(text)
 
 
 class URLLocation(Location):
@@ -287,7 +280,7 @@ class URLLocation(Location):
         return urllib.request.urlopen(url)
 
 
-class Loader(object):
+class Loader:
     """Load program resource files from disk.
 
     The loader contains a search path which can include filesystem
@@ -433,7 +426,7 @@ class Loader(object):
 
                 volume_index += 1
 
-            zip_stream = BytesIO(bytes_)
+            zip_stream = io.BytesIO(bytes_)
             if zipfile.is_zipfile(zip_stream):
                 return zip_stream
             else:
@@ -503,7 +496,7 @@ class Loader(object):
         file = self.file(name)
         font.add_file(file)
 
-    def _alloc_image(self, name, atlas=True):
+    def _alloc_image(self, name, atlas, border):
         file = self.file(name)
         try:
             img = pyglet.image.load(name, file=file)
@@ -514,20 +507,20 @@ class Loader(object):
             return img.get_texture(True)
 
         # find an atlas suitable for the image
-        bin = self._get_texture_atlas_bin(img.width, img.height)
+        bin = self._get_texture_atlas_bin(img.width, img.height, border)
         if bin is None:
             return img.get_texture(True)
 
-        return bin.add(img)
+        return bin.add(img, border)
 
-    def _get_texture_atlas_bin(self, width, height):
+    def _get_texture_atlas_bin(self, width, height, border):
         """A heuristic for determining the atlas bin to use for a given image
         size.  Returns None if the image should not be placed in an atlas (too
         big), otherwise the bin (a list of TextureAtlas).
         """
         # Large images are not placed in an atlas
         max_texture_size = pyglet.image.get_max_texture_size()
-        max_size = min(2048, max_texture_size)
+        max_size = min(2048, max_texture_size) - border
         if width > max_size or height > max_size:
             return None
 
@@ -540,12 +533,12 @@ class Loader(object):
         try:
             texture_bin = self._texture_atlas_bins[bin_size]
         except KeyError:
-            texture_bin = pyglet.image.atlas.TextureBin(border=True)
+            texture_bin = pyglet.image.atlas.TextureBin()
             self._texture_atlas_bins[bin_size] = texture_bin
 
         return texture_bin
 
-    def image(self, name, flip_x=False, flip_y=False, rotate=0, atlas=True):
+    def image(self, name, flip_x=False, flip_y=False, rotate=0, atlas=True, border=1):
         """Load an image with optional transformation.
 
         This is similar to `texture`, except the resulting image will be
@@ -567,6 +560,9 @@ class Loader(object):
                 pyglet. If atlas loading is not appropriate for specific
                 texturing reasons (e.g. border control is required) then set
                 this argument to False.
+            `border` : int
+                Leaves specified pixels of blank space around each image in
+                an atlas, which may help reduce texture bleeding.
 
         :rtype: `Texture`
         :return: A complete texture if the image is large or not in an atlas,
@@ -576,14 +572,14 @@ class Loader(object):
         if name in self._cached_images:
             identity = self._cached_images[name]
         else:
-            identity = self._cached_images[name] = self._alloc_image(name, atlas=atlas)
+            identity = self._cached_images[name] = self._alloc_image(name, atlas, border)
 
         if not rotate and not flip_x and not flip_y:
             return identity
 
         return identity.get_transform(flip_x, flip_y, rotate)
 
-    def animation(self, name, flip_x=False, flip_y=False, rotate=0):
+    def animation(self, name, flip_x=False, flip_y=False, rotate=0, border=1):
         """Load an animation with optional transformation.
 
         Animations loaded from the same source but with different
@@ -599,7 +595,10 @@ class Loader(object):
             `rotate` : int
                 The returned image will be rotated clockwise by the given
                 number of degrees (a multiple of 90).
-
+            `border` : int
+                Leaves specified pixels of blank space around each image in
+                an atlas, which may help reduce texture bleeding.
+                
         :rtype: :py:class:`~pyglet.image.Animation`
         """
         self._require_index()
@@ -608,9 +607,10 @@ class Loader(object):
         except KeyError:
             animation = pyglet.image.load_animation(name, self.file(name))
             bin = self._get_texture_atlas_bin(animation.get_max_width(),
-                                              animation.get_max_height())
+                                              animation.get_max_height(),
+                                              border)
             if bin:
-                animation.add_to_texture_bin(bin)
+                animation.add_to_texture_bin(bin, border)
 
             identity = self._cached_animations[name] = animation
 

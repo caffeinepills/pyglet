@@ -32,16 +32,13 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
-from __future__ import print_function
-from __future__ import absolute_import
 
-import ctypes
 import sys
 import weakref
 
 from . import lib_pulseaudio as pa
 from pyglet.media.exceptions import MediaException
-from pyglet.debug import debug_print
+from pyglet.util import debug_print
 
 import pyglet
 _debug = debug_print('debug_media')
@@ -76,18 +73,15 @@ class PulseAudioException(MediaException):
         self.message = message
 
     def __str__(self):
-        return '{}: [{}] {}'.format(self.__class__.__name__,
-                                    self.error_code,
-                                    self.message)
+        return '{}: [{}] {}'.format(self.__class__.__name__, self.error_code, self.message)
 
     __repr__ = __str__
 
 
-class PulseAudioMainLoop(object):
+class PulseAudioMainLoop:
     def __init__(self):
         self._pa_threaded_mainloop = pa.pa_threaded_mainloop_new()
-        self._pa_mainloop = pa.pa_threaded_mainloop_get_api(
-            self._pa_threaded_mainloop)
+        self._pa_mainloop = pa.pa_threaded_mainloop_get_api(self._pa_threaded_mainloop)
         self._lock_count = 0
 
     def __del__(self):
@@ -166,7 +160,7 @@ class PulseAudioMainLoop(object):
         self.unlock()
 
 
-class PulseAudioLockable(object):
+class PulseAudioLockable:
     def __init__(self, mainloop):
         assert mainloop is not None
         self.mainloop = weakref.ref(mainloop)

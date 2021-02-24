@@ -60,14 +60,13 @@ by the application; see the documentation for :class:`Screen`.
 """
 
 import sys
-
-from pyglet.app import WeakSet
+import weakref
 
 
 _is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
 
 
-_displays = WeakSet()
+_displays = weakref.WeakSet()
 """Set of all open displays.  Instances of :class:`Display` are automatically
 added to this set upon construction.  The set uses weak references, so displays
 are removed from the set when they are no longer referenced.
@@ -98,8 +97,12 @@ def get_display():
 if _is_pyglet_doc_run:
     from pyglet.canvas.base import Display, Screen, Canvas, ScreenMode
 else:
-    from pyglet import compat_platform
-    if compat_platform == 'darwin':
+    from pyglet import compat_platform, options
+    if options['headless']:
+        from pyglet.canvas.headless import HeadlessDisplay as Display
+        from pyglet.canvas.headless import HeadlessScreen as Screen
+        from pyglet.canvas.headless import HeadlessCanvas as Canvas
+    elif compat_platform == 'darwin':
         from pyglet.canvas.cocoa import CocoaDisplay as Display
         from pyglet.canvas.cocoa import CocoaScreen as Screen
         from pyglet.canvas.cocoa import CocoaCanvas as Canvas

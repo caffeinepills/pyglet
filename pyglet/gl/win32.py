@@ -32,8 +32,6 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
-from __future__ import absolute_import
-from builtins import zip
 
 from pyglet.canvas.win32 import Win32Canvas
 from .base import Config, CanvasConfig, Context
@@ -188,6 +186,7 @@ class Win32CanvasConfigARB(CanvasConfig):
         'accum_blue_size': wglext_arb.WGL_ACCUM_BLUE_BITS_ARB,
         'accum_alpha_size': wglext_arb.WGL_ACCUM_ALPHA_BITS_ARB,
     }
+
     def __init__(self, canvas, pf, config):
         super(Win32CanvasConfigARB, self).__init__(canvas, config)
         self._pf = pf
@@ -239,7 +238,7 @@ class Win32Context(Context):
                 raise gl.ContextException('Unable to share contexts.')
 
     def set_current(self):
-        if self._context is not None:
+        if self._context is not None and self != gl.current_context:
             wgl.wglMakeCurrent(self.canvas.hdc, self._context)
         super(Win32Context, self).set_current()
 

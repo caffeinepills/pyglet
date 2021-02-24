@@ -32,13 +32,13 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
-from future.utils import with_metaclass
 
 import math
 import weakref
-import threading
 
 from abc import ABCMeta, abstractmethod
+
+from pyglet.util import with_metaclass
 
 
 class AbstractAudioPlayer(with_metaclass(ABCMeta, object)):
@@ -70,7 +70,15 @@ class AbstractAudioPlayer(with_metaclass(ABCMeta, object)):
         self.audio_diff_avg_count = 0
         self.audio_diff_cum = 0.0
         self.audio_diff_avg_coef = math.exp(math.log10(0.01) / self.AUDIO_DIFF_AVG_NB)
-        self.audio_diff_threshold = 0.1 # Experimental. ffplay computes it differently
+        self.audio_diff_threshold = 0.1  # Experimental. ffplay computes it differently
+
+    def on_driver_destroy(self):
+        """Called before the audio driver is going to be destroyed (a planned destroy)."""
+        pass
+
+    def on_driver_reset(self):
+        """Called after the audio driver has been re-initialized."""
+        pass
 
     @abstractmethod
     def play(self):
@@ -191,7 +199,7 @@ class AbstractAudioPlayer(with_metaclass(ABCMeta, object)):
 
     @property
     def source(self):
-        "Source to play from."
+        """Source to play from."""
         return self._source
 
     @source.setter
@@ -211,27 +219,3 @@ class AbstractAudioDriver(with_metaclass(ABCMeta, object)):
     @abstractmethod
     def delete(self):
         pass
-
-
-class BackgroundScheduler(object):
-    def __init__(self, func, interval):
-        self._func = func
-        self._interval = interval
-        self._timer = None
-
-    def _run_function(self):
-        if not self._func:
-            return
-        self._func()
-        self._timer = threading.Timer(self._interval, self._run_function)
-        self._timer.start()
-
-    def start(self):
-        self._run_function()
-
-    def stop(self):
-        if self._timer:
-            self._timer.cancel()
-
-    def __del__(self):
-        self.stop()

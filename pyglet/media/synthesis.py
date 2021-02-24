@@ -1,5 +1,3 @@
-from __future__ import division
-from builtins import range
 # ----------------------------------------------------------------------------
 # pyglet
 # Copyright (c) 2006-2008 Alex Holkner
@@ -35,18 +33,18 @@ from builtins import range
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
 
-from .codecs.base import Source, AudioFormat, AudioData
-
-from collections import deque
-
-import ctypes
 import os
 import math
 import struct
 import random
+import ctypes
+
+from .codecs.base import Source, AudioFormat, AudioData
+
+from collections import deque
 
 
-class Envelope(object):
+class Envelope:
     """Base class for SynthesisSource amplitude envelopes."""
     def get_generator(self, sample_rate, duration):
         raise NotImplementedError
@@ -312,7 +310,7 @@ class Sine(SynthesisSource):
         envelope = self._envelope_generator
         for i in range(samples):
             data[i] = int(math.sin(step * i) * amplitude * next(envelope) + bias)
-        return data
+        return bytes(data)
 
 
 class Triangle(SynthesisSource):
@@ -356,7 +354,7 @@ class Triangle(SynthesisSource):
                 value = minimum - (value - minimum)
                 step = -step
             data[i] = int(value * next(envelope))
-        return data
+        return bytes(data)
 
 
 class Sawtooth(SynthesisSource):
@@ -396,7 +394,7 @@ class Sawtooth(SynthesisSource):
             if value > maximum:
                 value = minimum + (value % maximum)
             data[i] = int(value * next(envelope))
-        return data
+        return bytes(data)
 
 
 class Square(SynthesisSource):
@@ -438,7 +436,7 @@ class Square(SynthesisSource):
                 count %= half_period
             count += 1
             data[i] = int(value * amplitude * next(envelope) + bias)
-        return data
+        return bytes(data)
 
 
 class FM(SynthesisSource):
@@ -491,7 +489,7 @@ class FM(SynthesisSource):
             increment = i / sample_rate
             data[i] = int(sin(car_step * increment + mod_index * sin(mod_step * increment))
                           * amplitude * next(envelope) + bias)
-        return data
+        return bytes(data)
 
 
 class Digitar(SynthesisSource):
@@ -539,4 +537,4 @@ class Digitar(SynthesisSource):
         for i in range(samples):
             data[i] = int(ring_buffer[0] * amplitude + bias)
             ring_buffer.append(decay * (ring_buffer[0] + ring_buffer[1]) / 2)
-        return data
+        return bytes(data)

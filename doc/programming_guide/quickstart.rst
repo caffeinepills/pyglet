@@ -70,7 +70,7 @@ directory and display it within the window::
     import pyglet
 
     window = pyglet.window.Window()
-    image = pyglet.resource.image('kitten.png')
+    image = pyglet.resource.image('kitten.jpg')
 
     @window.event
     def on_draw():
@@ -82,8 +82,8 @@ directory and display it within the window::
 We used the :func:`~pyglet.resource.image` function of :mod:`pyglet.resource`
 to load the image, which automatically locates the file relative to the source
 file (rather than the working directory).  To load an image not bundled with
-the application (for example, specified on the command line, you would use
-:func:`pyglet.image.load`).
+the application (for example, specified on the command line), you would use
+:func:`pyglet.image.load`.
 
 The :meth:`~pyglet.image.AbstractImage.blit` method draws the image.  The
 arguments ``(0, 0)`` tell pyglet to draw the image at pixel coordinates 0,
@@ -147,9 +147,10 @@ was pressed, relative to the lower-left corner of the window.
 
 There are more than 20 event types that you can handle on a window. An easy
 way to find the event names and parameters you need is to add the following
-line to your program::
+lines to your program::
 
-    window.push_handlers(pyglet.window.event.WindowEventLogger())
+    event_logger = pyglet.window.event.WindowEventLogger()
+    window.push_handlers(event_logger)
 
 This will cause all events received on the window to be printed to the
 console.
@@ -212,10 +213,11 @@ section.
 To write advanced 3D applications or achieve optimal performance in your 2D
 applications, you'll need to work with OpenGL directly.  If you only want to
 work with OpenGL primitives, but want something slightly higher-level, have a
-look at the :ref:`programming-guide-graphics` module.
+look at the :ref:`guide_graphics` module.
 
 There are numerous examples of pyglet applications in the ``examples/``
 directory of the documentation and source distributions.  If you get
-stuck, or have any questions, join us on the `mailing list`_!
+stuck, or have any questions, join us on the `mailing list`_ or `Discord`_!
 
 .. _mailing list: http://groups.google.com/group/pyglet-users
+.. _Discord: https://discord.gg/QXyegWe

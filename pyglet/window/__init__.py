@@ -122,24 +122,19 @@ above, "Working with multiple screens")::
         win = window.Window(config=configs[0])
 
 """
-from __future__ import division
-
-from builtins import object
-
-from future.utils import with_metaclass
-
-__docformat__ = 'restructuredtext'
-__version__ = '$Id$'
 
 import sys
 import math
 
 import pyglet
+import pyglet.window.key
+import pyglet.window.event
+
 from pyglet import gl
 from pyglet.event import EventDispatcher
 from pyglet.window import key
-import pyglet.window.key
-import pyglet.window.event
+from pyglet.util import with_metaclass
+
 
 _is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
 
@@ -171,12 +166,13 @@ class MouseCursorException(WindowException):
     pass
 
 
-class MouseCursor(object):
+class MouseCursor:
     """An abstract mouse cursor."""
 
-    #: Indicates if the cursor is drawn using OpenGL.  This is True
-    #: for all mouse cursors except system cursors.
-    drawable = True
+    #: Indicates if the cursor is drawn
+    #: using OpenGL, or natively.
+    gl_drawable = True
+    hw_drawable = False
 
     def draw(self, x, y):
         """Abstract render method.
@@ -193,23 +189,26 @@ class MouseCursor(object):
                 Y coordinate of the mouse pointer's hot spot.
 
         """
-        raise NotImplementedError('abstract')
+        pass
 
 
 class DefaultMouseCursor(MouseCursor):
-    """The default mouse cursor #sed by the operating system."""
-    drawable = False
+    """The default mouse cursor set by the operating system."""
+    gl_drawable = False
+    hw_drawable = True
 
 
 class ImageMouseCursor(MouseCursor):
     """A user-defined mouse cursor created from an image.
 
     Use this class to create your own mouse cursors and assign them
-    to windows.  There are no constraints on the image size or format.
+    to windows. Cursors can be drawn by OpenGL, or optionally passed
+    to the OS to render natively. There are no restrictions on cursors
+    drawn by OpenGL, but natively rendered cursors may have some
+    platform limitations (such as color depth, or size). In general,
+    reasonably sized cursors will render correctly
     """
-    drawable = True
-
-    def __init__(self, image, hot_x=0, hot_y=0):
+    def __init__(self, image, hot_x=0, hot_y=0, acceleration=False):
         """Create a mouse cursor from an image.
 
         :Parameters:
@@ -218,14 +217,23 @@ class ImageMouseCursor(MouseCursor):
                 valid ``texture`` attribute.
             `hot_x` : int
                 X coordinate of the "hot" spot in the image relative to the
-                image's anchor.
+                image's anchor. May be clamped to the maximum image width
+                if ``acceleration=True``.
             `hot_y` : int
                 Y coordinate of the "hot" spot in the image, relative to the
-                image's anchor.
+                image's anchor. May be clamped to the maximum image height
+                if ``acceleration=True``.
+            `acceleration` : int
+                If True, draw the cursor natively instead of usign OpenGL.
+                The image may be downsampled or color reduced to fit the
+                platform limitations.
         """
         self.texture = image.get_texture()
         self.hot_x = hot_x
         self.hot_y = hot_y
+
+        self.gl_drawable = not acceleration
+        self.hw_drawable = acceleration
 
     def draw(self, x, y):
         gl.glPushAttrib(gl.GL_ENABLE_BIT | gl.GL_CURRENT_BIT)
@@ -236,7 +244,7 @@ class ImageMouseCursor(MouseCursor):
         gl.glPopAttrib()
 
 
-class Projection(object):
+class Projection:
     """Abstract OpenGL projection."""
 
     def set(self, window_width, window_height, viewport_width, viewport_height):
@@ -469,6 +477,7 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
     _fullscreen = False
     _visible = False
     _vsync = False
+    _file_drops = False
     _screen = None
     _config = None
     _context = None
@@ -508,6 +517,7 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
                  fullscreen=False,
                  visible=True,
                  vsync=True,
+                 file_drops=False,
                  display=None,
                  screen=None,
                  config=None,
@@ -632,14 +642,10 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
         else:
             self._vsync = vsync
 
+        self._file_drops = file_drops
         if caption is None:
             caption = sys.argv[0]
-            # PYTHON2 - Remove this decode hack for unicode support:
-            if hasattr(caption, "decode"):
-                try:
-                    caption = caption.decode("utf8")
-                except UnicodeDecodeError:
-                    caption = "pyglet"
+
         self._caption = caption
 
         from pyglet import app
@@ -806,8 +812,7 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
         Override this event handler with your own to create another
         projection, for example in perspective.
         """
-        viewport_width, viewport_height = self.get_framebuffer_size()
-        self._projection.set(width, height, viewport_width, viewport_height)
+        self._projection.set(width, height, *self.get_framebuffer_size())
 
     def on_scale(self, scale_x, scale_y, x_dpi, y_dpi):
         """A default scale event handler.
@@ -867,9 +872,7 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
         """
         # Draw mouse cursor if set and visible.
         # XXX leaves state in modelview regardless of starting state
-        if (self._mouse_cursor.drawable and
-            self._mouse_visible and
-            self._mouse_in_window):
+        if self._mouse_cursor.gl_drawable and self._mouse_visible and self._mouse_in_window:
             gl.glMatrixMode(gl.GL_PROJECTION)
             gl.glPushMatrix()
             gl.glLoadIdentity()
@@ -1583,10 +1586,10 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
                     Distance in pixels from the left edge of the window.
                 `y` : int
                     Distance in pixels from the bottom edge of the window.
-                `scroll_x` : int
-                    Number of "clicks" towards the right (left if negative).
-                `scroll_y` : int
-                    Number of "clicks" upwards (downwards if negative).
+                `scroll_x` : float
+                    Amount of movement on the horizontal axis.
+                `scroll_y` : float
+                    Amount of movement on the vertical axis.
 
             :event:
             """
@@ -1758,6 +1761,15 @@ class BaseWindow(with_metaclass(_WindowMetaclass, EventDispatcher)):
             :event:
             """
 
+        def on_file_drop(self, x, y, paths):
+            """File(s) were dropped into the window, will return the position of the cursor and
+            a list of paths to the files that were dropped.
+
+            .. versionadded:: 1.5.1
+
+            :event:
+            """
+
         def on_draw(self):
             """The window contents must be redrawn.
 
@@ -1803,10 +1815,11 @@ BaseWindow.register_event_type('on_show')
 BaseWindow.register_event_type('on_hide')
 BaseWindow.register_event_type('on_context_lost')
 BaseWindow.register_event_type('on_context_state_lost')
+BaseWindow.register_event_type('on_file_drop')
 BaseWindow.register_event_type('on_draw')
 
 
-class FPSDisplay(object):
+class FPSDisplay:
     """Display of a window's framerate.
 
     This is a convenience class to aid in profiling and debugging.  Typical
@@ -1916,19 +1929,15 @@ if _is_pyglet_doc_run:
     del BaseWindow
 else:
     # Try to determine which platform to use.
-    if pyglet.compat_platform == 'darwin':
+    if pyglet.options['headless']:
+        from pyglet.window.headless import HeadlessWindow as Window
+    elif pyglet.compat_platform == 'darwin':
         from pyglet.window.cocoa import CocoaWindow as Window
     elif pyglet.compat_platform in ('win32', 'cygwin'):
         from pyglet.window.win32 import Win32Window as Window
     else:
-        # XXX HACK around circ problem, should be fixed after removal of
-        # shadow nonsense
-        #pyglet.window = sys.modules[__name__]
-        #import key, mouse
-
         from pyglet.window.xlib import XlibWindow as Window
 
-# XXX remove
 # Create shadow window. (trickery is for circular import)
 if not _is_pyglet_doc_run:
     pyglet.window = sys.modules[__name__]

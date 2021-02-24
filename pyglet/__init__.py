@@ -37,34 +37,12 @@
 
 Detailed documentation is available at http://www.pyglet.org
 """
-from __future__ import print_function
-from __future__ import absolute_import
-
-# Check if future is installed, if not use included batteries
-try:
-    import future
-except ImportError:
-    import os.path as op
-    import sys
-
-    future_base = op.abspath(op.join(op.dirname(__file__), 'extlibs', 'future'))
-    sys.path.insert(0, op.join(future_base, 'py2_3'))
-    if sys.version_info[:2] < (3, 0):
-        sys.path.insert(0, op.join(future_base, 'py2'))
-    del future_base
-    del sys
-    del op
-    try:
-        import future
-    except ImportError:
-        print('Failed to get python-future')
-        raise
-
-from builtins import range
-from builtins import object
 
 import os
 import sys
+
+from typing import TYPE_CHECKING
+
 
 if 'sphinx' in sys.modules:
     setattr(sys, 'is_pyglet_doc_run', True)
@@ -83,9 +61,14 @@ _is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
 #:    >>> parse_version(pyglet.version) >= parse_version('1.1')
 #:    True
 #:
-version = '1.4.9'
+version = '1.5.15'
 
-# Pyglet platform treats *BSD systems as Linux
+
+if sys.version_info < (3, 6):
+    raise Exception('pyglet %s requires Python 3.5 or newer.' % version)
+
+
+# pyglet platform treats *BSD systems as Linux
 compat_platform = sys.platform
 if "bsd" in compat_platform:
     compat_platform = "linux-compat"
@@ -114,6 +97,7 @@ if getattr(sys, 'frozen', None):
 #:     A sequence of the names of audio modules to attempt to load, in
 #:     order of preference.  Valid driver names are:
 #:
+#:     * xaudio2, the Windows Xaudio2 audio module (Windows only)
 #:     * directsound, the Windows DirectSound audio module (Windows only)
 #:     * pulse, the PulseAudio module (Linux only)
 #:     * openal, the OpenAL audio module
@@ -164,7 +148,7 @@ if getattr(sys, 'frozen', None):
 #:     .. versionadded:: 1.2
 #:
 options = {
-    'audio': ('directsound', 'openal', 'pulse', 'silent'),
+    'audio': ('xaudio2', 'directsound', 'openal', 'pulse', 'silent'),
     'debug_font': False,
     'debug_gl': not _enable_optimisations,
     'debug_gl_trace': False,
@@ -186,6 +170,9 @@ options = {
     'xlib_fullscreen_override_redirect': False,
     'darwin_cocoa': True,
     'search_local_libs': True,
+    'scale_window_content': False,
+    'headless': False,
+    'headless_device': 0,
 }
 
 _option_types = {
@@ -204,12 +191,14 @@ _option_types = {
     'debug_trace_flush': bool,
     'debug_win32': bool,
     'debug_x11': bool,
-    'ffmpeg_libs_win': tuple,
     'graphics_vbo': bool,
     'shadow_window': bool,
     'vsync': bool,
     'xsync': bool,
     'xlib_fullscreen_override_redirect': bool,
+    'scale_window_content': bool,
+    'headless': bool,
+    'headless_device': int
 }
 
 
@@ -342,7 +331,7 @@ if options['debug_trace']:
 # Lazy loading
 # ------------
 
-class _ModuleProxy(object):
+class _ModuleProxy:
     _module = None
 
     def __init__(self, name):
@@ -377,28 +366,9 @@ class _ModuleProxy(object):
             setattr(module, name, value)
 
 
-if True:
-    app = _ModuleProxy('app')
-    canvas = _ModuleProxy('canvas')
-    clock = _ModuleProxy('clock')
-    com = _ModuleProxy('com')
-    event = _ModuleProxy('event')
-    font = _ModuleProxy('font')
-    gl = _ModuleProxy('gl')
-    graphics = _ModuleProxy('graphics')
-    image = _ModuleProxy('image')
-    input = _ModuleProxy('input')
-    lib = _ModuleProxy('lib')
-    media = _ModuleProxy('media')
-    model = _ModuleProxy('model')
-    resource = _ModuleProxy('resource')
-    sprite = _ModuleProxy('sprite')
-    text = _ModuleProxy('text')
-    window = _ModuleProxy('window')
-
-# Fool py2exe, py2app into including all top-level modules (doesn't understand
-# lazy loading)
-if False:
+# Lazily load all modules, except if performing
+# type checking or code inspection.
+if TYPE_CHECKING:
     from . import app
     from . import canvas
     from . import clock
@@ -407,17 +377,36 @@ if False:
     from . import font
     from . import gl
     from . import graphics
+    from . import gui
     from . import input
     from . import image
     from . import lib
+    from . import math
     from . import media
     from . import model
     from . import resource
     from . import sprite
+    from . import shapes
     from . import text
     from . import window
-
-# Hack around some epydoc bug that causes it to think pyglet.window is None.
-# TODO: confirm if this is still needed
-if False:
-    from . import window
+else:
+    app = _ModuleProxy('app')
+    canvas = _ModuleProxy('canvas')
+    clock = _ModuleProxy('clock')
+    com = _ModuleProxy('com')
+    event = _ModuleProxy('event')
+    font = _ModuleProxy('font')
+    gl = _ModuleProxy('gl')
+    graphics = _ModuleProxy('graphics')
+    gui = _ModuleProxy('gui')
+    image = _ModuleProxy('image')
+    input = _ModuleProxy('input')
+    lib = _ModuleProxy('lib')
+    math = _ModuleProxy('math')
+    media = _ModuleProxy('media')
+    model = _ModuleProxy('model')
+    resource = _ModuleProxy('resource')
+    sprite = _ModuleProxy('sprite')
+    shapes = _ModuleProxy('shapes')
+    text = _ModuleProxy('text')
+    window = _ModuleProxy('window')

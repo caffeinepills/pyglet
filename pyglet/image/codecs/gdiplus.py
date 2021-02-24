@@ -32,25 +32,18 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
-from __future__ import division
-from builtins import range
 
-
-from ctypes import *
-
-from pyglet.com import IUnknown
-from pyglet.gl import *
+from pyglet.com import pIUnknown
 from pyglet.image import *
 from pyglet.image.codecs import *
 from pyglet.libs.win32.constants import *
 from pyglet.libs.win32.types import *
 from pyglet.libs.win32 import _kernel32 as kernel32
+from pyglet.libs.win32 import _ole32 as ole32
 
 
-ole32 = windll.ole32
 gdiplus = windll.gdiplus
 
-LPSTREAM = c_void_p
 REAL = c_float
 
 PixelFormat1bppIndexed    = 196865
@@ -124,7 +117,6 @@ class PropertyItem(Structure):
 INT_PTR = POINTER(INT)
 UINT_PTR = POINTER(UINT)
 
-ole32.CreateStreamOnHGlobal.argtypes = [HGLOBAL, BOOL, LPSTREAM]
 
 gdiplus.GdipBitmapLockBits.restype = c_int
 gdiplus.GdipBitmapLockBits.argtypes = [c_void_p, c_void_p, UINT, c_int, c_void_p]
@@ -216,7 +208,7 @@ class GDIPlusDecoder(ImageDecoder):
         kernel32.GlobalUnlock(hglob)
 
         # Create IStream for the HGLOBAL
-        self.stream = IUnknown()
+        self.stream = pIUnknown()
         ole32.CreateStreamOnHGlobal(hglob, True, byref(self.stream))
 
         # Load image from stream

@@ -32,11 +32,11 @@
 # ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
-from builtins import object
 from pyglet.window import key, mouse
 from pyglet.libs.darwin.quartzkey import keymap, charmap
 
 from pyglet.libs.darwin import cocoapy
+
 
 NSTrackingArea = cocoapy.ObjCClass('NSTrackingArea')
 
@@ -46,7 +46,7 @@ NSTrackingArea = cocoapy.ObjCClass('NSTrackingArea')
 def getMouseDelta(nsevent):
     dx = nsevent.deltaX()
     dy = -nsevent.deltaY()
-    return int(round(dx)), int(round(dy))
+    return dx, dy
 
 
 def getMousePosition(self, nsevent):
@@ -91,7 +91,7 @@ def getSymbol(nsevent):
     return None
 
 
-class PygletView_Implementation(object):
+class PygletView_Implementation:
     PygletView = cocoapy.ObjCSubclass('NSView', 'PygletView')
 
     @PygletView.method(b'@'+cocoapy.NSRectEncoding+cocoapy.PyObjectEncoding)
@@ -166,7 +166,9 @@ class PygletView_Implementation(object):
     # This method is called whenever the view changes size.
     @PygletView.method(b'v'+cocoapy.NSSizeEncoding)
     def setFrameSize_(self, size):
-        cocoapy.send_super(self, 'setFrameSize:', size, argtypes=[cocoapy.NSSize])
+        cocoapy.send_super(self, 'setFrameSize:', size,
+                           superclass_name='NSView',
+                           argtypes=[cocoapy.NSSize])
 
         # This method is called when view is first installed as the
         # contentView of window.  Don't do anything on first call.

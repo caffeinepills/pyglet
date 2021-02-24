@@ -1,3 +1,234 @@
+pyglet 1.5.15
+Bugfix and maintenance release
+
+Bugfixes
+--------
+- shapes.Circle segment calculation will always use a minimum of 14 segments.
+- shapes.Arc is now made from line segments, and by default has unconnected ends.
+- Windows - Use the internal keystate to determine the mod shift rather than relying on GetKeyState
+  which relies on another event that may be called after WM_INPUT.
+
+Maintenance
+-----------
+- Various Headless backend and EGL work.
+
+
+pyglet 1.5.14
+Bugfix and feature release
+
+Bugfixes
+--------
+- Fix interlaced mp3 decoding in GStreamer backend.
+- Skip functions marked as OBJC_ARM64_UNAVAILABLE for new ARM Macs.
+
+Features
+--------
+- Add a `WaveEncoder` for saving audio Sources to disk.
+
+
+pyglet 1.5.13
+Bugfix and feature release
+
+Bugfixes
+--------
+- Fix crash on looping video with no sound (#322)
+- OSX: Replace remaining usage of `find_library` to fix Big Sur issues (#332)
+- Windows: Fix default orientation for the XAudio2 listener.
+
+Features
+--------
+- Add new `shape.Triangle` shape.
+- Windows: `on_key_press` now dispatches unique events for left/right Shift keys.
+
+
+pyglet 1.5.12
+Bugfix and feature release
+
+Bugfixes
+--------
+- Remove usage of deprecated `parser` module. (#312)
+
+
+pyglet 1.5.11
+Bugfix release
+
+Bugfixes
+--------
+- Added hardcoding of library paths for Big Sur temporary fallback.
+- Removed some legacy Python 2 code from the documentation.
+
+
+pyglet 1.5.10
+Bugfix release
+
+Bugfixes
+--------
+- Fix library loading on OSX Big Sur. Currently this only works with the system version of Python.
+  Non OSX system versions will not yet work, pending upstream fixes: https://bugs.python.org/issue41100
+
+
+pyglet 1.5.9
+Bugfix and feature release
+
+Bugfixes
+--------
+- Explicitly cast media.synthesis data to bytes to prevent issues on some audio drivers.
+- Refactor WIC module to work with new com module. (#298)
+- Prevent crash when setting `shapes.Circle.visable`. (#294)
+- Remove deprecated `tostring` calls in PIL/PNG decoders to prevent crash on Python 3.9. (#295, #302)
+
+Improvements
+------------
+- Add new Xaudio2 driver. (#288)
+- Refactor pyglet's lazy module loading to better support code inspection.
+- Added new `TextEntry` widget.
+
+
+pyglet 1.5.8
+Bugfix and feature release
+
+Bugfixes
+--------
+
+Improvements
+------------
+- Added new experimental `gui` module. Currently this only contains basic widgets.
+- Added new `Group.visible` property, to toggle rendering of entire Groups when used in a Batch.
+- Added `Sprite.paused` and `Sprite.frame_index` helper properties for controlling Animations.
+- Reorganized the examples folder.
+- Added new CenteredCamera example.
+- Backport pyglet.math from 2.0, for more exposure and testing.
+- Consolidate Codec logic into base class to reuse among various modules.
+
+
+pyglet 1.5.7
+Bugfix release
+
+Bugfixes
+--------
+- Fix crash when no audio device is available.
+- Prevent `__del__` spam in DirectSound buffers and Wave decoder.
+- Explicitly cast warnings.warn message to a str to prevent numba error.
+
+
+pyglet 1.5.6
+Bugfix and feature release
+
+Bugfixes
+--------
+- Fix infinite recursion error on OSX. (#5)
+- The on_mouse_scroll event no longer clamps to int, preventing lost motion on trackpads.
+- Prevent traceback when DirectSound buffers are garbage collected on exit.
+- Fix StaticSource playback with WMF decoder (streaming=False).
+- Fix colorspace for WMF video decoding.
+- Prevent crash on garbage collection for FFmpeg decoder.
+
+Improvements
+------------
+- New image decoder leveraging Windows Imaging Component (WIC).
+- TextureAtlas/Bins now have a `border` argument for leaving n-pixels of blank space around
+  images when adding. By default the `resource` module leaves a 1-pixel space around images.
+- Many small documentation fixes and corrections.
+
+
+pyglet 1.5.5
+Bugfix and feature release
+
+Bugfixes
+--------
+- GStreamer decoder clamped to 16bit sample width, since the default OpenAL backend on Linux does
+  not support anything higher.
+
+Improvements
+------------
+- shapes module: added `Circle.rotation` property and blending to standalone shape `draw` methods.
+- shapes module: added missing `delete` and `__del__` methods.
+- The ImageMouseCursor has a new `accelerated` parameter to allow custom mouse points to be drawn
+  natively on Windows and Linux.
+
+
+pyglet 1.5.4
+Bugfix and minor feature release
+
+Bugfixes
+--------
+- Avoid WMFDecoder crash when mixing pyglet with other tookits. (#174)
+- Prevent EventDispatcher subclasses from hiding AttributeError exceptions.
+
+Improvements
+------------
+- Added `pyglet.graphics.shapes` module for creating simple 2D shapes.
+
+
+pyglet 1.5.3
+Bugfix release
+
+Bugfixes
+--------
+- Fix memory leak caused by not freeing stale buffers and textures.
+
+
+pyglet 1.5.2
+Bugfix and minor feature release
+
+Bugfixes
+--------
+- Fix WMF decoder for pre-Windows 8 systems.
+- Fix WMF decoder loading from file-like objects for Windows Vista.
+- Fix WMF decoder crashing when attempting to seek past file duration.
+
+Changes
+-------
+- Allow GStreamer and FFmpeg decoder to load from file-like objects.
+
+
+pyglet 1.5.1
+Bugfix and minor feature release
+
+Bugfixes
+--------
+- Fix issue with changing Label positions by fractional values.
+- Avoid performance issue due to unnecessary context switching with single Window programs.
+- Fix crash on Player.next_source when playing a video with no audio track.
+- Fix crash when disconnecting a Joystick on Windows.
+- Prevent media Players from seeking to negative timestamps.
+- Fix OpenAL audio driver not dispatching events.
+
+Changes
+--------
+- text.TextLayouts are no longer bound to int positioning.
+- Raise exception if attempting to import from legacy Python.
+- Add GStreamer decoder for compressed audio on Linux.
+- Add Windows Media Foundation decoder for compressed audio on Windows.
+
+Improvements
+------------
+- New "file_drops" Window argument to allow drag and drop of files. This is complimented
+  by a new `Window.on_file_drop` event, which returns the mouse position and file path.
+
+
+pyglet 1.5.0
+Bugfix and Maintenance release
+
+Bugfixes
+--------
+- Removed global dubug function access in __del__ methods to prevent smooth shutdown.
+- Fix regression not allow SourceGroups to be queued on Player objects. (#140)
+
+Changes
+-------
+- Support for Python 2 has been dropped. Python 3.5 is now the minimum supported version.
+
+
+pyglet 1.4.10
+Bugfix release
+
+Bugfixes
+--------
+- Explicitly set Window size in game example. (#116)
+- Prevent crash when checking if FFMpeg is available. (#121)
+
+
 pyglet 1.4.9
 Bugfix and small improvement release
 
@@ -5,12 +236,13 @@ Bugfixes
 --------
 - Fix TextLayoutGroup consolidation when using custom Groups for Labels.
 - FFmpeg: Cast 'date' to string instead of int in file_info. (#109)
-- Fix ctypes error causing by incorrectly specifying a Union as an argtype. (#112)
+- Fix ctypes error caused by incorrectly specifying a Union as an argtype. (#112)
 
 Improvements
 ------------
 - Added a simple 2D Camera example to examples/camera.py in the repository.
 - OSX: OpenGL context creation is more lenient with requested versions.
+
 
 pyglet 1.4.8
 Bugfix release

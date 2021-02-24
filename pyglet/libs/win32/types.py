@@ -33,12 +33,6 @@
 # POSSIBILITY OF SUCH DAMAGE.
 # ----------------------------------------------------------------------------
 
-"""
-"""
-
-__docformat__ = 'restructuredtext'
-__version__ = '$Id: $'
-
 import sys
 import ctypes
 from ctypes import *
@@ -102,6 +96,7 @@ UINT_PTR = HANDLE
 LONG_PTR = HANDLE
 HDROP = HANDLE
 LPTSTR = LPWSTR
+LPSTREAM = c_void_p
 
 LF_FACESIZE = 32
 CCHDEVICENAME = 32
@@ -493,3 +488,25 @@ class RAWINPUT(Structure):
         ('header', RAWINPUTHEADER),
         ('data', _RAWINPUTDEVICEUNION),
     ]
+
+
+# PROPVARIANT wrapper, doesn't require InitPropVariantFromInt64 this way.
+class _VarTable(ctypes.Union):
+    """Must be in an anonymous union or values will not work across various VT's."""
+    _fields_ = [
+        ('llVal', ctypes.c_longlong),
+        ('pwszVal', LPWSTR)
+    ]
+
+
+class PROPVARIANT(ctypes.Structure):
+    _anonymous_ = ['union']
+
+    _fields_ = [
+        ('vt', ctypes.c_ushort),
+        ('wReserved1', ctypes.c_ubyte),
+        ('wReserved2', ctypes.c_ubyte),
+        ('wReserved3', ctypes.c_ulong),
+        ('union', _VarTable)
+    ]
+
