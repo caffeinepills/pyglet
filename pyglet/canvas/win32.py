@@ -109,7 +109,6 @@ class Win32Screen(Screen):
         xdpi, ydpi = self.get_dpi()
         return xdpi / 96, ydpi / 96
 
-        
     def get_modes(self):
         device_name = self.get_device_name()
         i = 0

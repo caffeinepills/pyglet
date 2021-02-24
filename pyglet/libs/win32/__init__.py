@@ -319,3 +319,9 @@ _dwmapi.DwmIsCompositionEnabled.restype = c_int
 _dwmapi.DwmIsCompositionEnabled.argtypes = [POINTER(INT)]
 _dwmapi.DwmFlush.restype = c_int
 _dwmapi.DwmFlush.argtypes = []
+
+#shcore
+_shcore.SetProcessDpiAwareness.argtypes = [PROCESS_DPI_AWARENESS]
+_shcore.SetProcessDpiAwareness.restype = HRESULT
+_shcore.GetDpiForMonitor.argtypes = [HMONITOR, MONITOR_DPI_TYPE, POINTER(UINT), POINTER(UINT)]
+_shcore.GetDpiForMonitor.restype = HRESULT

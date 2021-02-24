@@ -1150,8 +1150,11 @@ class Win32Window(BaseWindow):
     @Win32EventHandler(WM_EXITSIZEMOVE)
     def _event_entersizemove(self, msg, wParam, lParam):
         from pyglet import app
+
         if app.event_loop is not None:
             app.event_loop.exit_blocking()
+
+        print("TESTING")
             
         # _window_resizing is needed in combination with WM_EXITSIZEMOVE as
         # it is also called when the Window is done being moved, not just resized.
@@ -1302,16 +1305,23 @@ class Win32Window(BaseWindow):
             width = suggested_rect.right - suggested_rect.left
             height = suggested_rect.bottom - suggested_rect.top
 
-            _user32.SetWindowPos(self._view_hwnd, 0,
-                                 x, y, width, height, SWP_NOZORDER | SWP_NOOWNERZORDER)
+            print(x, y, suggested_rect, suggested_rect.bottom, suggested_rect.top, suggested_rect.top - suggested_rect.bottom)
 
 
             _user32.SetWindowPos(self._hwnd, 0,
                                  x, y, width, height, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE)
 
+            self._update_view_location(self._width, self._height)
+
+            # Event loop is blocked which prevents view hwnd from updating.
+            from pyglet import app
+            if app.event_loop is not None:
+                app.event_loop.exit_blocking()
+                app.event_loop.enter_blocking()
 
         self._scale = scale
         self._dpi = x_dpi, y_dpi
 
         self.switch_to()
         self.dispatch_event('on_scale', *scale, x_dpi, y_dpi)
+        return 1
