@@ -36,24 +36,21 @@
 """Use ffmpeg to decode audio and video media.
 """
 
-import tempfile
-from ctypes import (c_int, c_uint16, c_int32, c_int64, c_uint32, c_uint64,
-                    c_uint8, c_uint, c_double, c_float, c_ubyte, c_size_t, c_char, c_char_p,
-                    c_void_p, addressof, byref, cast, POINTER, CFUNCTYPE, Structure, Union,
-                    create_string_buffer, memmove)
+import io
 from collections import deque
+from ctypes import (c_int, c_int32, c_bool,
+                    c_uint8, c_char, c_char_p,
+                    addressof, byref, cast, POINTER, Structure, create_string_buffer, memmove)
 
 import pyglet
 import pyglet.lib
-
 from pyglet import image
 from pyglet.util import asbytes, asbytes_filename, asstr
-from ..events import MediaEvent
-from ..exceptions import MediaFormatException
-from .base import StreamingSource, VideoFormat, AudioFormat
+from . import MediaDecoder
 from .base import AudioData, SourceInfo, StaticSource
+from .base import StreamingSource, VideoFormat, AudioFormat
 from .ffmpeg_lib import *
-from . import MediaEncoder, MediaDecoder
+from ..exceptions import MediaFormatException
 
 
 class FileInfo:
@@ -93,7 +90,8 @@ class StreamAudioInfo:
 
 class FFmpegFile(Structure):
     _fields_ = [
-        ('context', POINTER(AVFormatContext))
+        ('context', POINTER(AVFormatContext)),
+        ('memory_loaded', c_bool)
     ]
 
 
@@ -132,6 +130,7 @@ def ffmpeg_open_filename(filename):
     :return: The structure containing all the information for the media.
     """
     file = FFmpegFile()  # TODO: delete this structure and use directly AVFormatContext
+    file.memory_loaded = False
     result = avformat.avformat_open_input(byref(file.context),
                                           filename,
                                           None,
@@ -147,6 +146,92 @@ def ffmpeg_open_filename(filename):
 
     return file
 
+def ffmpeg_open_memory_file(fileobject):
+    """Open a media file from a file object.
+
+    :rtype: FFmpegFile
+    :return: The structure containing all the information for the media.
+    """
+    file = FFmpegFile()
+    file.read_pos = 0  # Keep track of read position for read/seek.
+    file.memory_loaded = True
+
+    data = fileobject.read()
+
+    data_len = len(data)
+
+    av_buf = libavutil.avutil.av_malloc(data_len)
+    ptr_buf = cast(av_buf, c_char_p)
+
+    # Store fileobject data.
+    ptr = create_string_buffer(data_len)
+    memmove(ptr, data, data_len)
+
+    def read_data(data, buff, buf_size):
+        eof = data_len - file.read_pos
+
+        if buf_size < eof:
+            read_size = buf_size
+        else:
+            read_size = eof
+
+        if read_size:
+            data_ptr = cast(data + file.read_pos, POINTER(c_char))
+            memmove(buff, data_ptr, buf_size)
+            file.read_pos += read_size
+
+        return read_size
+
+    def seek_data(data_ptr, offset, whence):
+        if whence == libavformat.AVSEEK_SIZE:
+            return data_len
+
+        if whence == io.SEEK_SET:
+            if data_len >= offset:
+                final_offset = offset
+            else:
+                final_offset = data_len
+
+            file.read_pos = final_offset
+
+        return final_offset
+
+    def write_data():
+        raise Exception("Not implemented.")
+
+    seeker = libavformat.ffmpeg_seek_func(seek_data)
+
+    reader = libavformat.ffmpeg_read_func(read_data)
+
+    writer = libavformat.ffmpeg_read_func(write_data)
+
+    fmt_context = libavformat.avformat.avio_alloc_context(
+        ptr_buf, data_len, 0,
+        ptr,
+        reader,
+        writer,
+        seeker
+    )
+
+    file.context = libavformat.avformat.avformat_alloc_context()
+    file.context.contents.pb = fmt_context
+    file.context.contents.flags |= libavformat.AVFMT_FLAG_CUSTOM_IO
+
+    result = avformat.avformat_open_input(byref(file.context),
+                                          b"",
+                                          None,
+                                          None)
+
+    if result != 0:
+        raise FFmpegException('avformat_open_input in ffmpeg_open_filename returned an error opening file '
+                              + filename.decode("utf8")
+                              + ' Error code: ' + str(result))
+
+    result = avformat.avformat_find_stream_info(file.context, None)
+    if result < 0:
+        raise FFmpegException('Could not find stream info')
+
+    return file
 
 def ffmpeg_close_file(file):
     """Close the media file and free resources."""
@@ -342,6 +427,7 @@ def ffmpeg_close_stream(stream):
 def ffmpeg_seek_file(file, timestamp, ):
     flags = 0
     max_ts = file.context.contents.duration * AV_TIME_BASE
+
     result = avformat.avformat_seek_file(
         file.context, -1, 0,
         timestamp, timestamp, flags
@@ -460,12 +546,10 @@ class FFmpegSource(StreamingSource):
         self._file = None
 
         if file:
-            file.seek(0)
-            self._tempfile = tempfile.NamedTemporaryFile(buffering=False)
-            self._tempfile.write(file.read())
-            filename = self._tempfile.name
+            self._file = ffmpeg_open_memory_file(file)
+        else:
+            self._file = ffmpeg_open_filename(asbytes_filename(filename))
 
-        self._file = ffmpeg_open_filename(asbytes_filename(filename))
         if not self._file:
             raise FFmpegException('Could not open "{0}"'.format(filename))
 
@@ -565,6 +649,7 @@ class FFmpegSource(StreamingSource):
         self._max_len_videoq = 50  # Need to figure out a correct amount
 
         self.start_time = self._get_start_time()
+
         self._duration = timestamp_from_ffmpeg(file_info.duration)
         self._duration -= self.start_time
 
@@ -579,8 +664,6 @@ class FFmpegSource(StreamingSource):
             self.seek(0.0)
 
     def __del__(self):
-        if hasattr(self, '_tempfile'):
-            self._tempfile.close()
         if self._packet and ffmpeg_free_packet is not None:
             ffmpeg_free_packet(self._packet)
         if self._video_stream and swscale is not None:
@@ -595,10 +678,19 @@ class FFmpegSource(StreamingSource):
     def seek(self, timestamp):
         if _debug:
             print('FFmpeg seek', timestamp)
-        ffmpeg_seek_file(
-            self._file,
-            timestamp_to_ffmpeg(timestamp + self.start_time)
-        )
+
+        # TODO: Fix this workaround in the future.
+        # Memory loaded files don't seem to use the same timestamp base as filename loaded files.
+        # Normally is based off of AV_TIME_BASE if stream selected is -1, but only works when in actual seconds.
+        # Doing this, you lose precision as it must be an int value.
+        if self._file.memory_loaded:
+            ts = int(timestamp + self.start_time)
+        else:
+            # TODO: Re-evaluate on why this is necessary.
+            # Doesn't seem to be required? Without this conversion, the timestamp still works for audio.
+            ts = timestamp_to_ffmpeg(timestamp + self.start_time)
+        
+        ffmpeg_seek_file(self._file, ts)
         del self._events[:]
         self._clear_video_audio_queues()
         self._fillq()
@@ -1029,6 +1121,7 @@ class FFmpegSource(StreamingSource):
 
 
 ffmpeg_init()
+
 if pyglet.options['debug_media']:
     _debug = True
 else:
