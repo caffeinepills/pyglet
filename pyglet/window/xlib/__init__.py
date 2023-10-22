@@ -47,6 +47,7 @@ _can_detect_autorepeat = None
 XA_CARDINAL = 6  # Xatom.h:14
 XA_ATOM = 4
 XA_STRING = 31
+XA_WM_NAME = 39
 
 XDND_VERSION = 5
 
@@ -145,6 +146,7 @@ class XlibWindow(BaseWindow):
 
         # Store clipboard string to not query as much for pasting a lot.
         self._clipboard_str: Optional[str] = None
+        self._clipboard_own_time: int = 0
 
     def _recreate(self, changes):
         # If flipping to/from fullscreen, need to recreate the window.  (This
@@ -296,6 +298,10 @@ class XlibWindow(BaseWindow):
             self._utf8_atom = xlib.XInternAtom(self._x_display, asbytes('UTF8_STRING'), False)
             self._target_atom = xlib.XInternAtom(self._x_display, asbytes('TARGETS'), False)
             self._incr_atom = xlib.XInternAtom(self._x_display, asbytes('INCR'), False)
+
+            # The atoms describing the targets supported for selection export
+            self._supported_targets = (xlib.Atom * 2)(self._target_atom, self._utf8_atom)
+            self._supported_targets_ptr = cast(pointer(self._supported_targets), POINTER(c_ubyte))
 
             # Support for drag and dropping files needs to be enabled.
             if self._file_drops:
@@ -453,6 +459,7 @@ class XlibWindow(BaseWindow):
         e = xlib.XEvent()
         while True:
             xlib.XNextEvent(self._x_display, e)
+            print("throwing away", e.type)
             if e.type == xlib.UnmapNotify:
                 break
 
@@ -808,20 +815,20 @@ class XlibWindow(BaseWindow):
         xlib.XChangeProperty(self._x_display, self._window, atom, XA_CARDINAL,
                              32, xlib.PropModeReplace, buffer, len(data)//sizeof(c_ulong))
 
-    def set_clipboard_text(self, text: str):
-        xlib.XSetSelectionOwner(self._x_display,
-                                self._clipboard_atom,
-                                self._window,
-                                xlib.CurrentTime)
+    def set_clipboard_text(self, text: str) -> bool:
+        # Perform this zero-append horribleness as X11 requires a timestamp stemming from an
+        # event to be passed into XSetSelectionOwner.
+        nothing = pointer(c_ubyte(0))
+        atom = xlib.XInternAtom(self._x_display, asbytes('_NET_WM_ICON'), False)
+        xlib.XChangeProperty(self._x_display, self._window, atom, XA_CARDINAL, 32, xlib.PropModeReplace, nothing, 0)
+        e = xlib.XEvent()
+        while not xlib.XCheckTypedWindowEvent(self._x_display, self._window, xlib.PropertyNotify, byref(e)):
+            self.dispatch_platform_event(e)
 
+        xlib.XSetSelectionOwner(self._x_display, self._clipboard_atom, self._window, e.xproperty.time)
         if xlib.XGetSelectionOwner(self._x_display, self._clipboard_atom) == self._window:
             self._clipboard_str = text
-            str_bytes = text.encode('utf-8')
-            size = len(str_bytes)
-
-            xlib.XChangeProperty(self._x_display, self._window,
-                                 self._clipboard_atom, self._utf8_atom, 8, xlib.PropModeReplace,
-                                 (c_ubyte * size).from_buffer_copy(str_bytes), size)
+            self._clipboard_own_time = e.xproperty.time
         else:
             if _debug:
                 print("X11: Couldn't become owner of clipboard.")
@@ -853,11 +860,13 @@ class XlibWindow(BaseWindow):
             while not xlib.XCheckTypedWindowEvent(self._x_display, self._window, xlib.SelectionNotify, byref(notification)):
                 self.dispatch_platform_event(notification)
 
-            if not notification.xselection.property:
+            sel_notification = notification.xselection
+            if not sel_notification.property:
                 return ''
 
-            data, size, actual_atom = self.get_single_property(notification.xselection.requestor, notification.xselection.property,
-                                                  self._utf8_atom)
+            data, size, actual_atom = self.get_single_property(sel_notification.requestor, sel_notification.property,
+                                                               self._utf8_atom)
+            xlib.XDeleteProperty(self._x_display, sel_notification.requestor, sel_notification.property)
 
         if actual_atom == self._incr_atom:
             # Not implemented.
@@ -866,9 +875,7 @@ class XlibWindow(BaseWindow):
 
         elif actual_atom == self._utf8_atom:
             if data:
-                text_bytes = string_at(data, size)
-
-                text = text_bytes.decode('utf-8')
+                text = string_at(data, size).decode('utf-8')
 
         self._clipboard_str = text
 
@@ -1595,6 +1602,8 @@ class XlibWindow(BaseWindow):
     def _event_selection_clear(self, ev):
         if ev.xselectionclear.selection == self._clipboard_atom:
             # Another application cleared the clipboard.
+            if _debug:
+                print("X11 debug: Clipboard selection cleared")
             self._clipboard_str = None
 
     @XlibEventHandler(xlib.SelectionRequest)
@@ -1602,50 +1611,53 @@ class XlibWindow(BaseWindow):
         request = ev.xselectionrequest
 
         if _debug:
-            rt = xlib.XGetAtomName(self._x_display, request.target)
             rp = xlib.XGetAtomName(self._x_display, request.property)
-            print(f"X11 debug: request target {rt}")
-            print(f"X11 debug: request property {rp}")
+            rt = xlib.XGetAtomName(self._x_display, request.target)
+            print(f"X11 debug: Request property {rp}, target {rt}")
 
-        out_event = xlib.XEvent()
-        out_event.xany.type = xlib.SelectionNotify
-        out_event.xselection.selection = request.selection
-        out_event.xselection.display = request.display
-        out_event.xselection.target = 0
-        out_event.xselection.property = 0
-        out_event.xselection.requestor = request.requestor
-        out_event.xselection.time = request.time
+        if request.owner != self._window or request.selection != self._clipboard_atom:
+            if _debug:
+                print(f"X11 debug: Bad SelectionRequest: owner != window or selection != clipboard")
 
-        if (xlib.XGetSelectionOwner(self._x_display, self._clipboard_atom) == self._window and
-                ev.xselection.target == self._clipboard_atom):
+        receiving_property = xlib.None_
+        if self._clipboard_own_time >= request.time:
+            if request.property == xlib.None_:  # Obsolete client
+                receiving_property = request.target
+            else:
+                receiving_property = request.property
+
             if request.target == self._target_atom:
-                atoms_ar = (xlib.Atom * 1)(self._utf8_atom)
-                ptr = cast(pointer(atoms_ar), POINTER(c_ubyte))
-
-                xlib.XChangeProperty(self._x_display, request.requestor,
-                                     request.property, XA_ATOM, 32,
-                                     xlib.PropModeReplace,
-                                     ptr, sizeof(atoms_ar)//sizeof(c_ulong))
-                out_event.xselection.property = request.property
-                out_event.xselection.target = request.target
+                xlib.XChangeProperty(self._x_display, request.requestor, receiving_property,
+                                    XA_ATOM, 32, xlib.PropModeReplace,
+                                    self._supported_targets_ptr, len(self._supported_targets))
 
             elif request.target == self._utf8_atom:
-                # We are being requested for a UTF-8 string.
                 text = self._clipboard_str.encode('utf-8')
-                size = len(self._clipboard_str)
-                xlib.XChangeProperty(self._x_display, request.requestor,
-                                     request.property, request.target, 8,
-                                     xlib.PropModeReplace,
-                                     (c_ubyte * size).from_buffer_copy(text), size)
+                size = len(text)
+                xlib.XChangeProperty(self._x_display, request.requestor, receiving_property,
+                                    request.target, 8, xlib.PropModeReplace,
+                                    (c_ubyte * size).from_buffer_copy(text), size)
 
-                out_event.xselection.property = request.property
-                out_event.xselection.target = request.target
+            else:
+                if _debug:
+                    ust = xlib.XGetAtomName(self._x_display, request.target)
+                    print(f"X11 debug: No support for target {ust}")
+                receiving_property = xlib.None_
+        else:
+            if _debug:
+                print("X11 debug: Request received before clipboard own time")
 
         # Send request event back to requestor with updated changes.
-        xlib.XSendEvent(self._x_display, request.requestor, 0, 0, byref(out_event))
+        out_event = xlib.XEvent()
+        out_event.xany.type = xlib.SelectionNotify
+        out_event.xselection.display = request.display
+        out_event.xselection.requestor = request.requestor
+        out_event.xselection.selection = request.selection
+        out_event.xselection.target = request.target
+        out_event.xselection.property = receiving_property
+        out_event.xselection.time = request.time
 
-        # Seems to work find without it. May add later.
-        #xlib.XSync(self._x_display, False)
+        xlib.XSendEvent(self._x_display, request.requestor, 0, 0, byref(out_event))
 
 
 __all__ = ["XlibEventHandler", "XlibWindow"]
