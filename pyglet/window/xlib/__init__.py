@@ -16,6 +16,7 @@ from ctypes import (
     c_uint,
     c_uint32,
     c_ulong,
+    c_long,
     c_void_p,
     cast,
     create_string_buffer,
@@ -151,6 +152,8 @@ class XlibWindow(BaseWindow):
                                 & ~xlib.ResizeRedirectMask
                                 & ~xlib.SubstructureNotifyMask)
 
+    _tl_extents = (0, 0)
+
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         # Bind event handlers
         self._event_handlers = {}
@@ -274,8 +277,10 @@ class XlibWindow(BaseWindow):
                                             self._width, self._height, 0, visual_info.depth,
                                             xlib.InputOutput, visual, mask,
                                             byref(window_attributes))
-            xlib.XMapWindow(self._x_display, self._view)
             xlib.XSelectInput(self._x_display, self._view, self._default_event_mask)
+            xlib.XMapWindow(self._x_display, self._view)
+
+            self._supported_atoms = self._get_supported_atoms()
 
             self.display._window_map[self._window] = self.dispatch_platform_event  # noqa: SLF001
             self.display._window_map[self._view] = self.dispatch_platform_event_view
@@ -448,6 +453,26 @@ class XlibWindow(BaseWindow):
         self._applied_mouse_exclusive = None
         self._update_exclusivity()
 
+    def _get_supported_atoms(self):
+        supported_atoms = []
+
+        root = self._get_root()
+
+        atom = xlib.XInternAtom(self._x_display, asbytes('_NET_SUPPORTED'), False)
+        prop_data = self.get_single_property(root, atom, XA_ATOM)
+        if prop_data is not None:
+            data, count, _ = prop_data
+            if data:
+                atoms = cast(data, POINTER(c_ulong * count)).contents
+
+                for atom in atoms:
+                    atom_name = xlib.XGetAtomName(self._x_display, atom)
+                    supported_atoms.append(atom_name)
+
+                xlib.XFree(data)
+
+        return supported_atoms
+
     def _map(self) -> None:
         if self._mapped:
             return
@@ -587,17 +612,28 @@ class XlibWindow(BaseWindow):
     def _update_view_size(self) -> None:
         xlib.XResizeWindow(self._x_display, self._view, self._width, self._height)
 
-    def set_location(self, x: int, y: int) -> None:
-        if self._is_reparented():
-            # Assume the window manager has reparented our top-level window
-            # only once, in which case attributes.x/y give the offset from
-            # the frame to the content window.  Better solution would be
-            # to use _NET_FRAME_EXTENTS, where supported.
+    def _get_frame_extents(self) -> tuple[int, int]:
+        if b'_NET_FRAME_EXTENTS' in self._supported_atoms:
+            atom = xlib.XInternAtom(self._x_display, asbytes('_NET_FRAME_EXTENTS'), False)
+            if atom:
+                data, count, a_atom = self.get_single_property(self._window, atom, XA_CARDINAL)
+                extents = (c_long * 4)()  # (left, right, top, bottom)
+
+                if data and a_atom != 0:
+                    memmove(extents, data, count * sizeof(c_long))
+                    xlib.XFree(data)
+                    return extents[0], extents[2]  # Return left, top
+            return 0, 0
+        else:
+            print("ALTER")
             attributes = xlib.XWindowAttributes()
             xlib.XGetWindowAttributes(self._x_display, self._window, byref(attributes))
-            # XXX at least under KDE's WM these attrs are both 0
-            x -= attributes.x
-            y -= attributes.y
+            return attributes.x, attributes.y
+
+    def set_location(self, x: int, y: int) -> None:
+        left, top = self._tl_extents
+        x -= left
+        y -= top
         xlib.XMoveWindow(self._x_display, self._window, x, y)
 
     def get_location(self) -> tuple[int, int]:
@@ -1440,7 +1476,7 @@ class XlibWindow(BaseWindow):
             xlib.XFree(data)
 
     def get_single_property(self, window: xlib.Window, atom_property: xlib.Atom, atom_type: int) -> tuple[
-        _Pointer[c_ubyte], int, int]:
+        _Pointer[c_ubyte], int, int] | None:
         """ Returns the length, data, and actual atom of a window property. """
         actualAtom = xlib.Atom()
         actualFormat = c_int()
@@ -1448,13 +1484,16 @@ class XlibWindow(BaseWindow):
         bytesAfter = c_ulong()
         data = POINTER(c_ubyte)()
 
-        xlib.XGetWindowProperty(self._x_display, window,
+        result = xlib.XGetWindowProperty(self._x_display, window,
                                 atom_property, 0, 2147483647, False, atom_type,
                                 byref(actualAtom),
                                 byref(actualFormat),
                                 byref(itemCount),
                                 byref(bytesAfter),
-                                data)
+                                byref(data))
+
+        if result != xlib.Success:
+            return None
 
         return data, itemCount.value, actualAtom.value
 
@@ -1684,5 +1723,14 @@ class XlibWindow(BaseWindow):
         # Seems to work find without it. May add later.
         # xlib.XSync(self._x_display, False)  # noqa: ERA001
 
+    @XlibEventHandler(xlib.ReparentNotify)
+    def _event_reparent_notify(self, ev: xlib.XEvent) -> None:
+        self._tl_extents = self._get_frame_extents()
+
+    @XlibEventHandler(xlib.PropertyNotify)
+    def _event_property_notify(self, ev: xlib.XEvent) -> None:
+        # Sometimes extents comes after the reparent notification.
+        if ev.xproperty.atom == xlib.XInternAtom(self._x_display, b"_NET_FRAME_EXTENTS", False):
+            self._tl_extents = self._get_frame_extents()
 
 __all__ = ['XlibEventHandler', 'XlibWindow']
