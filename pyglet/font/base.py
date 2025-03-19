@@ -7,9 +7,12 @@ classes as a documented interface to the concrete classes.
 from __future__ import annotations
 
 import abc
+import json
+
 import unicodedata
 from typing import BinaryIO, ClassVar
 
+import pyglet
 from pyglet import image
 from pyglet.gl import GL_LINEAR, GL_RGBA, GL_TEXTURE_2D
 
@@ -427,3 +430,85 @@ class Font:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}('{self.name}')"
+
+
+class SDFFont(Font):
+    def __init__(self, font: Font, sdf_atlas_filename: str) -> None:
+        super().__init__()
+        self.font = font
+        self.atlas, self.atlas_info, self.data = self.load_sdf_atlas(f"{sdf_atlas_filename}.png", f"{sdf_atlas_filename}.json")
+
+        #image_data = image.ImageData(1, 1, 'RGBA', bytes([0, 0, 0, 0]))
+        empty_glyph = self.atlas.get_region(0, 0, 1, 1)
+        self.empty_glyph = Glyph(empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner)
+        self.empty_glyph.set_bearings(0, 0, -1)
+
+        space_info = self.atlas_info.get(ord(" "))
+        self.space_glyph = Glyph(empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner)
+        self.space_glyph.set_bearings(0, 0, space_info["advance"])
+
+    @staticmethod
+    def load_sdf_atlas(image_path, json_path):
+        """Load an SDF atlas image and its JSON mapping file, then extract glyph regions using pyglet's get_region.
+
+        The JSON is expected to contain an "atlas" key, "metrics", a list of "glyphs" (each with a "unicode",
+        "advance", and optionally "atlasBounds" and "planeBounds"), and optional kerning information.
+
+        Args:
+            image_path (str): Path to the atlas image file.
+            json_path (str): Path to the JSON mapping file.
+
+        Returns:
+            dict: A mapping from each glyph’s Unicode codepoint (int) to a dictionary containing:
+                - 'advance': the glyph's advance value.
+                - 'planeBounds': the optional plane bounds (if available).
+                - 'atlasBounds': the raw atlas bounds from the JSON.
+                - 'region': a pyglet.image.TextureRegion extracted from the image (or None if not defined).
+        """
+        # Load the atlas image.
+        atlas_image = pyglet.resource.image(image_path)
+        atlas_json = pyglet.resource.file(json_path, 'r')
+
+        # Load the JSON data.
+        data = json.load(atlas_json)
+
+        glyph_data = {}
+        for glyph in data.get("glyphs", []):
+            codepoint = glyph.get("unicode")
+            entry = {
+                "advance": glyph.get("advance"),
+                "planeBounds": glyph.get("planeBounds"),
+                "atlasBounds": glyph.get("atlasBounds"),
+                "region": None,  # Default if no atlasBounds available.
+            }
+            if "atlasBounds" in glyph:
+                bounds = glyph["atlasBounds"]
+                # Since the JSON uses "left", "bottom", "right", and "top" with a bottom-origin,
+                # we can directly calculate the region.
+                x = bounds["left"]
+                y = bounds["bottom"]
+                width = bounds["right"] - bounds["left"]
+                height = bounds["top"] - bounds["bottom"]
+                entry["region"] = atlas_image.get_region(x, y, width, height)
+
+            glyph_data[codepoint] = entry
+
+        return atlas_image, glyph_data, data
+
+    def get_glyphs(self, text: str):
+        glyphs = []
+
+        for c in text:
+            sdf_info = self.atlas_info.get(ord(c))
+            sdf_image = sdf_info["region"]
+            sdf_advance = sdf_info["advance"]
+            sdf_plane = sdf_info["planeBounds"]
+            if c == " ":
+                glyph = self.space_glyph
+            else:
+                glyph = Glyph(sdf_image.x, sdf_image.y, 0, sdf_image.width, sdf_image.height, sdf_image.owner)
+                glyph.set_bearings(0 * 32, sdf_plane["left"] * 32, sdf_advance * 32)
+
+            glyphs.append(glyph)
+
+        return glyphs

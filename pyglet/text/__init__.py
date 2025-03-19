@@ -44,9 +44,10 @@ from os.path import splitext as _splitext
 from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 import pyglet
+from pyglet.font.base import Font
 
 from pyglet.text import caret, document, layout  # noqa: F401
-
+from pyglet.text.layout.sdf import SDFTextLayout
 
 if TYPE_CHECKING:
     from pyglet.customtypes import AnchorX, AnchorY, ContentVAlign
@@ -318,6 +319,16 @@ class DocumentLabel(layout.TextLayout):
             self.color = list(map(int, (*self.color[:3], alpha)))
 
     @property
+    def font(self) -> Font:
+        """Font object instance.
+
+        This is the backend specific font object being used at the start of the Label.
+
+        (Read Only)
+        """
+        return self.document.get_font(0)
+
+    @property
     def font_name(self) -> str | list[str]:
         """Font family name.
 
@@ -550,6 +561,270 @@ class HTMLLabel(DocumentLabel):
         self._text = text
         self.document = decode_html(text, self._location)
 
+class DocumentSDFLabel(SDFTextLayout):
+    """Base label class.
+
+    A label is a layout that exposes convenience methods for manipulating the
+    associated document.
+    """
+
+    def __init__(
+            self, document: AbstractDocument, sdf_font,
+            x: float = 0.0, y: float = 0.0, z: float = 0.0,
+            width: int | None = None, height: int | None = None,
+            anchor_x: AnchorX = "left", anchor_y: AnchorY = "baseline", rotation: float = 0.0,
+            multiline: bool = False, dpi: int | None = None,
+            batch: Batch | None = None, group: Group | None = None,
+            program: ShaderProgram | None = None,
+            init_document: bool = True,
+    ) -> None:
+        """Create a label for a given document.
+
+        Args:
+            document: Document to attach to the layout.
+            x: X coordinate of the label.
+            y: Y coordinate of the label.
+            z: Z coordinate of the label.
+            width: Width of the label in pixels, or ``None``
+            height:  Height of the label in pixels, or ``None``
+            anchor_x:
+                Anchor point of the X coordinate: one of
+                ``"left"``, `"center"`` or ``"right"``.
+            anchor_y:
+                Anchor point of the Y coordinate: one of
+                ``"bottom"``, ``"baseline"``, ``"center"`` or ``"top"``.
+            rotation:
+                The amount to rotate the label in degrees. A
+                positive amount will be a clockwise rotation, negative
+                values will result in counter-clockwise rotation.
+            multiline:
+                If ``True``, the label will be word-wrapped and
+                accept newline characters. You must also set the width
+                of the label.
+            dpi: Resolution of the fonts in this layout. Defaults to 96.
+            batch: Optional graphics batch to add the label to.
+            group: Optional graphics group to use.
+            program: Optional graphics shader to use. Will affect all glyphs.
+            init_document:
+                If ``True``, the document will be initialized. If you
+                are passing an already-initialized document, then you can
+                avoid duplicating work by setting this to ``False``.
+        """
+        super().__init__(document, x, y, z, width, height, anchor_x, anchor_y, rotation,
+                         multiline, dpi, batch, group, program, init_document=init_document, sdf_font=sdf_font)
+
+    @property
+    def text(self) -> str:
+        """The text of the label."""
+        return self.document.text
+
+    @text.setter
+    def text(self, text: str) -> None:
+        self.document.text = text
+
+    @property
+    def color(self) -> tuple[int, int, int, int]:
+        """Text color.
+
+        Color is a 4-tuple of RGBA components, each in range [0, 255].
+        """
+        return self.document.get_style("color")
+
+    @color.setter
+    def color(self, color: tuple[int, int, int, int]) -> None:
+        r, g, b, *a = color
+        color = r, g, b, a[0] if a else 255
+        self.document.set_style(0, len(self.document.text), {"color": color})
+
+    @property
+    def opacity(self) -> int:
+        """Blend opacity.
+
+        This property sets the alpha component of the colour of the label's
+        vertices.  With the default blend mode, this allows the layout to be
+        drawn with fractional opacity, blending with the background.
+
+        An opacity of 255 (the default) has no effect.  An opacity of 128 will
+        make the label appear semi-translucent.
+        """
+        return self.color[3]
+
+    @opacity.setter
+    def opacity(self, alpha: int) -> None:
+        if alpha != self.color[3]:
+            self.color = list(map(int, (*self.color[:3], alpha)))
+
+    @property
+    def font(self) -> Font:
+        """Font object instance.
+
+        This is the backend specific font object being used at the start of the Label.
+
+        (Read Only)
+        """
+        return self.document.get_font(0)
+
+    @property
+    def font_name(self) -> str | list[str]:
+        """Font family name.
+
+        The font name, as passed to :py:func:`pyglet.font.load`.  A list of names can
+        optionally be given: the first matching font will be used.
+        """
+        return self.document.get_style("font_name")
+
+    @font_name.setter
+    def font_name(self, font_name: str | list[str]) -> None:
+        self.document.set_style(0, len(self.document.text), {"font_name": font_name})
+
+    @property
+    def font_size(self) -> float:
+        """Font size, in points."""
+        return self.document.get_style("font_size")
+
+    @font_size.setter
+    def font_size(self, font_size: float) -> None:
+        self.document.set_style(0, len(self.document.text), {"font_size": font_size})
+
+    @property
+    def weight(self) -> str:
+        """The font weight (boldness or thickness), as a string.
+
+        See the :py:class:`~Weight` enum for valid cross-platform
+        string values.
+        """
+        return self.document.get_style("weight")
+
+    @weight.setter
+    def weight(self, weight: str) -> None:
+        self.document.set_style(0, len(self.document.text), {"weight": str(weight)})
+
+    @property
+    def italic(self) -> bool | str:
+        """Italic font style."""
+        return self.document.get_style("italic")
+
+    @italic.setter
+    def italic(self, italic: bool | str) -> None:
+        self.document.set_style(0, len(self.document.text), {"italic": italic})
+
+    def get_style(self, name: str) -> Any:
+        """Get a document style value by name.
+
+        If the document has more than one value of the named style,
+        `pyglet.text.document.STYLE_INDETERMINATE` is returned.
+
+        Args:
+            name:
+                Style name to query.  See documentation from `pyglet.text.layout` for known style names.
+        """
+        return self.document.get_style_range(name, 0, len(self.document.text))
+
+    def set_style(self, name: str, value: Any) -> None:
+        """Set a document style value by name over the whole document.
+
+        Args:
+            name:
+                Name of the style to set.  See documentation for
+                `pyglet.text.layout` for known style names.
+            value:
+                Value of the style.
+        """
+        self.document.set_style(0, len(self.document.text), {name: value})
+
+    def __del__(self) -> None:
+        self.delete()
+
+
+
+class SDFLabel(DocumentSDFLabel):
+    """Plain text label."""
+
+    def __init__(
+            self, sdf_font, text: str = "",
+            x: float = 0.0, y: float = 0.0, z: float = 0.0,
+            width: int | None = None, height: int | None = None,
+            anchor_x: AnchorX = "left", anchor_y: AnchorY = "baseline", rotation: float = 0.0,
+            multiline: bool = False, dpi: int | None = None,
+            font_name: str | None = None, font_size: float | None = None,
+            weight: str = "normal", italic: bool | str = False, stretch: bool | str = False,
+            color: tuple[int, int, int, int] | tuple[int, int, int] = (255, 255, 255, 255),
+            align: ContentVAlign = "left",
+            batch: Batch | None = None, group: Group | None = None,
+            program: ShaderProgram | None = None,
+    ) -> None:
+        """Create a plain text label.
+
+        Args:
+            text:
+                Text to display.
+            x:
+                X coordinate of the label.
+            y:
+                Y coordinate of the label.
+            z:
+                Z coordinate of the label.
+            width:
+                Width of the label in pixels, or None
+            height:
+                Height of the label in pixels, or None
+            anchor_x:
+                Anchor point of the X coordinate: one of ``"left"``,
+                ``"center"`` or ``"right"``.
+            anchor_y:
+                Anchor point of the Y coordinate: one of ``"bottom"``,
+                ``"baseline"``, ``"center"`` or ``"top"``.
+            rotation:
+                The amount to rotate the label in degrees. A positive amount
+                will be a clockwise rotation, negative values will result in
+                counter-clockwise rotation.
+            multiline:
+                If True, the label will be word-wrapped and accept newline
+                characters.  You must also set the width of the label.
+            dpi:
+                Resolution of the fonts in this layout.  Defaults to 96.
+            font_name:
+                Font family name(s).  If more than one name is given, the
+                first matching name is used.
+            font_size:
+                Font size, in points.
+            weight:
+                The 'weight' of the font (boldness). See the :py:class:`~Weight`
+                enum for valid cross-platform weight names.
+            italic:
+                Italic font style.
+            stretch:
+                 Stretch font style.
+            color:
+                Font color as RGBA or RGB components, each within
+                ``0 <= component <= 255``.
+            align:
+                Horizontal alignment of text on a line, only applies if
+                a width is supplied. One of ``"left"``, ``"center"``
+                or ``"right"``.
+            batch:
+                Optional graphics batch to add the label to.
+            group:
+                Optional graphics group to use.
+            program:
+                Optional graphics shader to use. Will affect all glyphs.
+        """
+        doc = decode_text(text)
+        r, g, b, *a = color
+        rgba = r, g, b, a[0] if a else 255
+
+        super().__init__(doc, sdf_font, x, y, z, width, height, anchor_x, anchor_y, rotation,
+                         multiline, dpi, batch, group, program, init_document=False)
+
+        self.document.set_style(0, len(self.document.text), {
+            "font_name": font_name,
+            "font_size": font_size,
+            "weight": weight,
+            "italic": italic,
+            "stretch": stretch,
+            "color": rgba,
+            "align": align,
+        })
 
 __all__ = [
     "DocumentDecodeException",
