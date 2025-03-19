@@ -100,7 +100,7 @@ class CustomSlider(pyglet.gui.Slider):
 pyglet.resource.path.append('examples/gui/')
 pyglet.resource.reindex()
 
-window = pyglet.window.Window()
+window = pyglet.window.Window(caption="SDF Font Test")
 batch = pyglet.graphics.Batch()
 ui_batch = pyglet.graphics.Batch()
 

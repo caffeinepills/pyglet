@@ -445,7 +445,7 @@ class SDFFont(Font):
 
         space_info = self.atlas_info.get(ord(" "))
         self.space_glyph = Glyph(empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner)
-        self.space_glyph.set_bearings(0, 0, space_info["advance"])
+        self.space_glyph.set_bearings(0, 0, space_info["advance"] * 32)
 
     @staticmethod
     def load_sdf_atlas(image_path, json_path):
