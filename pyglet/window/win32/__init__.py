@@ -18,6 +18,8 @@ from pyglet.libs.win32.types import (
     RAWINPUTHEADER,
     TRACKMOUSEEVENT,
     WCHAR,
+    POINTER_TOUCH_INFO,
+    UINT32,
 )
 from pyglet.libs.win32.winkey import chmap, keymap
 
@@ -1400,6 +1402,58 @@ class Win32Window(BaseWindow):
         self.dispatch_event('_on_internal_scale', scale, x_dpi)
         return 1
 
+    @ViewEventHandler
+    @Win32EventHandler(constants.WM_POINTERDOWN)
+    def _event_pointerdown(self, msg: int, wParam: int, lParam: int) -> int:
+        return self._handle_pointer_event('on_touch_start', msg, wParam, lParam)
+
+    @ViewEventHandler
+    @Win32EventHandler(constants.WM_POINTERUPDATE)
+    def _event_pointerupdate(self, msg: int, wParam: int, lParam: int) -> int:
+        return self._handle_pointer_event('on_touch_move', msg, wParam, lParam)
+
+    @ViewEventHandler
+    @Win32EventHandler(constants.WM_POINTERUP)
+    def _event_pointerup(self, msg: int, wParam: int, lParam: int) -> int:
+        return self._handle_pointer_event('on_touch_end', msg, wParam, lParam)
+
+    def _handle_pointer_event(self, dispatch_name: str, msg: int, wParam: int, lParam: int) -> int:
+        pointer_id = wParam & 0xFFFF  # GET_POINTERID_WPARAM macro
+
+        pointer_type = UINT32()
+        if _user32.GetPointerType(pointer_id, byref(pointer_type)):
+            if pointer_type.value != constants.PT_TOUCH:
+                return 0
+
+            touch_info = POINTER_TOUCH_INFO()
+            if not _user32.GetPointerTouchInfo(pointer_id, byref(touch_info)):
+                return 0
+
+            if not touch_info:
+                return 0
+
+            pointer_info = touch_info.pointerInfo
+
+            x = pointer_info.ptPixelLocation.x
+            y = pointer_info.ptPixelLocation.y
+
+            point = POINT(x, y)
+            _user32.ScreenToClient(self._view_hwnd, byref(point))
+            x = point.x
+            y = self._height - point.y
+
+            pressure = 1.0
+            width = height = 0
+            if touch_info.touchMask & constants.TOUCH_MASK_PRESSURE:
+                pressure = touch_info.pressure / 1024.0
+            if touch_info.touchMask & constants.TOUCH_MASK_CONTACTAREA:
+                rc = touch_info.rcContact
+                width = rc.right - rc.left
+                height = rc.bottom - rc.top
+
+            #self.dispatch_event(dispatch_name, pointer_id, x, y, pressure, width, height)
+
+        return 0
 
 
 __all__ = ['Win32EventHandler', 'Win32Window']
