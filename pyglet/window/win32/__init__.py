@@ -1442,7 +1442,7 @@ class Win32Window(BaseWindow):
             x = point.x
             y = self._height - point.y
 
-            pressure = 1.0
+            pressure = 0.5
             width = height = 0
             if touch_info.touchMask & constants.TOUCH_MASK_PRESSURE:
                 pressure = touch_info.pressure / 1024.0
@@ -1451,7 +1451,7 @@ class Win32Window(BaseWindow):
                 width = rc.right - rc.left
                 height = rc.bottom - rc.top
 
-            #self.dispatch_event(dispatch_name, pointer_id, x, y, pressure, width, height)
+            self.dispatch_event(dispatch_name, pointer_id, x, y, width, height, pressure)
 
         return 0
 
