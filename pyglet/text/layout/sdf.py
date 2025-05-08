@@ -36,8 +36,16 @@ from pyglet.gl import (
 from pyglet.graphics import Group
 from pyglet.text import runlist
 from pyglet.text.layout import base
-from pyglet.text.layout.base import _AbstractBox, TextLayoutGroup, TextDecorationGroup, _LayoutContext, TextLayout, \
-    _Line, _StaticLayoutContext, _InlineElementBox
+from pyglet.text.layout.base import (
+    TextDecorationGroup,
+    TextLayout,
+    TextLayoutGroup,
+    _AbstractBox,
+    _InlineElementBox,
+    _LayoutContext,
+    _Line,
+    _StaticLayoutContext,
+)
 
 if TYPE_CHECKING:
     from pyglet.customtypes import AnchorX, AnchorY, ContentVAlign, HorizontalAlign
