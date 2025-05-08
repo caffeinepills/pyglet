@@ -7,69 +7,66 @@ classes as a documented interface to the concrete classes.
 from __future__ import annotations
 
 import abc
-import json
+from dataclasses import dataclass
 
 import unicodedata
 from typing import BinaryIO, ClassVar
 
-import pyglet
 from pyglet import image
 from pyglet.gl import GL_LINEAR, GL_RGBA, GL_TEXTURE_2D
 
-_other_grapheme_extend = list(map(chr, [0x09be, 0x09d7, 0x0be3, 0x0b57, 0x0bbe, 0x0bd7, 0x0cc2,
-                                        0x0cd5, 0x0cd6, 0x0d3e, 0x0d57, 0x0dcf, 0x0ddf, 0x200c,
-                                        0x200d, 0xff9e, 0xff9f]))  # skip codepoints above U+10000
-_logical_order_exception = list(map(chr, list(range(0xe40, 0xe45)) + list(range(0xec0, 0xec4))))
+_OTHER_GRAPHEME_EXTEND = {
+    chr(x) for x in [0x09be, 0x09d7, 0x0be3, 0x0b57, 0x0bbe, 0x0bd7, 0x0cc2,
+                     0x0cd5, 0x0cd6, 0x0d3e, 0x0d57, 0x0dcf, 0x0ddf, 0x200c,
+                     0x200d, 0xff9e, 0xff9f]
+}  # skip codepoints above U+10000
+_LOGICAL_ORDER_EXCEPTION = {chr(x) for x in range(0xe40, 0xe45)} | {chr(x) for x in range(0xec0, 0xec4)}
 
-_grapheme_extend = lambda c, cc: cc in ("Me", "Mn") or c in _other_grapheme_extend
+_EXTEND_CHARS = {chr(x) for x in [0xe30, 0xe32, 0xe33, 0xe45, 0xeb0, 0xeb2, 0xeb3]}
 
 _CR = "\u000d"
 _LF = "\u000a"
-_control = lambda c, cc: cc in ("ZI", "Zp", "Cc", "Cf") and c not in list(map(chr, [0x000d, 0x000a, 0x200c, 0x200d]))
-_extend = lambda c, cc: _grapheme_extend(c, cc) or \
-                        c in list(map(chr, [0xe30, 0xe32, 0xe33, 0xe45, 0xeb0, 0xeb2, 0xeb3]))
-_prepend = lambda c, cc: c in _logical_order_exception  # noqa: ARG005
-_spacing_mark = lambda c, cc: cc == "Mc" and c not in _other_grapheme_extend
+
+_CATEGORY_EXTEND = {"Me", "Mn"}
+_CATEGORY_CONTROL = {"ZI", "Zp", "Cc", "Cf"}
+_CATEGORY_SPACING_MARK = {"Mc"}
 
 
-def grapheme_break(left: str, right: str) -> bool:  # noqa: D103
+def grapheme_break(left: str, left_cc: str, right: str, right_cc: str) -> bool:
+    """Determines if there should be a break between characters."""
     # GB1
     if left is None:
         return True
 
     # GB2 not required, see end of get_grapheme_clusters
 
-    # GB3
+    # GB3: CR + LF do not break
     if left == _CR and right == _LF:
         return False
 
-    left_cc = unicodedata.category(left)
-
-    # GB4
-    if _control(left, left_cc):
+    # GB4: Break before Control characters
+    if left_cc in _CATEGORY_CONTROL and left not in _OTHER_GRAPHEME_EXTEND:
         return True
 
-    right_cc = unicodedata.category(right)
-
-    # GB5
-    if _control(right, right_cc):
+    # GB5: Break after Control characters
+    if right_cc in _CATEGORY_CONTROL and right not in _OTHER_GRAPHEME_EXTEND:
         return True
 
     # GB6, GB7, GB8 not implemented
 
-    # GB9
-    if _extend(right, right_cc):
+    # GB9: Do not break before Extend characters
+    if right_cc in _CATEGORY_EXTEND or right in _EXTEND_CHARS:
         return False
 
-    # GB9a
-    if _spacing_mark(right, right_cc):
+    # GB9a: Do not break before SpacingMark characters
+    if right_cc == "Mc" and right not in _OTHER_GRAPHEME_EXTEND:
         return False
 
-    # GB9b
-    if _prepend(left, left_cc):
+    # GB9b: Do not break after Prepend characters
+    if left in _LOGICAL_ORDER_EXCEPTION:  # noqa: SIM103
         return False
 
-    # GB10
+    # GB999: Default to break
     return True
 
 
@@ -86,22 +83,36 @@ def get_grapheme_clusters(text: str) -> list[str]:
          List of Unicode grapheme clusters.
     """
     clusters = []
-    cluster = ""
+    cluster_chars = []
     left = None
-    for right in text:
-        if cluster and grapheme_break(left, right):
-            clusters.append(cluster)
-            cluster = ""
-        elif cluster:
-            # Add a zero-width space to keep len(clusters) == len(text)
-            clusters.append("\u200b")
-        cluster += right
-        left = right
+    left_cc = None
 
-    # GB2
-    if cluster:
-        clusters.append(cluster)
+    for right in text:
+        right_cc = unicodedata.category(right)
+
+        if cluster_chars and grapheme_break(left, left_cc, right, right_cc):
+            clusters.append("".join(cluster_chars))
+            cluster_chars.clear()
+
+        cluster_chars.append(right)
+        left = right
+        left_cc = right_cc
+
+    if cluster_chars:
+        clusters.append("".join(cluster_chars))
+
     return clusters
+
+
+#: :meta private:
+@dataclass
+class GlyphPosition:
+    """Positioning offsets for a glyph."""
+    __slots__ = ('x_advance', 'x_offset', 'y_advance', 'y_offset')
+    x_advance: int  # How far the line advances AFTER drawing horizontal.
+    y_advance: int  # How far the line advances AFTER drawing vertical.
+    x_offset: int  # How much the current glyph moves on the X-axis when drawn. Does not advance.
+    y_offset: int  # How much the current glyph moves on the Y-axis when drawn. Does not advance.
 
 
 class Glyph(image.TextureRegion):
@@ -119,8 +130,7 @@ class Glyph(image.TextureRegion):
     #: :If a glyph is colored by the font renderer, such as an emoji, it may be treated differently by pyglet.
     colored = False
 
-    def set_bearings(self, baseline: int, left_side_bearing: int, advance: int, x_offset: int = 0,
-                     y_offset: int = 0) -> None:
+    def set_bearings(self, baseline: int, left_side_bearing: int, advance: int) -> None:
         """Set metrics for this glyph.
 
         Args:
@@ -130,20 +140,16 @@ class Glyph(image.TextureRegion):
                 Distance to add to the left edge of the glyph.
             advance:
                 Distance to move the horizontal advance to the next glyph, in pixels.
-            x_offset:
-                Distance to move the glyph horizontally from its default position.
-            y_offset:
-                Distance to move the glyph vertically from its default position.
         """
         self.baseline = baseline
         self.lsb = left_side_bearing
         self.advance = advance
 
         self.vertices = (
-            left_side_bearing + x_offset,
-            -baseline + y_offset,
-            left_side_bearing + self.width + x_offset,
-            -baseline + self.height + y_offset)
+            left_side_bearing,
+            -baseline,
+            left_side_bearing + self.width,
+            -baseline + self.height)
 
 
 class GlyphTexture(image.Texture):
@@ -194,6 +200,7 @@ class GlyphRenderer(abc.ABC):
         Args:
             font: The :py:class:`~pyglet.font.base.Font` object to be rendered.
         """
+        self.font = font
 
     @abc.abstractmethod
     def render(self, text: str) -> Glyph:
@@ -206,6 +213,15 @@ class GlyphRenderer(abc.ABC):
              A Glyph with the proper metrics for that specific character.
         """
 
+    def create_zero_glyph(self) -> Glyph:
+        """Zero glyph is a 1x1 image that has a -1 advance.
+
+        This is to fill in for potential substitutions since font system requires 1 glyph per character in a string.
+        """
+        image_data = image.ImageData(1, 1, 'RGBA', bytes([0, 0, 0, 0]))
+        glyph = self.font.create_glyph(image_data)
+        glyph.set_bearings(-self.font.descent, 0, -1)
+        return glyph
 
 class FontException(Exception):  # noqa: N818
     """Generic exception related to errors from the font module.  Typically, from invalid font data."""
@@ -243,7 +259,7 @@ class Font:
             ``GL_NEAREST`` to prevent aliasing with pixelated fonts.
     """
     #: :meta private:
-    glyphs: dict[str, Glyph]
+    glyphs: dict[str | int, Glyph]
 
     texture_width: int = 512
     texture_height: int = 512
@@ -267,10 +283,47 @@ class Font:
     # The default type of texture bins. Should not be overridden by users.
     texture_class: ClassVar[type[GlyphTextureBin]] = GlyphTextureBin
 
+    # A list of fallback fonts to use when an existing glyph is not found.
+    fallbacks: list[Font]
+
+    _glyph_renderer: GlyphRenderer | None
+    _missing_glyph: Glyph | None
+    _zero_glyph: Glyph | None
+
+    # The size of the font in pixels.
+    pixel_size: float
+
     def __init__(self) -> None:
         """Initialize a font that can be used with Pyglet."""
         self.texture_bin = None
+        self.hb_resource =  None
+        self._glyph_renderer = None
+
+        # Represents a missing glyph.
+        self._missing_glyph = None
+
+        # Represents a zero width glyph.
+        self._zero_glyph = None
         self.glyphs = {}
+        self.fallbacks = []
+
+    def _initialize_renderer(self) -> None:
+        """Initialize the glyph renderer and cache it on the Font.
+
+        This way renderers for fonts that have been loaded but not used will not have unnecessary loaders.
+        """
+        if not self._glyph_renderer:
+            self._glyph_renderer = self.glyph_renderer_class(self)
+            self._missing_glyph = self._glyph_renderer.render(" ")
+            self._zero_glyph = self._glyph_renderer.create_zero_glyph()
+
+    def add_fallback(self, font: Font) -> None:
+        assert font not in self.fallbacks, "Font is already added."
+        self.fallbacks.append(font)
+
+    def remove_fallback(self, font: Font) -> None:
+        assert font not in self.fallbacks, "Font has not been added."
+        self.fallbacks.remove(font)
 
     @property
     @abc.abstractmethod
@@ -349,7 +402,7 @@ class Font:
 
         return atlas_size
 
-    def get_glyphs(self, text: str) -> list[Glyph]:
+    def get_glyphs(self, text: str) -> tuple[list[Glyph], list[GlyphPosition]]:
         """Create and return a list of Glyphs for `text`.
 
         If any characters do not have a known glyph representation in this
@@ -360,7 +413,9 @@ class Font:
                 Text to render.
         """
         glyph_renderer = None
+
         glyphs = []  # glyphs that are committed.
+        offsets = []
         for c in get_grapheme_clusters(str(text)):
             # Get the glyph for 'c'.  Hide tabs (Windows and Linux render
             # boxes)
@@ -371,7 +426,16 @@ class Font:
                     glyph_renderer = self.glyph_renderer_class(self)
                 self.glyphs[c] = glyph_renderer.render(c)
             glyphs.append(self.glyphs[c])
-        return glyphs
+            offsets.append(GlyphPosition(0, 0, 0, 0))
+
+        return glyphs, offsets
+
+    @abc.abstractmethod
+    def get_text_size(self, text: str) -> tuple[int, int]:
+        """Return's an estimated width and height of text using glyph metrics without rendering..
+
+        This does not take into account any shaping.
+        """
 
     def get_glyphs_for_width(self, text: str, width: int) -> list[Glyph]:
         """Return a list of glyphs for ``text`` that fit within the given width.
@@ -430,85 +494,3 @@ class Font:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}('{self.name}')"
-
-
-class SDFFont(Font):
-    def __init__(self, font: Font, sdf_atlas_filename: str) -> None:
-        super().__init__()
-        self.font = font
-        self.atlas, self.atlas_info, self.data = self.load_sdf_atlas(f"{sdf_atlas_filename}.png", f"{sdf_atlas_filename}.json")
-
-        #image_data = image.ImageData(1, 1, 'RGBA', bytes([0, 0, 0, 0]))
-        empty_glyph = self.atlas.get_region(0, 0, 1, 1)
-        self.empty_glyph = Glyph(empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner)
-        self.empty_glyph.set_bearings(0, 0, -1)
-
-        space_info = self.atlas_info.get(ord(" "))
-        self.space_glyph = Glyph(empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner)
-        self.space_glyph.set_bearings(0, 0, space_info["advance"] * 32)
-
-    @staticmethod
-    def load_sdf_atlas(image_path, json_path):
-        """Load an SDF atlas image and its JSON mapping file, then extract glyph regions using pyglet's get_region.
-
-        The JSON is expected to contain an "atlas" key, "metrics", a list of "glyphs" (each with a "unicode",
-        "advance", and optionally "atlasBounds" and "planeBounds"), and optional kerning information.
-
-        Args:
-            image_path (str): Path to the atlas image file.
-            json_path (str): Path to the JSON mapping file.
-
-        Returns:
-            dict: A mapping from each glyph’s Unicode codepoint (int) to a dictionary containing:
-                - 'advance': the glyph's advance value.
-                - 'planeBounds': the optional plane bounds (if available).
-                - 'atlasBounds': the raw atlas bounds from the JSON.
-                - 'region': a pyglet.image.TextureRegion extracted from the image (or None if not defined).
-        """
-        # Load the atlas image.
-        atlas_image = pyglet.resource.image(image_path)
-        atlas_json = pyglet.resource.file(json_path, 'r')
-
-        # Load the JSON data.
-        data = json.load(atlas_json)
-
-        glyph_data = {}
-        for glyph in data.get("glyphs", []):
-            codepoint = glyph.get("unicode")
-            entry = {
-                "advance": glyph.get("advance"),
-                "planeBounds": glyph.get("planeBounds"),
-                "atlasBounds": glyph.get("atlasBounds"),
-                "region": None,  # Default if no atlasBounds available.
-            }
-            if "atlasBounds" in glyph:
-                bounds = glyph["atlasBounds"]
-                # Since the JSON uses "left", "bottom", "right", and "top" with a bottom-origin,
-                # we can directly calculate the region.
-                x = bounds["left"]
-                y = bounds["bottom"]
-                width = bounds["right"] - bounds["left"]
-                height = bounds["top"] - bounds["bottom"]
-                entry["region"] = atlas_image.get_region(x, y, width, height)
-
-            glyph_data[codepoint] = entry
-
-        return atlas_image, glyph_data, data
-
-    def get_glyphs(self, text: str):
-        glyphs = []
-
-        for c in text:
-            sdf_info = self.atlas_info.get(ord(c))
-            sdf_image = sdf_info["region"]
-            sdf_advance = sdf_info["advance"]
-            sdf_plane = sdf_info["planeBounds"]
-            if c == " ":
-                glyph = self.space_glyph
-            else:
-                glyph = Glyph(sdf_image.x, sdf_image.y, 0, sdf_image.width, sdf_image.height, sdf_image.owner)
-                glyph.set_bearings(0 * 32, sdf_plane["left"] * 32, sdf_advance * 32)
-
-            glyphs.append(glyph)
-
-        return glyphs
