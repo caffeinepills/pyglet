@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import ctypes
-import os
 import mmap
-
-from ctypes import create_string_buffer, c_char
+import os
+from ctypes import create_string_buffer
 from typing import Sequence
 
 import pyglet
-
 from pyglet.display.wayland import WaylandCanvas
-
-from pyglet.window import key
-from pyglet.window import mouse
 from pyglet.event import EventDispatcher
 from pyglet.libs.linux.egl import egl
 from pyglet.libs.linux.wayland import xkbcommon
@@ -22,6 +17,8 @@ from pyglet.window import (
     BaseWindow,
     _PlatformEventHandler,
     _ViewEventHandler,
+    key,
+    mouse,
 )
 
 # Platform event data is single item, so use platform event handler directly.
@@ -56,7 +53,7 @@ _modifier_map: dict[int, int] = {
     key.LWINDOWS: key.MOD_WINDOWS, key.RWINDOWS: key.MOD_WINDOWS,
     key.CAPSLOCK: key.MOD_CAPSLOCK,
     key.NUMLOCK: key.MOD_NUMLOCK,
-    key.SCROLLLOCK: key.MOD_SCROLLLOCK
+    key.SCROLLLOCK: key.MOD_SCROLLLOCK,
 }
 
 
@@ -152,7 +149,7 @@ class WaylandWindow(BaseWindow):
         pass
 
     def _create(self) -> None:
-        self._egl_display_connection = self.display.display_connection  # noqa: SLF001
+        self._egl_display_connection = self.display.display_connection
 
         self._dpi = self._screen.get_dpi()
         self._scale = self._screen.get_scale() if pyglet.options.dpi_scaling == "stretch" else 1.0
@@ -166,88 +163,82 @@ class WaylandWindow(BaseWindow):
         #         w, h = self.get_requested_size()
         #         self._width = width = int(w * self.scale)
         #         self._height = height = int(h * self.scale)
+        self.client = self.display.client
+        self.client.sync()
 
-        if not self.client:
-            self.client = Client(*self._protocols)
-            self.client.sync()
+        self.wl_compositor = self.client.protocol_dict['wayland'].bind_interface('wl_compositor')
 
-            self.wl_compositor = self.client.protocol_dict['wayland'].bind_interface('wl_compositor')
+        self.wl_surface = self.wl_compositor.create_surface(next(self.client.oid_pool))
+        self.wl_surface.set_handler('preferred_buffer_scale', self.wl_surface_preferred_buffer_scale_handler)
 
-            self.wl_surface = self.wl_compositor.create_surface(next(self.client.oid_pool))
-            self.wl_surface.set_handler('preferred_buffer_scale', self.wl_surface_preferred_buffer_scale_handler)
+        self.xdg_wm_base = self.client.protocol_dict['xdg_shell'].bind_interface('xdg_wm_base')
+        self.xdg_wm_base.set_handler('ping', self.xdg_base_ping_handler)
 
-            self.xdg_wm_base = self.client.protocol_dict['xdg_shell'].bind_interface('xdg_wm_base')
-            self.xdg_wm_base.set_handler('ping', self.xdg_base_ping_handler)
+        self.xdg_surface = self.xdg_wm_base.get_xdg_surface(next(self.client.oid_pool), self.wl_surface)
+        self.xdg_surface.set_handler('configure', self.xdg_surface_configure_handler)
 
-            self.xdg_surface = self.xdg_wm_base.get_xdg_surface(next(self.client.oid_pool), self.wl_surface.oid)
-            self.xdg_surface.set_handler('configure', self.xdg_surface_configure_handler)
+        self.xdg_toplevel = self.xdg_surface.get_toplevel(next(self.client.oid_pool))
+        self.xdg_toplevel.set_handlers(
+            configure=self.xdg_toplevel_configure_handler,
+            configure_bounds=self.xdg_toplevel_configure_bounds,
+            close=self.xdg_toplevel_close_handler,
+        )
+        self.xdg_toplevel.set_parent(None)
+        self.xdg_toplevel.set_app_id(self._caption)
 
-            self.xdg_toplevel = self.xdg_surface.get_toplevel(next(self.client.oid_pool))
-            self.xdg_toplevel.set_handler('configure', self.xdg_toplevel_configure_handler)
-            self.xdg_toplevel.set_handler('close', self.xdg_toplevel_close_handler)
-            self.xdg_toplevel.set_parent(None)
-            self.xdg_toplevel.set_app_id(self._caption)
+        self.wl_seat = self.client.protocol_dict['wayland'].bind_interface('wl_seat')
+        self.wl_pointer = self.wl_seat.get_pointer(next(self.client.oid_pool))
+        self.wl_pointer.set_handlers(motion=self.wl_pointer_motion_handler,
+                                    button=self.wl_pointer_button_handler,
+                                    axis_value120=self.wl_pointer_axis_value120_handler,
+                                    enter=self.wl_pointer_enter_handler,
+                                    leave=self.wl_pointer_leave_handler)
+        # frame', self.wl_pointer_frame_handler)
 
-            self.wl_seat = self.client.protocol_dict['wayland'].bind_interface('wl_seat')
-            self.wl_pointer = self.wl_seat.get_pointer(next(self.client.oid_pool))
-            self.wl_pointer.set_handler('motion', self.wl_pointer_motion_handler)
-            self.wl_pointer.set_handler('button', self.wl_pointer_button_handler)
-            self.wl_pointer.set_handler('axis_value120', self.wl_pointer_axis_value120_handler)
-            self.wl_pointer.set_handler('enter', self.wl_pointer_enter_handler)
-            self.wl_pointer.set_handler('leave', self.wl_pointer_leave_handler)
-            # self.wl_pointer.set_handler('frame', self.wl_pointer_frame_handler)
+        self.wl_keyboard = self.wl_seat.get_keyboard(next(self.client.oid_pool))
+        self.wl_keyboard.set_handlers(
+            keymap=self.wl_keyboard_keymap_handler,
+            modifiers=self.wl_keyboard_modifiers_handler,
+            key=self.wl_keyboard_key_handler,
+            enter=self.wl_keyboard_enter_handler,
+            leave=self.wl_keyboard_leave_handler,
+        )
 
-            self.wl_keyboard = self.wl_seat.get_keyboard(next(self.client.oid_pool))
-            self.wl_keyboard.set_handler('keymap', self.wl_keyboard_keymap_handler)
-            self.wl_keyboard.set_handler('modifiers', self.wl_keyboard_modifiers_handler)
-            self.wl_keyboard.set_handler('key', self.wl_keyboard_key_handler)
-            self.wl_keyboard.set_handler('enter', self.wl_keyboard_enter_handler)
-            self.wl_keyboard.set_handler('leave', self.wl_keyboard_leave_handler)
+        # Used for software render?
+        # import os, tempfile
+        # fd, name = tempfile.mkstemp()
+        # _data_size = self._width * self._height * 4  # width x height x rgba
+        # os.write(fd, b'\xee\x33\x33\xee' * self._width * self._height)  # BGRA
+        #
+        # wl_shm = self.client.protocol_dict['wayland'].bind_interface('wl_shm')
+        # wl_shm_pool = wl_shm.create_pool(next(self.client.oid_pool), fd, _data_size)
+        # wl_buffer = wl_shm_pool.create_buffer(next(self.client.oid_pool), 0, self._width, self._height,
+        #                                       self._width * 4, 0)
+        # self.wl_surface.attach(wl_buffer.oid, 0, 0)
 
-            # # TODO: remove temporary SHM surface:
-            # import os, tempfile
-            # fd, name = tempfile.mkstemp()
-            # _data_size = self._width * self._height * 4  # width x height x rgba
-            # os.write(fd, b'\xee\x33\x33\xee' * self._width * self._height)  # BGRA
-            #
-            # wl_shm = self.client.protocol_dict['wayland'].bind_interface('wl_shm')
-            # wl_shm_pool = wl_shm.create_pool(next(self.client.oid_pool), fd, _data_size)
-            # wl_buffer = wl_shm_pool.create_buffer(next(self.client.oid_pool), 0, self._width, self._height,
-            #                                       self._width * 4, 0)
-            # self.wl_surface.attach(wl_buffer.oid, 0, 0)
-            self.wl_surface.commit()
+        self.wl_surface.commit()
 
         if not self._egl_surface:
-            pbuffer_attribs = (egl.EGL_WIDTH, self._width, egl.EGL_HEIGHT, self._height, egl.EGL_NONE)
-            pbuffer_attrib_array = (egl.EGLint * len(pbuffer_attribs))(*pbuffer_attribs)
-
-            # TODO: figure out how to bind EGL to a Wayland surface
-            #       This code below doesn't work!
-            wl_surface_struct = struct_wl_surface()
-
             # An EGL window needs to be created from a Wayland surface,
-            egl_window = wl_egl_window_create(wl_surface_struct, self._width, self._height)
-            print("egl_window:", egl_window.contents.value)
+            egl_window = wl_egl_window_create(self.wl_surface._proxy, self._width, self._height)
 
+            if not egl_window:
+                err = egl.eglGetError()
+                msg = f"Failed to create EGL wayland window. Error: 0x{err:04x}"
+                raise Exception(msg)
 
-            # This is then turned into an EGL drawing surface by the EGL call:
-            # self._egl_surface = egl.eglCreateWindowSurface(self._egl_display_connection,
-            #                                                self.config._egl_config,
-            #                                                egl_window.contents.value,
-            #                                                None)
+            self._egl_surface = egl.eglCreateWindowSurface(
+                self._egl_display_connection,
+                self.config._egl_config,
+                egl_window,
+                None,
+            )
 
-            # self._egl_surface = egl.eglCreatePlatformWindowSurface(dpy, config, gbm_surface, None)
+            if not self._egl_surface:
+                err = egl.eglGetError()
+                msg = f"Failed to create egl surface. Error: 0x{err:04x}"
+                raise Exception(msg)
 
-            self._egl_surface = egl.eglCreatePlatformWindowSurface(self._egl_display_connection,
-                                                                   self.config._egl_config,
-                                                                   egl_window.contents.value,
-                                                                   None)
-
-            print("egl_surface:", self._egl_surface)
-
-            # self._egl_surface = egl.eglCreatePbufferSurface(self._egl_display_connection,
-            #                                                 self.config._egl_config,  # noqa: SLF001
-            #                                                 pbuffer_attrib_array)
 
             self.canvas = WaylandCanvas(self.display, self._egl_surface)
             self.context.attach(self.canvas)
@@ -261,17 +252,18 @@ class WaylandWindow(BaseWindow):
 
     def wl_surface_preferred_buffer_scale_handler(self, factor):
         print(f" --> wl_surface scaling: {factor}")
-        pass
 
     def xdg_toplevel_configure_handler(self, width, height, states):
         print(" --> xdg_toplevel configure event", width, height, states)
+
+    def xdg_toplevel_configure_bounds(self):
         pass
 
     def xdg_toplevel_close_handler(self):
         self.dispatch_event('on_close')
 
     def xdg_surface_configure_handler(self, *args):
-        # print(" --> xdg_surface configure event", args)
+        print(" --> xdg_surface configure event", args)
         self.xdg_surface.ack_configure(args[0])
 
     def wl_pointer_button_handler(self, serial, time, button, state):

@@ -1,16 +1,12 @@
-import pyglet
-import warnings
+from __future__ import annotations
 
-from ctypes import byref
-from threading import Event
 from collections import namedtuple
+from multiprocessing import Event
 
-from .base import Display, Screen, ScreenMode, Canvas
-from ..libs.linux.egl import eglext, egl
-from pyglet.libs.linux.wayland.wayland_egl import struct_wl_egl_window, struct_wl_surface
-from pyglet.libs.linux.wayland.wayland_egl import wl_egl_window_create
+from pyglet.libs.linux.egl import egl, eglext
 from pyglet.libs.linux.wayland.client import Client
 
+from .base import Canvas, Display, Screen, ScreenMode
 
 ModeInfo = namedtuple('ModeInfo', 'width, height, depth, rate, current, primary')
 Geometry = namedtuple('Geometry', 'x, y, physical_width, physical_height, make, model, transform')
@@ -28,39 +24,46 @@ class WaylandScreenMode(ScreenMode):
 
 
 class WaylandDisplay(Display):
+    _protocols = ('/usr/share/wayland/wayland.xml', '/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml')
+    _created = False
 
     def __init__(self):
         super().__init__()
-
-        # self.display_connection = egl.eglGetPlatformDisplay(eglext.EGL_PLATFORM_WAYLAND, None, None)
-        self.display_connection = egl.eglGetDisplay(egl.EGLNativeDisplayType())
-
-        assert egl.eglInitialize(self.display_connection, None, None) == egl.EGL_TRUE, "Failed to initialize Display"
+        # !!! Rework to either only do one session or teardown process entirely.
+        if WaylandDisplay._created is True:
+            raise Exception("Guard: Only one Display/Client instance can be made per application.")
+        WaylandDisplay._created = True
 
         # Create temporary Client connection to query Screen information:
         # TODO: use the new fractional scaling Protocol if available.
-        client = Client('/usr/share/wayland/wayland.xml')
-        client.sync()
+        self.client = Client(*self._protocols)
+        self.client.sync()
+
+        self.display_connection = egl.eglGetPlatformDisplay(eglext.EGL_PLATFORM_WAYLAND, self.client.wl_display_p, None)
+        # self.display_connection = egl.eglGetDisplay(self.wl_display_p)
+
+        assert egl.eglInitialize(self.display_connection, None, None) == egl.EGL_TRUE, "Failed to initialize Display"
 
         self._screens = []
-
-        for i, _ in enumerate(client.globals.get('wl_output', [])):
+        for i, _ in enumerate(self.client.globals.get('wl_output', [])):
             self._geo = None
             self._modes = []
             self._scale = None
             self._name = None
             self._descript = None
             self._query_done = Event()
-            wl_output = client.protocol_dict['wayland'].bind_interface('wl_output', index=i)
+            wl_output = self.client.protocol_dict['wayland'].bind_interface('wl_output', index=i)
             self._mode_enum = wl_output.enums['mode']
             self._transform_enum = wl_output.enums['transform']
-            wl_output.set_handler('geometry', self._wl_output_geometry_handler)
-            wl_output.set_handler('mode', self._wl_output_mode_handler)
-            wl_output.set_handler('scale', self._wl_output_scale_handler)
-            wl_output.set_handler('name', self._wl_output_name_handler)
-            wl_output.set_handler('description', self._wl_output_description_handler)
-            wl_output.set_handler('done', self._wl_output_done_handler)
-            client.sync()
+            wl_output.set_handlers(
+                geometry=self._wl_output_geometry_handler,
+                mode=self._wl_output_mode_handler,
+                scale=self._wl_output_scale_handler,
+                name=self._wl_output_name_handler,
+                description=self._wl_output_description_handler,
+                done=self._wl_output_done_handler,
+            )
+            self.client.sync()
             self._query_done.wait()
             self._screens.append(WaylandScreen(self, self._geo, self._modes, self._scale, self._name, self._descript))
             wl_output.release()
@@ -112,11 +115,15 @@ class WaylandScreen(Screen):
         self._modes = modes
         _width_pixels = max(mode.width for mode in self._modes)
         _height_pixels = max(mode.height for mode in self._modes)
-        _width_inches = self._geo.physical_width / 25.4
-        _height_inches = self._geo.physical_height / 25.4
-        _dpi_width = _width_pixels / _width_inches
-        _dpi_height = _height_pixels / _height_inches
-        self._dpi = (_dpi_width + _dpi_height) / 2
+        # No physical size can exist, such as WSL (they are virtual).
+        if self._geo.physical_width != 0:
+            _width_inches = self._geo.physical_width / 25.4
+            _height_inches = self._geo.physical_height / 25.4
+            _dpi_width = _width_pixels / _width_inches
+            _dpi_height = _height_pixels / _height_inches
+            self._dpi = (_dpi_width + _dpi_height) / 2
+        else:
+            self._dpi = scale
         super().__init__(display, self._geo.x, self._geo.y, _width_pixels, _height_pixels)
 
     def get_matching_configs(self, template):
