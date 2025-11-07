@@ -103,7 +103,6 @@ class Win32MouseCursor(MouseCursor):
 _win32_cursor_visible: bool = True
 
 Win32EventHandler = _PlatformEventHandler
-ViewEventHandler = _ViewEventHandler
 
 
 class Win32Window(BaseWindow):
@@ -138,19 +137,16 @@ class Win32Window(BaseWindow):
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         # Bind event handlers
         self._event_handlers: dict[int, Callable] = {}
-        self._view_event_handlers: dict[int, Callable] = {}
         for func_name in self._platform_event_names:
             if not hasattr(self, func_name):
                 continue
             func = getattr(self, func_name)
             for message in func._platform_event_data:  # noqa: SLF001
-                if hasattr(func, '_view'):
-                    self._view_event_handlers[message] = func
-                else:
-                    self._event_handlers[message] = func
+                self._event_handlers[message] = func
 
         self._always_dwm = sys.getwindowsversion() >= (6, 2)
         self._interval = 0
+        self._expecting_visible = kwargs["visible"]
 
         super().__init__(*args, **kwargs)
 
@@ -204,8 +200,6 @@ class Win32Window(BaseWindow):
 
         if not self._window_class:
             module = _kernel32.GetModuleHandleW(None)
-            white = _gdi32.GetStockObject(constants.WHITE_BRUSH)
-            black = _gdi32.GetStockObject(constants.BLACK_BRUSH)
             self._window_class = WNDCLASS()
             self._window_class.lpszClassName = 'GenericAppClass%d' % id(self)
             self._window_class.lpfnWndProc = WNDPROC(
@@ -214,25 +208,11 @@ class Win32Window(BaseWindow):
             self._window_class.hInstance = 0
             self._window_class.hIcon = _user32.LoadImageW(module, MAKEINTRESOURCE(1), constants.IMAGE_ICON,
                                                           0, 0, constants.LR_DEFAULTSIZE | constants.LR_SHARED)
-            self._window_class.hbrBackground = black
+            self._window_class.hbrBackground = None
             self._window_class.lpszMenuName = None
             self._window_class.cbClsExtra = 0
             self._window_class.cbWndExtra = 0
             _user32.RegisterClassW(byref(self._window_class))
-
-            self._view_window_class = WNDCLASS()
-            self._view_window_class.lpszClassName = \
-                'GenericViewClass%d' % id(self)
-            self._view_window_class.lpfnWndProc = WNDPROC(
-                self._get_window_proc(self._view_event_handlers))
-            self._view_window_class.style = 0
-            self._view_window_class.hInstance = 0
-            self._view_window_class.hIcon = 0
-            self._view_window_class.hbrBackground = white
-            self._view_window_class.lpszMenuName = None
-            self._view_window_class.cbClsExtra = 0
-            self._view_window_class.cbWndExtra = 0
-            _user32.RegisterClassW(byref(self._view_window_class))
 
         if not self._hwnd:
             self._hwnd = _user32.CreateWindowExW(
@@ -249,23 +229,7 @@ class Win32Window(BaseWindow):
                 self._window_class.hInstance,
                 0)
 
-            # View Hwnd is for the client area so certain events (mouse events) don't trigger outside of area.
-            self._view_hwnd = _user32.CreateWindowExW(
-                0,
-                self._view_window_class.lpszClassName,
-                '',
-                constants.WS_CHILD | constants.WS_VISIBLE,
-                0,
-                0,
-                0,
-                0,
-                self._hwnd,
-                0,
-                self._view_window_class.hInstance,
-                0,
-            )
-
-            self._dc = _user32.GetDC(self._view_hwnd)
+            self._dc = _user32.GetDC(self._hwnd)
 
             if not self._fullscreen and constants.WINDOWS_11_21H2_OR_GREATER:
                 self._update_light_mode(_ShouldSystemUseLightMode())
@@ -303,7 +267,7 @@ class Win32Window(BaseWindow):
 
             # We need to hide window here, otherwise Windows forgets
             # to redraw the whole screen after leaving fullscreen.
-            _user32.ShowWindow(self._hwnd, constants.SW_HIDE)
+            #_user32.ShowWindow(self._hwnd, constants.SW_HIDE)
 
             _user32.SetWindowLongW(self._hwnd,
                                    constants.GWL_STYLE,
@@ -326,8 +290,6 @@ class Win32Window(BaseWindow):
             _user32.SetWindowPos(self._hwnd, constants.HWND_NOTOPMOST,
                                  0, 0, width, height, constants.SWP_NOMOVE | constants.SWP_FRAMECHANGED)
 
-        self._update_view_location(self._width, self._height)
-
         self.set_caption(self._caption)
 
         if pyglet.options.backend and not self._shadow:
@@ -344,15 +306,6 @@ class Win32Window(BaseWindow):
     def dc(self):
         return self._dc
 
-    def _update_view_location(self, width: int, height: int) -> None:
-        if self._fullscreen:
-            x = (self.screen.width - width) // 2
-            y = (self.screen.height - height) // 2
-        else:
-            x = y = 0
-        _user32.SetWindowPos(self._view_hwnd, 0,
-                             x, y, width, height, constants.SWP_NOZORDER | constants.SWP_NOOWNERZORDER)
-
     def close(self) -> None:
         if not self._hwnd:
             super().close()
@@ -361,12 +314,9 @@ class Win32Window(BaseWindow):
         self.set_mouse_cursor_platform_visible(True)
 
         _user32.DestroyWindow(self._hwnd)
-        _user32.UnregisterClassW(self._view_window_class.lpszClassName, 0)
         _user32.UnregisterClassW(self._window_class.lpszClassName, 0)
 
         self._window_class = None
-        self._view_window_class = None
-        self._view_event_handlers.clear()
         self._event_handlers.clear()
         self._hwnd = None
         self._dc = None
@@ -441,8 +391,6 @@ class Win32Window(BaseWindow):
         if state:
             _user32.SetLayeredWindowAttributes(self._hwnd, color_ref.value, alpha.value, flags.value)
 
-
-
     def set_location(self, x: int, y: int) -> None:
         x, y = self._client_to_window_pos(x, y)
         _user32.SetWindowPos(self._hwnd, 0, x, y, 0, 0,
@@ -477,10 +425,15 @@ class Win32Window(BaseWindow):
 
     def set_visible(self, visible: bool = True) -> None:
         if visible:
-            insertAfter = constants.HWND_TOP
-            _user32.SetWindowPos(self._hwnd, insertAfter, 0, 0, 0, 0,
-                                 constants.SWP_NOMOVE | constants.SWP_NOSIZE | constants.SWP_SHOWWINDOW)
-            self.dispatch_event('_on_internal_resize', self._width, self._height)
+            _user32.ShowWindow(self._hwnd, constants.SW_SHOW)
+
+            # When initially creating a window, if it's visible, do this to prevent a white flash from occurring.
+            # Must occur after calling ShowWindow.
+            if self._expecting_visible:
+                self._expecting_visible = False
+                _user32.UpdateWindow(self._hwnd)  # force WM_PAINT.
+                _gdi32.SwapBuffers(self._dc)  # Flip buffer.
+
             self.activate()
             self.dispatch_event('on_show')
         else:
@@ -522,7 +475,7 @@ class Win32Window(BaseWindow):
             else:
                 cursor = self._create_cursor_from_image(self._mouse_cursor)
 
-            _user32.SetClassLongPtrW(self._view_hwnd, constants.GCL_HCURSOR, cursor)
+            _user32.SetClassLongPtrW(self._hwnd, constants.GCL_HCURSOR, cursor)
             _user32.SetCursor(cursor)
 
         if platform_visible == self._mouse_platform_visible:
@@ -556,8 +509,8 @@ class Win32Window(BaseWindow):
             return
 
         rect = RECT()
-        _user32.GetClientRect(self._view_hwnd, byref(rect))
-        _user32.MapWindowPoints(self._view_hwnd, constants.HWND_DESKTOP,
+        _user32.GetClientRect(self._hwnd, byref(rect))
+        _user32.MapWindowPoints(self._hwnd, constants.HWND_DESKTOP,
                                 byref(rect), 2)
 
         # For some reason borders can be off 1 pixel, allowing cursor into frame/minimize/exit buttons?
@@ -599,8 +552,8 @@ class Win32Window(BaseWindow):
     def set_mouse_position(self, x: int, y: int, absolute: bool = False) -> None:
         if not absolute:
             rect = RECT()
-            _user32.GetClientRect(self._view_hwnd, byref(rect))
-            _user32.MapWindowPoints(self._view_hwnd, constants.HWND_DESKTOP, byref(rect), 2)
+            _user32.GetClientRect(self._hwnd, byref(rect))
+            _user32.MapWindowPoints(self._hwnd, constants.HWND_DESKTOP, byref(rect), 2)
 
             x = x + rect.left
             y = rect.top + (rect.bottom - rect.top) - y
@@ -759,7 +712,7 @@ class Win32Window(BaseWindow):
         return icon
 
     def set_clipboard_text(self, text: str) -> None:
-        valid = _user32.OpenClipboard(self._view_hwnd)
+        valid = _user32.OpenClipboard(self._hwnd)
         if not valid:
             return
 
@@ -779,7 +732,7 @@ class Win32Window(BaseWindow):
     def get_clipboard_text(self) -> str:
         text = ''
 
-        valid = _user32.OpenClipboard(self._view_hwnd)
+        valid = _user32.OpenClipboard(self._hwnd)
         if not valid:
             print('Could not open clipboard')
             return ''
@@ -873,12 +826,7 @@ class Win32Window(BaseWindow):
             event_handler = event_handlers.get(msg)
             result = None
             if event_handler:
-                if self._allow_dispatch_event or not self._enable_event_queue:
-                    result = event_handler(msg, wParam, lParam)
-                else:
-                    result = 0
-                    self._event_queue.append((event_handler, msg,
-                                              wParam, lParam))
+                result = event_handler(msg, wParam, lParam)
             if result is None:
                 result = _user32.DefWindowProcW(hwnd, msg, wParam, lParam)
             return result
@@ -1058,7 +1006,6 @@ class Win32Window(BaseWindow):
 
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_MOUSEMOVE)
     def _event_mousemove(self, msg: int, wParam: int, lParam: int) -> int:
         if self._exclusive_mouse and self._has_focus:
@@ -1082,7 +1029,7 @@ class Win32Window(BaseWindow):
             track = TRACKMOUSEEVENT()
             track.cbSize = sizeof(track)
             track.dwFlags = constants.TME_LEAVE
-            track.hwndTrack = self._view_hwnd
+            track.hwndTrack = self._hwnd
             _user32.TrackMouseEvent(byref(track))
 
         # Don't generate motion/drag events when mouse hasn't moved. (Issue
@@ -1115,12 +1062,11 @@ class Win32Window(BaseWindow):
             self.dispatch_event('on_mouse_motion', x / self._mouse_scale, y / self._mouse_scale, dx * self._mouse_scale, dy * self._mouse_scale)
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_MOUSELEAVE)
     def _event_mouseleave(self, msg: int, wParam: int, lParam: int) -> int:
         point = POINT()
         _user32.GetCursorPos(byref(point))
-        _user32.ScreenToClient(self._view_hwnd, byref(point))
+        _user32.ScreenToClient(self._hwnd, byref(point))
         x = point.x
         y = self._height - point.y
         self._tracking = False
@@ -1131,7 +1077,7 @@ class Win32Window(BaseWindow):
 
     def _event_mousebutton(self, ev: str, button: int, lParam: int) -> int:
         if ev == 'on_mouse_press':
-            _user32.SetCapture(self._view_hwnd)
+            _user32.SetCapture(self._hwnd)
         else:
             _user32.ReleaseCapture()
         x, y = self._get_location(lParam)
@@ -1139,43 +1085,36 @@ class Win32Window(BaseWindow):
         self.dispatch_event(ev, x / self._mouse_scale, y / self._mouse_scale, button, self._get_modifiers())
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_LBUTTONDOWN)
     def _event_lbuttondown(self, msg: int, wParam: int, lParam: int) -> int:
         return self._event_mousebutton(
             'on_mouse_press', mouse.LEFT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_LBUTTONUP)
     def _event_lbuttonup(self, msg: int, wParam: int, lParam: int) -> int:
         return self._event_mousebutton(
             'on_mouse_release', mouse.LEFT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_MBUTTONDOWN)
     def _event_mbuttondown(self, msg: int, wParam: int, lParam: int) -> int:
         return self._event_mousebutton(
             'on_mouse_press', mouse.MIDDLE, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_MBUTTONUP)
     def _event_mbuttonup(self, msg: int, wParam: int, lParam: int) -> int:
         return self._event_mousebutton(
             'on_mouse_release', mouse.MIDDLE, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_RBUTTONDOWN)
     def _event_rbuttondown(self, msg: int, wParam: int, lParam: int) -> int:
         return self._event_mousebutton(
             'on_mouse_press', mouse.RIGHT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_RBUTTONUP)
     def _event_rbuttonup(self, msg: int, wParam: int, lParam: int) -> int:
         return self._event_mousebutton(
             'on_mouse_release', mouse.RIGHT, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_XBUTTONDOWN)
     def _event_xbuttondown(self, msg: int, wParam: int, lParam: int) -> int:
         if c_short(wParam >> 16).value == 1:
@@ -1185,7 +1124,6 @@ class Win32Window(BaseWindow):
         return self._event_mousebutton(
             'on_mouse_press', button, lParam)
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_XBUTTONUP)
     def _event_xbuttonup(self, msg: int, wParam: int, lParam: int) -> int:
         if c_short(wParam >> 16).value == 1:
@@ -1207,7 +1145,6 @@ class Win32Window(BaseWindow):
         self.dispatch_event('on_close')
         return 0
 
-    @ViewEventHandler
     @Win32EventHandler(constants.WM_PAINT)
     def _event_paint(self, msg: int, wParam: int, lParam: int) -> None:
         self.dispatch_event('on_expose')
@@ -1243,7 +1180,6 @@ class Win32Window(BaseWindow):
         w, h = self._get_location(lParam)
         if not self._fullscreen:
             self._width, self._height = w, h
-        self._update_view_location(self._width, self._height)
 
         if self._exclusive_mouse:
             self._update_clipped_cursor()
@@ -1351,12 +1287,6 @@ class Win32Window(BaseWindow):
         if self._fullscreen:
             return 0
 
-        return 1
-
-    @ViewEventHandler
-    @Win32EventHandler(constants.WM_ERASEBKGND)
-    def _event_erasebkgnd_view(self, msg: int, wParam: int, lParam: int) -> int:
-        # Prevent flicker during resize.
         return 1
 
     @Win32EventHandler(constants.WM_DROPFILES)
