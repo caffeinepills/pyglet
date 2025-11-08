@@ -1,97 +1,8 @@
-from __future__ import annotations
-
-import json
+import contextlib
 
 import pyglet
-from pyglet.font.base import Font, Glyph
-
-
-class SDFFont(Font):
-    def __init__(self, font: Font, sdf_atlas_filename: str) -> None:
-        super().__init__()
-        self.font = font
-        self.atlas, self.atlas_info, self.data = self.load_sdf_atlas(
-            f"{sdf_atlas_filename}.png", f"{sdf_atlas_filename}.json"
-        )
-
-        # image_data = image.ImageData(1, 1, 'RGBA', bytes([0, 0, 0, 0]))
-        empty_glyph = self.atlas.get_region(0, 0, 1, 1)
-        self.empty_glyph = Glyph(
-            empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner
-        )
-        self.empty_glyph.set_bearings(0, 0, -1)
-
-        space_info = self.atlas_info.get(ord(" "))
-        self.space_glyph = Glyph(
-            empty_glyph.x, empty_glyph.y, 0, empty_glyph.width, empty_glyph.height, empty_glyph.owner
-        )
-        self.space_glyph.set_bearings(0, 0, space_info["advance"] * 32)
-
-    @staticmethod
-    def load_sdf_atlas(image_path, json_path):
-        """Load an SDF atlas image and its JSON mapping file, then extract glyph regions using pyglet's get_region.
-
-        The JSON is expected to contain an "atlas" key, "metrics", a list of "glyphs" (each with a "unicode",
-        "advance", and optionally "atlasBounds" and "planeBounds"), and optional kerning information.
-
-        Args:
-            image_path (str): Path to the atlas image file.
-            json_path (str): Path to the JSON mapping file.
-
-        Returns:
-            dict: A mapping from each glyph’s Unicode codepoint (int) to a dictionary containing:
-                - 'advance': the glyph's advance value.
-                - 'planeBounds': the optional plane bounds (if available).
-                - 'atlasBounds': the raw atlas bounds from the JSON.
-                - 'region': a pyglet.image.TextureRegion extracted from the image (or None if not defined).
-        """
-        # Load the atlas image.
-        atlas_image = pyglet.resource.image(image_path)
-        atlas_json = pyglet.resource.file(json_path, 'r')
-
-        # Load the JSON data.
-        data = json.load(atlas_json)
-
-        glyph_data = {}
-        for glyph in data.get("glyphs", []):
-            codepoint = glyph.get("unicode")
-            entry = {
-                "advance": glyph.get("advance"),
-                "planeBounds": glyph.get("planeBounds"),
-                "atlasBounds": glyph.get("atlasBounds"),
-                "region": None,  # Default if no atlasBounds available.
-            }
-            if "atlasBounds" in glyph:
-                bounds = glyph["atlasBounds"]
-                # Since the JSON uses "left", "bottom", "right", and "top" with a bottom-origin,
-                # we can directly calculate the region.
-                x = bounds["left"]
-                y = bounds["bottom"]
-                width = bounds["right"] - bounds["left"]
-                height = bounds["top"] - bounds["bottom"]
-                entry["region"] = atlas_image.get_region(x, y, width, height)
-
-            glyph_data[codepoint] = entry
-
-        return atlas_image, glyph_data, data
-
-    def get_glyphs(self, text: str):
-        glyphs = []
-
-        for c in text:
-            sdf_info = self.atlas_info.get(ord(c))
-            sdf_image = sdf_info["region"]
-            sdf_advance = sdf_info["advance"]
-            sdf_plane = sdf_info["planeBounds"]
-            if c == " ":
-                glyph = self.space_glyph
-            else:
-                glyph = Glyph(sdf_image.x, sdf_image.y, 0, sdf_image.width, sdf_image.height, sdf_image.owner)
-                glyph.set_bearings(0 * 32, sdf_plane["left"] * 32, sdf_advance * 32)
-
-            glyphs.append(glyph)
-
-        return glyphs
+from experimental.text import DistFieldFont, DistFieldLabel
+from experimental.text.layout_sdf import get_sdf_layout_shader, get_msdf_layout_shader
 
 
 class Camera:
@@ -190,6 +101,7 @@ class CustomSlider(pyglet.gui.Slider):
             return True
         return False
 
+
 pyglet.resource.path.append('../../examples/gui/')
 pyglet.resource.reindex()
 
@@ -197,14 +109,21 @@ window = pyglet.window.Window(caption="SDF Font Test")
 batch = pyglet.graphics.Batch()
 ui_batch = pyglet.graphics.Batch()
 
-sdf_font = SDFFont(None, "segoe_ui_msdf")
-label = pyglet.text.SDFLabel(sdf_font, 'Hello World',
-                          font_size=32,
-                          x=window.width // 2,
-                          y=window.height // 2,
-                          anchor_x='center',
-                          anchor_y='center',
-                          batch=batch)
+sdf_font = DistFieldFont("sdf_segoe_ui", sdf_filename="segoe_ui_msdf", size=32)
+pyglet.font.add_user_font(sdf_font)
+
+
+msdf_shader = get_msdf_layout_shader()
+
+label = DistFieldLabel('Hello Pyglet',
+                       font_size=32,
+                       font_name="sdf_segoe_ui",
+                       x=window.width // 2,
+                       y=window.height // 2,
+                       anchor_x='center',
+                       anchor_y='center',
+                       program=msdf_shader,
+                       batch=batch)
 
 @window.event
 def on_key_press(symbol, modifiers):
@@ -243,7 +162,8 @@ frame = CustomFrame(window, order=4)
 slider = CustomSlider(100, 200, bar, knob, edge=5, batch=ui_batch)
 slider.set_handler('on_change', slider_handler)
 frame.add_widget(slider)
-slider_label = pyglet.text.Label("Outline Size: 0.0", x=300, y=200, batch=ui_batch, color=(255, 255, 255, 255))
+slider_label = pyglet.text.Label(f"Outline Size: {20/100}", x=300, y=200, batch=ui_batch, color=(255, 255, 255, 255))
+slider.value = 20
 
 def smooth_handler(widget, value):
     new_value = value / 500
@@ -255,7 +175,8 @@ def smooth_handler(widget, value):
 slider2 = CustomSlider(100, 220, bar, knob, edge=5, batch=ui_batch)
 slider2.set_handler('on_change', smooth_handler)
 frame.add_widget(slider2)
-smooth_label = pyglet.text.Label("Smoothing: 0.0", x=300, y=220, batch=ui_batch, color=(255,255, 255, 255))
+smooth_label = pyglet.text.Label(f"Smoothing: {50/500}", x=300, y=220, batch=ui_batch, color=(255,255, 255, 255))
+slider2.value = 8
 
 def weight_handler(widget, value):
     new_value = value / 50
@@ -268,23 +189,18 @@ slider3 = CustomSlider(100, 240, bar, knob, edge=5, batch=ui_batch)
 slider3.set_handler('on_change', weight_handler)
 frame.add_widget(slider3)
 weight_label = pyglet.text.Label("Weight: 1.0", x=300, y=240, batch=ui_batch, color=(255, 255, 255, 255))
+slider3.value = 50
 
-
-from pyglet.text.layout.sdf import get_default_layout_shader
-
-shader = get_default_layout_shader()
 elapsed = 0
 def update(dt):
     global elapsed
     elapsed += dt
-    with shader:
-        try:
-            shader["time"] = elapsed
-        except:
-            pass
+    with msdf_shader, contextlib.suppress(Exception):
+        msdf_shader["time"] = elapsed
 
 pyglet.clock.schedule_interval(update, 1/60.0)
 
+pyglet.gl.gl.glClearColor(0.2, 0.2, 0.2, 1)
 
 camera = Camera(window)
 @window.event
@@ -294,9 +210,6 @@ def on_draw():
         batch.draw()
 
     ui_batch.draw()
-
-#pyglet.gl.glClearColor(0.8, 0.8, 0.8, 1.0)
-
 
 
 pyglet.app.run()

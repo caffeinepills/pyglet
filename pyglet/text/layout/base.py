@@ -847,6 +847,7 @@ class TextLayout:
 
     group_class: ClassVar[type[TextLayoutGroup]] = TextLayoutGroup
     decoration_class: ClassVar[type[TextDecorationGroup]] = TextDecorationGroup
+    glyph_box_class: ClassVar[type[_AbstractBox]] = _GlyphBox
 
     _ascent: float = 0
     _descent: float = 0
@@ -1794,7 +1795,7 @@ class TextLayout:
                         # Create the _GlyphBox for the committed glyphs in the
                         # current owner.
                         if owner_accum_commit:
-                            line.add_box(_GlyphBox(owner, font, owner_accum_commit, owner_accum_commit_width))
+                            line.add_box(self.glyph_box_class(owner, font, owner_accum_commit, owner_accum_commit_width))
                             owner_accum_commit = []
                             owner_accum_commit_width = 0
 
@@ -1867,9 +1868,9 @@ class TextLayout:
             # The owner run is finished; create GlyphBoxes for the committed
             # and pending glyphs.
             if owner_accum_commit:
-                line.add_box(_GlyphBox(owner, font, owner_accum_commit, owner_accum_commit_width))
+                line.add_box(self.glyph_box_class(owner, font, owner_accum_commit, owner_accum_commit_width))
             if owner_accum:
-                run_accum.append(_GlyphBox(owner, font, owner_accum, owner_accum_width))
+                run_accum.append(self.glyph_box_class(owner, font, owner_accum, owner_accum_width))
                 run_accum_width += owner_accum_width
 
         # All glyphs have been processed: commit everything pending and flush
@@ -1921,7 +1922,7 @@ class TextLayout:
                 for kern, glyph in owner_glyphs:
                     line.add_box(glyph)
             else:
-                line.add_box(_GlyphBox(owner, font, owner_glyphs, width))
+                line.add_box(self.glyph_box_class(owner, font, owner_glyphs, width))
 
         if not line.boxes:
             line.ascent = font.ascent
