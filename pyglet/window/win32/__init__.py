@@ -114,6 +114,9 @@ class Win32Window(BaseWindow):
     _hidden = False
     _has_focus = False
 
+    # In normal mode, always use instant events to prevent memory corruption.
+    _enable_event_queue = False
+
     _exclusive_keyboard: bool = False
     _exclusive_keyboard_focus: bool = True
     _exclusive_mouse: bool = False
@@ -299,9 +302,6 @@ class Win32Window(BaseWindow):
         # This block does not get called on window creation, only when re-created such as fullscreen.
         if self._visible:
             self.set_visible()
-            # Might need resize event if going from fullscreen to fullscreen
-            self.dispatch_event('_on_internal_resize', self._width, self._height)
-            self.dispatch_event('on_expose')
 
     @property
     def dc(self):
@@ -366,7 +366,7 @@ class Win32Window(BaseWindow):
     def flip(self) -> None:
         self.draw_mouse_cursor()
 
-        if not self._fullscreen and (self._always_dwm or self._dwm_composition_enabled()) and self._interval:
+        if not self._fullscreen and not self._always_dwm and self._dwm_composition_enabled() and self._interval:
             _dwmapi.DwmFlush()
 
         self.context.flip()
@@ -825,7 +825,11 @@ class Win32Window(BaseWindow):
             event_handler = event_handlers.get(msg)
             result = None
             if event_handler:
-                result = event_handler(msg, wParam, lParam)
+                if self._allow_dispatch_event or not self._enable_event_queue:
+                    result = event_handler(msg, wParam, lParam)
+                else:
+                    result = 0
+                    self._event_queue.append((event_handler, msg, wParam, lParam))
             if result is None:
                 result = _user32.DefWindowProcW(hwnd, msg, wParam, lParam)
             return result

@@ -56,7 +56,7 @@ class EventSequenceTest:
             self.start_time = time.time()
         if not self.finished:
             if self.next_sequence != sequence:
-                self.failed = 'ERROR: %s out of order' % name
+                self.failed = f'ERROR: {name} out of order.'
             else:
                 self.next_sequence += 1
         if self.next_sequence > self.last_sequence:
@@ -75,7 +75,6 @@ class WindowShowEventSequenceTest(EventSequenceTest, unittest.TestCase):
     last_sequence = 3
 
     def _on_internal_resize(self, width, height):
-        print("ON INTERNAL")
         self.check_sequence(1, 'on_resize')
 
     def on_show(self):
@@ -125,7 +124,6 @@ class WindowCreateEventSequenceTest(EventSequenceTest, unittest.TestCase):
             win.close()
 
 
-@skip_platform(Platform.WINDOWS)
 class WindowCreateFullScreenEventSequenceTest(EventSequenceTest, unittest.TestCase):
     last_sequence = 3
 
@@ -151,7 +149,6 @@ class WindowCreateFullScreenEventSequenceTest(EventSequenceTest, unittest.TestCa
             win.close()
 
 
-@skip_platform(Platform.WINDOWS)
 class WindowSetFullScreenEventSequenceTest(EventSequenceTest, unittest.TestCase):
     last_sequence = 2
 
@@ -177,7 +174,6 @@ class WindowSetFullScreenEventSequenceTest(EventSequenceTest, unittest.TestCase)
             win.close()
 
 
-@skip_platform(Platform.WINDOWS)
 class WindowUnsetFullScreenEventSequenceTest(EventSequenceTest, unittest.TestCase):
     last_sequence = 2
 
