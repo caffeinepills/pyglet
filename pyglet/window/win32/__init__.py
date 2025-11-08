@@ -146,7 +146,7 @@ class Win32Window(BaseWindow):
 
         self._always_dwm = sys.getwindowsversion() >= (6, 2)
         self._interval = 0
-        self._expecting_visible = kwargs["visible"]
+        self._expecting_visible = kwargs.get("visible", False)
 
         super().__init__(*args, **kwargs)
 
@@ -296,6 +296,7 @@ class Win32Window(BaseWindow):
             self.switch_to()
             self.set_vsync(self._vsync)
 
+        # This block does not get called on window creation, only when re-created such as fullscreen.
         if self._visible:
             self.set_visible()
             # Might need resize event if going from fullscreen to fullscreen
@@ -412,7 +413,6 @@ class Win32Window(BaseWindow):
         width, height = self._client_to_window_size_dpi(width, height)
         _user32.SetWindowPos(self._hwnd, 0, 0, 0, width, height,
                              (constants.SWP_NOZORDER | constants.SWP_NOMOVE | constants.SWP_NOOWNERZORDER))
-        self.dispatch_event('_on_internal_resize', self._width, self._height)
 
     def set_minimum_size(self, width: int, height: int) -> None:
         self._minimum_size = width, height
@@ -421,18 +421,17 @@ class Win32Window(BaseWindow):
         self._maximum_size = width, height
 
     def activate(self) -> None:
+        _user32.BringWindowToTop(self._hwnd)
         _user32.SetForegroundWindow(self._hwnd)
 
     def set_visible(self, visible: bool = True) -> None:
         if visible:
             _user32.ShowWindow(self._hwnd, constants.SW_SHOW)
 
-            # When initially creating a window, if it's visible, do this to prevent a white flash from occurring.
-            # Must occur after calling ShowWindow.
-            if self._expecting_visible:
+            # Swap buffers just after window creation to prevent a white background.
+            if self._context and self._expecting_visible:
                 self._expecting_visible = False
-                _user32.UpdateWindow(self._hwnd)  # force WM_PAINT.
-                _gdi32.SwapBuffers(self._dc)  # Flip buffer.
+                _gdi32.SwapBuffers(self._dc)
 
             self.activate()
             self.dispatch_event('on_show')

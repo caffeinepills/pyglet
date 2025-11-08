@@ -99,6 +99,8 @@ _kernel32.WaitForSingleObject.argtypes = [HANDLE, DWORD]
 
 _user32.AdjustWindowRectEx.restype = BOOL
 _user32.AdjustWindowRectEx.argtypes = [LPRECT, DWORD, BOOL, DWORD]
+_user32.BringWindowToTop.restype = BOOL
+_user32.BringWindowToTop.argtypes = [HWND]
 _user32.ChangeDisplaySettingsExW.restype = LONG
 _user32.ChangeDisplaySettingsExW.argtypes = [c_wchar_p, POINTER(DEVMODE), HWND, DWORD, LPVOID]
 _user32.ClientToScreen.restype = BOOL
