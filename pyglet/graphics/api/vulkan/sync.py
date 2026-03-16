@@ -91,6 +91,7 @@ class FrameSync:
         self.command_pool = command_pool
         self.command_buffers = [{} for _ in range(frames_in_flight)]
         self.image_index = [0 for _ in range(frames_in_flight)]
+        self.image_fences: list[VkFence | None] = []
         self.counter = 0
         self._wait_stages = c_array_list([VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT], c_uint32)
 
@@ -115,8 +116,11 @@ class FrameSync:
         # Wait semaphores
         self.image_available_semaphores = [create_semaphore(device, semaphore_info) for _ in range(frames_in_flight)]
 
-        # Signal semaphores
-        self.render_finished_semaphores = [create_semaphore(device, semaphore_info) for _ in range(frames_in_flight)]
+        # Signal semaphores are tracked by swapchain image index (not frame index),
+        # so reuse only occurs after that exact image is acquired again.
+        swapchain_image_count = len(self.swapchain.swapchain_images)
+        self.render_finished_semaphores = [create_semaphore(device, semaphore_info) for _ in range(swapchain_image_count)]
+        self.image_fences = [None] * swapchain_image_count
 
         self.fences = [create_fence(device, fence_info) for _ in range(frames_in_flight)]
 
@@ -183,12 +187,22 @@ class FrameSync:
         )
 
         self.image_index[self.current_frame] = img_index.value
+        image_idx = img_index.value
+
+        # If this image is already in flight from another frame, wait for that frame to complete.
+        image_fence = self.image_fences[image_idx]
+        if image_fence is not None and image_fence != self.fences[self.current_frame]:
+            image_fence_array = c_array_list([image_fence], VkFence)
+            self.vkWaitForFences(vk_device, 1, image_fence_array, VK_TRUE, UINT64_MAX)
+
+        self.image_fences[image_idx] = self.fences[self.current_frame]
 
     def current_image_index(self) -> int:
         return self.image_index[self.current_frame]
 
     def flip(self):
-        signal_semaphores = c_array_list([self.render_finished_semaphores[self.current_frame]], VkSemaphore)
+        image_idx = self.image_index[self.current_frame]
+        signal_semaphores = c_array_list([self.render_finished_semaphores[image_idx]], VkSemaphore)
         wait_semaphores = c_array_list([self.image_available_semaphores[self.current_frame]], VkSemaphore)
 
         cmd_buffers = c_array_list([cb.command_buffer for cb in self.command_buffers[self.current_frame].values()], VkCommandBuffer)
@@ -210,7 +224,7 @@ class FrameSync:
                       1, submit_array, self.fences[self.current_frame])
 
         swapchains = c_array_list([self.swapchain.swapchain], VkSwapchainKHR)
-        image_indices = c_array_list([self.image_index[self.current_frame]], c_uint32)
+        image_indices = c_array_list([image_idx], c_uint32)
 
         present_create = VkPresentInfoKHR(
             sType=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
