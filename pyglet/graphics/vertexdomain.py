@@ -426,6 +426,7 @@ class VertexDomain(ABC):
         self.attribute_meta = attribute_meta
         self.attrib_name_buffers = {}
         self._supports_multi_draw = self._has_multi_draw_extension(self._context)
+        self._hashable_attributes = tuple([attribute.fmt for attribute in attribute_meta.values()])
 
         # Separate attributes.
         self.per_vertex: list[Attribute] = []

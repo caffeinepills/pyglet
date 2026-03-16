@@ -286,7 +286,7 @@ class Options:
     .. versionadded:: 3.0.0
     """
 
-    backend: Literal["opengl", "gl2", "gles3", "gles2", "webgl"] = "opengl"
+    backend: Literal["opengl", "gl2", "gles3", "gles2", "webgl", "vulkan"] = "vulkan"
     """Specify the graphics API backend."""
 
     optimize_states: bool = True

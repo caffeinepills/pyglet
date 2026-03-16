@@ -1046,4 +1046,18 @@ elif pyglet.options.backend == "webgl":
         get_max_array_texture_layers,  # noqa: F401
     )
 elif pyglet.options.backend == "vulkan":
-    pass
+    from pyglet.graphics.api.vulkan.texture import (
+        VulkanTexture,
+        VulkanTexture as Texture,  # noqa: F401
+        VulkanTextureRegion as TextureRegion,  # noqa: F401
+        VulkanTexture3D,
+        VulkanTexture3D as Texture3D,  # noqa: F401
+        VulkanTextureArray,
+        VulkanTextureArray as TextureArray,  # noqa: F401
+        VulkanTextureArrayRegion,
+        VulkanTextureArrayRegion as TextureArrayRegion,  # noqa: F401
+        VulkanTextureGrid,
+        VulkanTextureGrid as TextureGrid,  # noqa: F401
+        get_max_texture_size,  # noqa: F401
+        get_max_array_texture_layers,  # noqa: F401
+    )

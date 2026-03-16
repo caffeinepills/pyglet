@@ -410,6 +410,10 @@ class Win32Window(BaseWindow):
     def switch_to(self) -> None:
         self.context.set_current()
 
+    def before_draw(self) -> None:
+        if self.context:
+            self.context.before_draw()
+
     def _set_transparency(self) -> None:
         region = _gdi32.CreateRectRgn(0, 0, -1, -1)
         bb = DWM_BLURBEHIND()

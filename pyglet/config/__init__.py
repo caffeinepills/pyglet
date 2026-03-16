@@ -133,8 +133,58 @@ class WebGLConfig(UserConfig):
         return False
 
 
+@dataclass
+class VulkanConfig(UserConfig):
+    """A Vulkan Graphics configuration."""
+    #: Specify the presence of a back-buffer for every color buffer.
+    double_buffer: bool | None = True
+    #: Specify the presence of separate left and right buffer sets.
+    stereo: bool | None = None
+    #: Total bits per sample per color buffer.
+    buffer_size: int | None = None
+    #: The number of auxiliary color buffers.
+    aux_buffers: int | None = None
+    #: The number of multisample buffers.
+    sample_buffers: int | None = None
+    #: The number of samples per pixel, or 0 if there are no multisample buffers.
+    samples: int | None = None
+    #: Bits per sample per buffer devoted to the red component.
+    red_size: int | None = None
+    #: Bits per sample per buffer devoted to the green component.
+    green_size: int | None = None
+    #: Bits per sample per buffer devoted to the blue component.
+    blue_size: int | None = None
+    #: Bits per sample per buffer devoted to the alpha component.
+    alpha_size: int | None = None
+    #: Bits per sample in the depth buffer.
+    depth_size: int | None = None
+    #: Bits per sample in the stencil buffer.
+    stencil_size: int | None = None
+    #: Bits per pixel devoted to the red component in the accumulation buffer. Deprecated.
+    accum_red_size: int | None = None
+    #: Bits per pixel devoted to the green component in the accumulation buffer. Deprecated.
+    accum_green_size: int | None = None
+    #: Bits per pixel devoted to the blue component in the accumulation buffer. Deprecated.
+    accum_blue_size: int | None = None
+    #: Bits per pixel devoted to the alpha component in the accumulation buffer. Deprecated.
+    accum_alpha_size: int | None = None
+    #: Whether to use forward compatibility mode.
+    forward_compatible: bool | None = None
+    #: Debug mode.
+    debug: bool | None = None
+    #: If the framebuffer should be transparent.
+    transparent_framebuffer: bool | None = None
+
+    @property
+    def is_finalized(self) -> bool:
+        return False
+
+
 def match_surface_config(config: UserConfig, surface: Window) -> SurfaceConfig | None:
     if isinstance(config, (OpenGLConfig, WebGLConfig)):
         from pyglet.config.gl import get_surface_config  # noqa: PLC0415
+        return get_surface_config(config, surface)
+    if isinstance(config, VulkanConfig):
+        from pyglet.config.vulkan import get_surface_config  # noqa: PLC0415
         return get_surface_config(config, surface)
     return None

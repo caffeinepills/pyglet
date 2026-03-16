@@ -58,9 +58,13 @@ elif pyglet.options.backend == "vulkan":
     from pyglet.graphics.api.vulkan.instance import VulkanGlobal
     core = VulkanGlobal()
 
-    from pyglet.graphics.api.vulkan.draw import Batch
+    from pyglet.graphics.api.vulkan.draw import VulkanBatch as Batch
     from pyglet.graphics.api.vulkan.draw import get_default_shader, get_default_batch
-    from pyglet.graphics.api.vulkan.shader import ShaderProgram, Shader
+    from pyglet.graphics.api.vulkan.shader import (
+        VulkanShaderProgram as ShaderProgram,
+        VulkanShader as Shader,
+        VulkanComputeShaderProgram as ComputeShaderProgram
+    )
 else:
     raise Exception("Backend not set. Cannot utilize a graphics API.")
 

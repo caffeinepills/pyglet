@@ -93,7 +93,7 @@ class ShaderProgram(ABC):
         On some backends like OpenGL, this is unnecessary unless you want to redefine the buffers.
         """
         for attrib in attributes:
-            self._attributes[attrib.name] = attrib
+            self._attributes[attrib.fmt.name] = attrib
 
     def set_uniform_blocks(self, *uniform_blocks: UniformBlockDesc) -> None:
         for ub in uniform_blocks:
