@@ -164,6 +164,9 @@ class CommandPool:
 
     def create(self, flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT):  # Allow buffers to be reset
         """Creates a command pool for allocating command buffers."""
+        if self.command_pool:
+            return
+
         self.queue_family = self.device.graphics_queue
 
         pool_info = VkCommandPoolCreateInfo(
@@ -177,10 +180,16 @@ class CommandPool:
 
         self.vkCreateCommandPool = self.device.vkCreateCommandPool
 
+    def _ensure_created(self) -> None:
+        if self.command_pool is None:
+            self.create()
+
     def allocate_command_buffers(self, buffer_count: int,
                                  level: VkCommandBufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                  flags: VkCommandBufferUsageFlagBits = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT) -> list[CommandBuffer]:
         """Allocates command buffers from the command pool."""
+        self._ensure_created()
+
         alloc_info = VkCommandBufferAllocateInfo(
             sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool=self.command_pool,
@@ -193,6 +202,8 @@ class CommandPool:
         return self.command_buffers
 
     def get_single_use_group(self, buffer_count: int) -> SingleUseCommandBufferGroup:
+        self._ensure_created()
+
         alloc_info = VkCommandBufferAllocateInfo(
             sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool=self.command_pool,
@@ -209,6 +220,8 @@ class CommandPool:
                                                )
 
     def get_single_use_fence(self) -> tuple[SingleTimeCommandBuffer, VkFence]:
+        self._ensure_created()
+
         alloc_info = VkCommandBufferAllocateInfo(
             sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool=self.command_pool,
@@ -227,6 +240,8 @@ class CommandPool:
         return SingleTimeCommandBuffer(vk_command_buffers[0], self.queue_family.vk_queue, vk_fence), vk_fence
 
     def get_single_use(self, buffer_count: int) -> list[SingleTimeCommandBuffer]:
+        self._ensure_created()
+
         alloc_info = VkCommandBufferAllocateInfo(
             sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool=self.command_pool,
@@ -240,6 +255,8 @@ class CommandPool:
         return [SingleTimeCommandBuffer(cmd_buffer, self.queue_family.vk_queue) for cmd_buffer in vk_command_buffers]
 
     def free(self, command_buffers: list[CommandBuffer | SingleTimeCommandBuffer]):
+        if not self.command_pool:
+            return
         command_buff_ct = len(command_buffers)
         vkcmd_buffers = [cb.command_buffer for cb in command_buffers]
         command_buff_array = c_array_list(vkcmd_buffers, VkCommandBuffer)

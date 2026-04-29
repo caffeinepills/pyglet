@@ -8,7 +8,7 @@ from pyglet.enums import GraphicsAPI
 from pyglet.graphics.api.base import ResourceManagement, NullBackend
 
 if TYPE_CHECKING:
-    from pyglet.graphics.api.base import GraphicsConfig
+    from pyglet.graphics.api.base import GraphicsConfig, SurfaceContext
     from pyglet.graphics.draw import Batch
     from pyglet.graphics.shader import ShaderType, ShaderProgram
 
@@ -74,3 +74,11 @@ def get_default_shader() -> ShaderProgram:
     from pyglet.graphics.shader import get_default_shader as _get_default_shader
 
     return _get_default_shader()
+
+
+def get_current_context() -> SurfaceContext:
+    return core.resolve_context()
+
+
+def resolve_context(context: SurfaceContext | None = None) -> SurfaceContext:
+    return core.resolve_context(context)

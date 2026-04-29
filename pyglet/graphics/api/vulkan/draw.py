@@ -164,7 +164,10 @@ class DrawListManager:
             # Get or create the descriptor set
             resources = get_group_resource_states(group)
             if resources:
-                descriptor_set = self.descriptor_mgr.get_descriptor_sets(resources)
+                descriptor_set, _ = self.descriptor_mgr.get_descriptor_sets(
+                    pipeline.descriptor_set_layouts,
+                    resources,
+                )
                 if descriptor_set != current_descriptor_set:
                     self.optimized_draw_list.append({"bind_descriptor_set": descriptor_set})
                     current_descriptor_set = descriptor_set
@@ -446,7 +449,11 @@ class VulkanBatch(Batch):
                 # If the descriptor set is not the same, change it.
                 if current_resources != group_resources:
                     # Get or create the descriptor set
-                    current_desc_set, created = self.descriptor_mgr.get_descriptor_sets(pipeline.descriptor_set_layouts, group_resources)
+                    current_desc_set, created = self.descriptor_mgr.get_descriptor_sets(
+                        pipeline.descriptor_set_layouts,
+                        group_resources,
+                        owner=self._window_ctx,
+                    )
 
                     # Bind first so DescriptorSetObject.current_frame matches the frame being recorded.
                     current_desc_set.bind_to_pipeline(vk_command_buffer,

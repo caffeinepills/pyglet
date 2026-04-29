@@ -19,15 +19,37 @@ class BackendGlobalObject(ABC):  # Temp name for now.
     Meant to be accessed from a global level.
     """
     windows: weakref.WeakKeyDictionary[Window, SurfaceContext]
+    current_context: SurfaceContext | NullContext
     _have_context: bool = False
 
     def __init__(self) -> None:
         self.windows = weakref.WeakKeyDictionary()
         self._current_window = None
+        self.current_context = NullContext()
 
     @property
     def have_context(self) -> bool:
         return self._have_context
+
+    def set_current_context(self, context: SurfaceContext) -> None:
+        """Mark the provided surface context as active for this backend."""
+        self.current_context = context
+        self._current_window = context.window
+
+    def clear_current_context(self, context: SurfaceContext | None = None) -> None:
+        """Clear the active context, optionally only if it matches `context`."""
+        if context is None or self.current_context is context:
+            self.current_context = NullContext()
+            self._current_window = None
+
+    def resolve_context(self, context: SurfaceContext | None = None) -> SurfaceContext:
+        """Return an explicit context or the backend's active context."""
+        resolved = context if context is not None else self.current_context
+        if isinstance(resolved, NullContext):
+            msg = ("A rendering Context has not yet been created, or has already been deleted. Please ensure "
+                   "a context exists (create a Window) before attempting to perform any GPU related activities.")
+            raise RuntimeError(msg)
+        return resolved
 
     @property
     @abstractmethod

@@ -631,6 +631,7 @@ if not _is_pyglet_doc_run:
             VulkanBatch as Batch,
             get_default_batch as _backend_get_default_batch,
         )
+        get_default_batch = _backend_get_default_batch
     else:
         msg = f"Unsupported backend: {pyglet.options.backend!r}"
         raise Exception(msg)

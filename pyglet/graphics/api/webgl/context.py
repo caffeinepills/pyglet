@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Callable
 
 from pyodide.ffi import create_proxy  # noqa: F401, F821
 
-from pyglet.graphics.api.base import SurfaceContext, NullContext
+from pyglet.graphics.api.base import SurfaceContext
 from pyglet.graphics.api.webgl import gl
 from pyglet.graphics.api.webgl.gl import GL_COLOR_BUFFER_BIT
 from pyglet.graphics.api.webgl.gl_info import GLInfo
@@ -126,7 +126,7 @@ class OpenGLSurfaceContext(SurfaceContext):
         # self.detach()
         #
         if self.core.current_context is self:
-            self.core.current_context = NullContext()
+            self.core.clear_current_context(self)
         #     #gl_info.remove_active_context()
 
     def attach(self, window: Window) -> None:
@@ -151,7 +151,7 @@ class OpenGLSurfaceContext(SurfaceContext):
         assert self.window is not None, "Window has not been attached."
 
         # Not per-thread
-        self.global_ctx.current_context = self
+        self.global_ctx.set_current_context(self)
         gl.current_context = self
 
         # Set active context.

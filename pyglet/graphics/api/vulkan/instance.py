@@ -10,6 +10,7 @@ from pyglet.graphics.api.base import (
     BackendGlobalObject,
     SurfaceContext,
     UBOMatrixTransformations,
+    NullContext,
 )
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.graphics.api.vulkan.commands import CommandBuffer, CommandPool
@@ -70,10 +71,9 @@ class VulkanMatrices(UBOMatrixTransformations):
     def __init__(self, window: Window, backend: VulkanGlobal):
 
         self._default_program = pyglet.graphics.get_default_shader()
-
-        self._default_program.set_uniform_blocks(WindowBlock)
-
-        self.ubo = self._default_program.ubo["WindowBlock"]
+        if "WindowBlock" not in self._default_program.uniform_blocks:
+            self._default_program.set_uniform_blocks(WindowBlock)
+        self.ubo = self._default_program.uniform_blocks["WindowBlock"].create_ubo()
 
         # Change to work with this:
         #self.ubo = self._default_program.uniform_blocks['WindowBlock'].create_ubo()
@@ -246,6 +246,7 @@ class VulkanSurfaceContext(SurfaceContext):
         if self.devices.logical_device.vk_device is None:
             self.devices.logical_device.create(self.surface)
         self.logical_device = self.devices.logical_device
+        self.core.command_pool.create()
         self._info.query(self)
 
         # TODO: Handle no swapchain for headless environments and swapchain support with VK_EXT_headless_surface
@@ -263,7 +264,13 @@ class VulkanSurfaceContext(SurfaceContext):
         self.swapchain.create_framebuffers(self.renderpass)
 
         # Frame Syncing
-        self.frame_sync = FrameSync(self.logical_device, self.swapchain, self.core.descriptor_mgr, self.core.command_pool, NUM_FRAMES_IN_FLIGHT)
+        self.frame_sync = FrameSync(
+            self.logical_device,
+            self.swapchain,
+            self.core.descriptor_mgr,
+            CommandPool(self.logical_device),
+            NUM_FRAMES_IN_FLIGHT,
+        )
 
         self.default_cb_id = 0
 
@@ -300,6 +307,7 @@ class VulkanSurfaceContext(SurfaceContext):
         print("Setting vsync... to do")
 
     def set_current(self):
+        self.core.set_current_context(self)
         # Process deferred resource removal.
         self.core.resource_removal.process()
 
@@ -324,6 +332,7 @@ class VulkanSurfaceContext(SurfaceContext):
             self.logical_device.vkCmdEndRenderPass(vk_command_buffer)
 
     def before_draw(self):
+        self.set_current()
         self.frame_sync.before_draw()
 
     def flip(self):
@@ -332,6 +341,12 @@ class VulkanSurfaceContext(SurfaceContext):
     def delete(self):
         if self.logical_device and self.logical_device.vk_device:
             self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
+            self.core.resource_removal.process()
+
+        matrices = getattr(self.window, "_matrices", None)
+        if matrices and getattr(matrices, "ubo", None):
+            matrices.ubo.delete()
+            matrices.ubo = None
 
         if self.swapchain:
             self.swapchain.delete()
@@ -368,6 +383,9 @@ class VulkanSurfaceContext(SurfaceContext):
         if self.logical_device and self.logical_device.vk_device:
             self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
         self.delete()
+        if self.window in self.core.windows:
+            del self.core.windows[self.window]
+        self.core.clear_current_context(self)
 
 
 class VulkanInstanceFuncs:
@@ -589,8 +607,6 @@ class VulkanGlobal(BackendGlobalObject):
 
         resource_manager.register_manager(self)
 
-        self.current_context = self
-
     @property
     def object_space(self) -> ObjectSpace:
         return self._object_space
@@ -613,18 +629,21 @@ class VulkanGlobal(BackendGlobalObject):
         return VulkanUserConfig(**kwargs)
 
     def get_default_batch(self):
-        if not hasattr(self, "default_batch"):
-            self.default_batch = pyglet.graphics.Batch()
+        context = self.resolve_context()
+        if not hasattr(context, "default_batch"):
+            context.default_batch = pyglet.graphics.Batch()
 
-        return self.default_batch
+        return context.default_batch
 
     @property
     def current_window(self) -> VulkanSurfaceContext:
-        """Workaround to get working.
-
-        Separate window and global better when multiwindows are supported.
-        """
-        return list(self.windows.values())[0]
+        ctx = self.current_context
+        if not isinstance(ctx, NullContext):
+            return ctx
+        if self.windows:
+            return next(iter(self.windows.values()))
+        msg = "No Vulkan surface context is available."
+        raise RuntimeError(msg)
 
     def get_surface_context(self, window: Window, config: VulkanSurfaceConfig,
                             shared: VulkanInstance) -> SurfaceContext:
@@ -682,7 +701,16 @@ class VulkanGlobal(BackendGlobalObject):
 
         Blocking, so only call in specific circumstances when you need all resources to be idle.
         """
-        self.devices.logical_device.vkDeviceWaitIdle(self.devices.logical_device.vk_device)
+        logical = self.devices.logical_device
+        if logical is None:
+            return
+
+        vk_device = getattr(logical, "vk_device", None)
+        wait_idle = getattr(logical, "vkDeviceWaitIdle", None)
+        if vk_device is None or wait_idle is None:
+            return
+
+        wait_idle(vk_device)
 
     def delete(self):
         self.wait_idle()
@@ -711,6 +739,7 @@ class VulkanGlobal(BackendGlobalObject):
 
         self.pipeline_mgr.delete()
         self.descriptor_mgr.delete()
+        self.command_pool.delete()
 
         # Finally destroy the logical device after everything is cleaned up.
         if self.devices.logical_device:

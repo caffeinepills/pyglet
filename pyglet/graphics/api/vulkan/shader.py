@@ -808,8 +808,9 @@ class VulkanUniformBlock(UniformBlock):
     def create_ubo(self) -> VulkanUniformBufferObject:
         """Create a new UniformBufferObject from this uniform block."""
         print("SIZE CREATE", self.size)
+        context = pyglet.graphics.api.core.resolve_context()
         return VulkanUniformBufferObject(
-            pyglet.graphics.api.core.current_context,
+            context,
             view_class=self.view_cls,
             buffer_size=self.size,
             binding=self.binding,

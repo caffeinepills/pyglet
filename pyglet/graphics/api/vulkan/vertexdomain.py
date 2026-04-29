@@ -272,8 +272,8 @@ class VertexDomain(BaseVertexDomain):
     _vertex_class = VulkanVertexList
     vertex_buffers: VulkanVertexStream
 
-    def __init__(self, context: SurfaceContext, initial_count: int, attribute_meta: dict[str, Attribute]) -> None:
-        ctx = context or pyglet.graphics.api.core.current_context
+    def __init__(self, context: SurfaceContext | None, initial_count: int, attribute_meta: dict[str, Attribute]) -> None:
+        ctx = pyglet.graphics.api.core.resolve_context(context)
         self.devices = ctx.devices
         super().__init__(ctx, initial_count, attribute_meta)
 
@@ -304,7 +304,13 @@ class VertexDomain(BaseVertexDomain):
             DeviceFunc.vkCmdDraw(command_buffer, size, 1, start, 0)
 
     def draw_subset(self, mode: GeometryMode, vertex_list: VertexList) -> None:  # noqa: ARG002
-        msg = "Vulkan subset drawing is not supported outside batch command buffer recording."
+        # Vulkan draws through recorded batch command buffers. For debug-style direct
+        # `vertex_list.draw()` calls, fall back to drawing the owning batch.
+        for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
+            batch.draw()
+            return
+
+        msg = "Vulkan subset drawing requires a batch assignment."
         raise NotImplementedError(msg)
 
     def delete(self) -> None:
@@ -318,7 +324,7 @@ class IndexedVertexDomain(BaseIndexedVertexDomain):
 
     def __init__(
         self,
-        context: SurfaceContext,
+        context: SurfaceContext | None,
         initial_count: int,
         attribute_meta: dict[str, Attribute],
         index_type: DataTypes = "H",
@@ -326,7 +332,7 @@ class IndexedVertexDomain(BaseIndexedVertexDomain):
         self.index_type = index_type
         self._supports_base_vertex = False
 
-        ctx = context or pyglet.graphics.api.core.current_context
+        ctx = pyglet.graphics.api.core.resolve_context(context)
         self.devices = ctx.devices
         BaseVertexDomain.__init__(self, ctx, initial_count, attribute_meta)
 
@@ -363,7 +369,13 @@ class IndexedVertexDomain(BaseIndexedVertexDomain):
             DeviceFunc.vkCmdDrawIndexed(command_buffer, size, 1, start, 0, 0)
 
     def draw_subset(self, mode: GeometryMode, vertex_list: IndexedVertexList) -> None:  # noqa: ARG002
-        msg = "Vulkan subset indexed drawing is not supported outside batch command buffer recording."
+        # Vulkan draws through recorded batch command buffers. For debug-style direct
+        # `vertex_list.draw()` calls, fall back to drawing the owning batch.
+        for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
+            batch.draw()
+            return
+
+        msg = "Vulkan indexed subset drawing requires a batch assignment."
         raise NotImplementedError(msg)
 
     def delete(self) -> None:

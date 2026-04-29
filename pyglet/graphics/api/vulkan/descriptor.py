@@ -57,6 +57,13 @@ class DescriptorPool:
         self.vk_descriptor_pool = None
 
     def create_pool(self, frames_in_flight: int, max_sets: int):
+        if self.vk_descriptor_pool:
+            if self.frames_in_flight != frames_in_flight or self.max_sets != max_sets:
+                msg = ("Descriptor pool is already initialized with different settings "
+                       f"(frames_in_flight={self.frames_in_flight}, max_sets={self.max_sets}).")
+                raise RuntimeError(msg)
+            return
+
         self.frames_in_flight = frames_in_flight
         self.max_sets = max_sets
         assert len(self.pool_sizes) == 0, "Pool sizes should be empty."
@@ -124,6 +131,9 @@ class DescriptorPool:
         if self.vk_descriptor_pool:
             self.device.vkDestroyDescriptorPool(self.device.vk_device, self.vk_descriptor_pool, None)
             self.vk_descriptor_pool = None
+        self.frames_in_flight = 0
+        self.max_sets = 0
+        self.pool_sizes.clear()
         print("Destroyed Descriptor Pool")
 
 
@@ -197,7 +207,13 @@ class DescriptorManager:
         #  management features, including UPDATE_AFTER_BIND and partially bound descriptors.
 
     def create_pool(self, frames_in_flight: int, max_sets: int = 10) -> None:
-        assert self.frames_in_flight == 0, "Pool was already created. Recreating is not yet finished."
+        if self.frames_in_flight:
+            if self.frames_in_flight != frames_in_flight:
+                msg = ("Descriptor pool already initialized with a different frames_in_flight value: "
+                       f"{self.frames_in_flight} != {frames_in_flight}")
+                raise RuntimeError(msg)
+            return
+
         self.frames_in_flight = frames_in_flight
         self.descriptor_pool.create_pool(frames_in_flight, max_sets)
 
@@ -210,13 +226,17 @@ class DescriptorManager:
 
         return [self.layout_cache.get(bindings, flags=0)]
 
-    def get_descriptor_sets(self, set_layout: list[VkDescriptorSetLayout], resource_states: list[State]) -> tuple[DescriptorSetObject, bool]:
+    def get_descriptor_sets(self,
+                            set_layout: list[VkDescriptorSetLayout],
+                            resource_states: list[State],
+                            owner: object | None = None) -> tuple[DescriptorSetObject, bool]:
         """Allocate the descriptor sets.
 
         Will return a descriptor set for each frame in flight.
         """
         layout_key = tuple(int(getattr(layout, "value", 0) or 0) for layout in set_layout)
-        key = (layout_key, tuple(resource_states))
+        owner_key = id(owner) if owner is not None else None
+        key = (layout_key, tuple(resource_states), owner_key)
         if key in self.descriptor_set_cache:
             return self.descriptor_set_cache[key], False
 
@@ -235,6 +255,8 @@ class DescriptorManager:
     def delete(self) -> None:
         self.layout_cache.delete()
         self.descriptor_pool.delete()
+        self.frames_in_flight = 0
+        self.descriptor_set_cache.clear()
 
 
 class DescriptorSetObject:

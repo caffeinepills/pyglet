@@ -145,7 +145,7 @@ class WebGLBackend(BackendGlobalObject):
     def get_surface_context(self, window: Window, config: SurfaceConfig,
                             shared: OpenGLSurfaceContext | None = None) -> SurfaceContext:
         context = self.windows[window] = self.create_context(config, shared)
-        self.current_context = context
+        self.set_current_context(context)
         self._have_context = True
         return context
 

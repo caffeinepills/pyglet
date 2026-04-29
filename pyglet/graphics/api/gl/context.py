@@ -6,7 +6,7 @@ from typing import Callable, TYPE_CHECKING
 
 from pyglet.enums import GraphicsAPI
 from pyglet.graphics.api.gl import gl, gl_info, ObjectSpace
-from pyglet.graphics.api.base import SurfaceContext, NullContext
+from pyglet.graphics.api.base import SurfaceContext
 from pyglet.graphics.api.gl.gl import GLFunctions, GLuint, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT
 
 
@@ -120,7 +120,7 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
         deletion while another Context was active.
         """
         # Not per-thread
-        self.core.current_context = self
+        self.core.set_current_context(self)
 
         if not self._info.was_queried:
             GLFunctions.__init__(self)
@@ -193,7 +193,7 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
         self.detach()
 
         if self.core.current_context is self:
-            self.core.current_context = NullContext()
+            self.core.clear_current_context(self)
             # gl_info.remove_active_context()
 
     def _safe_to_operate_on_object_space(self) -> bool:
