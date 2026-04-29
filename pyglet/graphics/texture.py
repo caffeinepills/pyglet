@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Generic, Iterator, Literal, Protocol, Sequence, TYPE_CHECKING, TypeVar, cast, overload
+import sys
+from typing import Generic, Iterator, Literal, Protocol, Sequence, TYPE_CHECKING, TypeVar, overload
 
 import pyglet
-from pyglet.enums import AddressMode, ComponentFormat, TextureFilter, TextureType
+from pyglet.enums import AddressMode, ComponentFormat, TextureFilter, TextureType, GraphicsAPI
 from pyglet.image.base import (
     _AbstractImage,
     _AbstractImageSequence,
@@ -33,8 +34,8 @@ TTexture = TypeVar("TTexture", bound="Texture")
 class TextureSequence(_AbstractImageSequence, Generic[TTexture]):
     """Interface for a sequence of textures.
 
-    Typical implementations store multiple :py:class:`~pyglet.graphics.TextureRegion`s
-    within one :py:class:`~pyglet.graphics.Texture` to minimise state changes.
+    Typical implementations store multiple :py:class:`~pyglet.graphics.texture.TextureRegion`s
+    within one :py:class:`~pyglet.graphics.texture.Texture` to minimise state changes.
     """
 
     @overload
@@ -449,8 +450,8 @@ class Texture(_AbstractImage):
         """Create a copy of this image applying a simple transformation.
 
         The transformation is applied to the texture coordinates only;
-        :py:meth:`~pyglet.image.AbstractImage.get_image_data` will return the
-        untransformed data. The transformation is applied around the anchor point.
+        :py:meth:`~pyglet.graphics.texture.Texture.get_image_data` will fetch the
+        untransformed data from the GPU. The transformation is applied around the anchor point.
 
         Args:
             flip_x:
@@ -848,7 +849,7 @@ class Texture3D(_Texture3DShared[TextureRegion], Texture, UniformTextureSequence
         raise NotImplementedError
 
 
-class TextureGrid(_AbstractGrid):
+class TextureGrid(_AbstractGrid[TextureRegion]):
     """A texture containing a regular grid of texture regions.
 
     To construct, create an :py:class:`~pyglet.image.ImageGrid` first::
@@ -857,7 +858,7 @@ class TextureGrid(_AbstractGrid):
         texture_grid = TextureGrid(image_grid)
 
     The texture grid can be accessed as a single texture, or as a sequence
-    of :py:class:`~pyglet.graphics.TextureRegion`.  When accessing as a sequence, you can specify
+    of :py:class:`~pyglet.graphics.texture.TextureRegion`.  When accessing as a sequence, you can specify
     integer indexes, in which the images are arranged in rows from the
     bottom-left to the top-right::
 
@@ -908,15 +909,9 @@ class TextureGrid(_AbstractGrid):
                 Pixels separating adjacent columns.  The padding is only
                 inserted between columns, not at the edges of the grid.
         """
-        # Backend-specific region implementations may not inherit the abstract TextureRegion base.
-        if isinstance(texture, TextureRegion) or hasattr(texture, "owner"):
-            owner = texture.owner
-        else:
-            owner = texture
-
         item_width = item_width or (texture.width - column_padding * (columns - 1)) // columns
         item_height = item_height or (texture.height - row_padding * (rows - 1)) // rows
-        self.texture = owner
+        self.texture = texture
         super().__init__(rows, columns, item_width, item_height, row_padding, column_padding)
 
     def _create_item(self, x: int, y: int, width: int, height: int) -> TextureRegion:
@@ -968,6 +963,7 @@ class CompressedTexture(_AbstractImage):
     """The mipmap level of this texture."""
 
     images = 1
+    default_filters: TextureFilter | tuple[TextureFilter, TextureFilter] = TextureFilter.LINEAR, TextureFilter.LINEAR
 
     x: int = 0
     y: int = 0
@@ -984,6 +980,7 @@ class CompressedTexture(_AbstractImage):
         self.id = tex_id
         self.tex_type = tex_type
 
+        filters = filters or self.default_filters
         if isinstance(filters, TextureFilter):
             self.min_filter = filters
             self.mag_filter = filters
@@ -997,67 +994,79 @@ class CompressedTexture(_AbstractImage):
     def get_texture(self) -> CompressedTexture:
         return self
 
+    def get_image_data(self) -> ImageData:
+        msg = f"Compressed texture readback is not implemented for {self}."
+        raise NotImplementedError(msg)
 
-if pyglet.options.backend in ("opengl", "gles3", "gl2", "gles2"):
-    from pyglet.graphics.api.gl.framebuffer import (  # noqa: F401
-        GLFramebuffer as Framebuffer,
-        GLRenderbuffer as Renderbuffer,
-        get_max_color_attachments,
-        get_screenshot,
-    )
-    from pyglet.graphics.api.gl.texture import (
-        GLCompressedTexture,
-        GLCompressedTexture as CompressedTexture,  # noqa: F401
-        GLTexture,
-        GLTexture as Texture,  # noqa: F401
-        GLTextureRegion,
-        GLTextureRegion as TextureRegion,  # noqa: F401
-        GLTexture3D,
-        GLTexture3D as Texture3D,  # noqa: F401
-        GLTextureArray,
-        GLTextureArray as TextureArray,  # noqa: F401
-        GLTextureArrayRegion,
-        GLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
-        GLTextureGrid,
-        GLTextureGrid as TextureGrid,  # noqa: F401
-        get_max_texture_size,
-        get_max_array_texture_layers,
-    )
-elif pyglet.options.backend == "webgl":
-    from pyglet.graphics.api.webgl.framebuffer import (  # noqa: F401
-        WebGLFramebuffer as Framebuffer,
-        WebGLRenderbuffer as Renderbuffer,
-        get_max_color_attachments,
-        get_screenshot,
-    )
-    from pyglet.graphics.api.webgl.texture import (
-        WebGLTexture,
-        WebGLTexture as Texture,  # noqa: F401
-        WebGLTextureRegion as TextureRegion,  # noqa: F401
-        WebGLTexture3D,
-        WebGLTexture3D as Texture3D,  # noqa: F401
-        WebGLTextureArray,
-        WebGLTextureArray as TextureArray,  # noqa: F401
-        WebGLTextureArrayRegion,
-        WebGLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
-        WebGLTextureGrid,
-        WebGLTextureGrid as TextureGrid,  # noqa: F401
-        get_max_texture_size,  # noqa: F401
-        get_max_array_texture_layers,  # noqa: F401
-    )
-elif pyglet.options.backend == "vulkan":
-    from pyglet.graphics.api.vulkan.texture import (
-        VulkanTexture,
-        VulkanTexture as Texture,  # noqa: F401
-        VulkanTextureRegion as TextureRegion,  # noqa: F401
-        VulkanTexture3D,
-        VulkanTexture3D as Texture3D,  # noqa: F401
-        VulkanTextureArray,
-        VulkanTextureArray as TextureArray,  # noqa: F401
-        VulkanTextureArrayRegion,
-        VulkanTextureArrayRegion as TextureArrayRegion,  # noqa: F401
-        VulkanTextureGrid,
-        VulkanTextureGrid as TextureGrid,  # noqa: F401
-        get_max_texture_size,  # noqa: F401
-        get_max_array_texture_layers,  # noqa: F401
-    )
+    def get_region(self, x: int, y: int, width: int, height: int) -> _AbstractImage:
+        msg = f"Region views are not implemented for {self}."
+        raise NotImplementedError(msg)
+
+
+_is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
+
+if not _is_pyglet_doc_run:
+    if pyglet.options.backend in (GraphicsAPI.OPENGL, GraphicsAPI.OPENGL_2, GraphicsAPI.OPENGL_ES_2, GraphicsAPI.OPENGL_ES_3):
+        from pyglet.graphics.api.gl.framebuffer import (  # noqa: F401
+            GLFramebuffer as Framebuffer,
+            GLRenderbuffer as Renderbuffer,
+            get_max_color_attachments,
+            get_screenshot,
+        )
+        from pyglet.graphics.api.gl.texture import (
+            GLCompressedTexture,
+            GLCompressedTexture as CompressedTexture,  # noqa: F401
+            GLTexture,
+            GLTexture as Texture,  # noqa: F401
+            GLTextureRegion,
+            GLTextureRegion as TextureRegion,  # noqa: F401
+            GLTexture3D,
+            GLTexture3D as Texture3D,  # noqa: F401
+            GLTextureArray,
+            GLTextureArray as TextureArray,  # noqa: F401
+            GLTextureArrayRegion,
+            GLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
+            GLTextureGrid,
+            GLTextureGrid as TextureGrid,  # noqa: F401
+            get_max_texture_size,
+            get_max_array_texture_layers,
+        )
+    elif pyglet.options.backend == GraphicsAPI.WEBGL:
+        from pyglet.graphics.api.webgl.framebuffer import (  # noqa: F401
+            WebGLFramebuffer as Framebuffer,
+            WebGLRenderbuffer as Renderbuffer,
+            get_max_color_attachments,
+            get_screenshot,
+        )
+        from pyglet.graphics.api.webgl.texture import (
+            WebGLTexture,
+            WebGLTexture as Texture,  # noqa: F401
+            WebGLTextureRegion as TextureRegion,  # noqa: F401
+            WebGLTexture3D,
+            WebGLTexture3D as Texture3D,  # noqa: F401
+            WebGLTextureArray,
+            WebGLTextureArray as TextureArray,  # noqa: F401
+            WebGLTextureArrayRegion,
+            WebGLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
+            WebGLTextureGrid,
+            WebGLTextureGrid as TextureGrid,  # noqa: F401
+            get_max_texture_size,  # noqa: F401
+            get_max_array_texture_layers,  # noqa: F401
+        )
+    elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan.texture import (
+            VulkanTexture,
+            VulkanTexture as Texture,  # noqa: F401
+            VulkanTextureRegion as TextureRegion,  # noqa: F401
+            VulkanTexture3D,
+            VulkanTexture3D as Texture3D,  # noqa: F401
+            VulkanTextureArray,
+            VulkanTextureArray as TextureArray,  # noqa: F401
+            VulkanTextureArrayRegion,
+            VulkanTextureArrayRegion as TextureArrayRegion,  # noqa: F401
+            VulkanTextureGrid,
+            VulkanTextureGrid as TextureGrid,  # noqa: F401
+            get_max_texture_size,  # noqa: F401
+            get_max_array_texture_layers,  # noqa: F401
+        )
+

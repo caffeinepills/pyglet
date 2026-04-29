@@ -3,7 +3,7 @@
 This module provides classes for a variety of simplistic 2D shapes,
 such as Rectangles, Circles, and Lines. These shapes are made
 internally from OpenGL primitives, and provide excellent performance
-when drawn as part of a :py:class:`~pyglet.graphics.Batch`.
+when drawn as part of a :py:class:`~pyglet.graphics.draw.Batch`.
 Convenience methods are provided for positioning, changing color, opacity,
 and rotation.
 The Python ``in`` operator can be used to check whether a point is inside a shape.
@@ -72,21 +72,22 @@ from typing import TYPE_CHECKING, Sequence, Tuple, Union
 
 import pyglet
 from pyglet.extlibs import earcut
-from pyglet.graphics import Batch, Group, ShaderProgram
-from pyglet.enums import BlendFactor, GeometryMode
+from pyglet.graphics import Group
+from pyglet.enums import BlendFactor, GeometryMode, GraphicsAPI
 from pyglet.math import Vec2
 
 if TYPE_CHECKING:
     from pyglet.graphics.shader import ShaderProgram
+    from pyglet.graphics.draw import Batch
 
 
-if pyglet.options.backend in ("opengl", "gles3"):
+if pyglet.options.backend in (GraphicsAPI.OPENGL, GraphicsAPI.OPENGL_ES_3):
     from pyglet.graphics.api.gl.shapes import get_default_shader
-elif pyglet.options.backend in ("gl2", "gles2"):
+elif pyglet.options.backend in (GraphicsAPI.OPENGL_2, GraphicsAPI.OPENGL_ES_2):
     from pyglet.graphics.api.gl2.shapes import get_default_shader
-elif pyglet.options.backend == "webgl":
+elif pyglet.options.backend == GraphicsAPI.WEBGL:
     from pyglet.graphics.api.webgl.shapes import get_default_shader
-elif pyglet.options.backend == "vulkan":
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
     from pyglet.graphics.api.vulkan.shapes import get_default_shader
 
 
@@ -441,7 +442,7 @@ class ShapeBase(ABC):
         .. warning:: Avoid this inefficient method for everyday use!
 
                      Regular drawing should add shapes to a :py:class:`Batch`
-                     and call its :py:meth:`~Batch.draw` method.
+                     and call its :py:meth:`~pyglet.graphics.draw.Batch.draw` method.
 
         """
         ctx = pyglet.graphics.api.core.current_context

@@ -9,6 +9,7 @@ class GraphicsAPI(str, Enum):
     OPENGL_ES_2 = "gles2"
     OPENGL_ES_3 = "gles3"
     WEBGL = "webgl"
+    VULKAN = "vulkan"
 
     def __str__(self) -> str:
         return self.value
@@ -70,6 +71,27 @@ class TextureWrapping(Enum):
     WRAP_S = auto()
     WRAP_T = auto()
     WRAP_R = auto()
+
+
+class AnimationChannelTargetPath(str, Enum):
+    # Keep the values of the strings as is, to match glTF 2.0 specifications
+    TRANSLATION = "translation"
+    ROTATION = "rotation"
+    SCALE = "scale"
+    WEIGHTS = "weights"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class AnimationInterpolation(str, Enum):
+    # Keep the values of the strings as is, to match glTF 2.0 specifications
+    LINEAR = "LINEAR"
+    STEP = "STEP"
+    CUBIC_SPLINE = "CUBICSPLINE"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class ComponentFormat(str, Enum):

@@ -34,8 +34,8 @@ animations, you can set the ``subpixel`` parameter to ``True`` when creating
 the sprite (:since: pyglet 1.2).
 
 The sprite's positioning, rotation and scaling all honor the original
-image's anchor (:py:attr:`~pyglet.image.AbstractImage.anchor_x`,
-:py:attr:`~pyglet.image.AbstractImage.anchor_y`).
+image's anchor (:py:attr:`~pyglet.image.ImageData.anchor_x`,
+:py:attr:`~pyglet.image.ImageData.anchor_y`).
 
 
 Drawing multiple sprites
@@ -75,20 +75,22 @@ from pyglet import event, clock
 if TYPE_CHECKING:
     from typing import ClassVar, Literal
     from pyglet.graphics.texture import Texture
+    from pyglet.graphics.draw import Batch
+    from pyglet.graphics.shader import ShaderProgram
 
-from pyglet.graphics import Group, Batch, ShaderProgram
-from pyglet.enums import BlendFactor, GeometryMode
-from pyglet.image.base import Animation
+from pyglet.graphics import Group
+from pyglet.enums import BlendFactor, GeometryMode, GraphicsAPI
+from pyglet.image.base import Animation, ImageData
 from pyglet.graphics.texture import TextureArrayRegion
 
 
-if pyglet.options.backend in ("opengl", "gles3"):
+if pyglet.options.backend in (GraphicsAPI.OPENGL, GraphicsAPI.OPENGL_ES_3):
     from pyglet.graphics.api.gl.sprite import get_default_array_shader, get_default_shader
-elif pyglet.options.backend in ("gl2", "gles2"):
+elif pyglet.options.backend in (GraphicsAPI.OPENGL_2, GraphicsAPI.OPENGL_ES_2):
     from pyglet.graphics.api.gl2.sprite import get_default_array_shader, get_default_shader
-elif pyglet.options.backend == "webgl":
+elif pyglet.options.backend == GraphicsAPI.WEBGL:
     from pyglet.graphics.api.webgl.sprite import get_default_array_shader, get_default_shader
-elif pyglet.options.backend == "vulkan":
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
     from pyglet.graphics.api.vulkan.sprite import get_default_array_shader, get_default_shader, SpriteGroup
 
 _is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
@@ -145,7 +147,7 @@ class Sprite(event.EventDispatcher):
     group_class: ClassVar[type[SpriteGroup | Group]] = SpriteGroup
 
     def __init__(self,
-                 img: Texture | Animation,
+                 img: ImageData | Texture | Animation,
                  x: float = 0, y: float = 0, z: float = 0,
                  blend_src: BlendFactor = BlendFactor.SRC_ALPHA,
                  blend_dest: BlendFactor = BlendFactor.ONE_MINUS_SRC_ALPHA,
@@ -300,7 +302,7 @@ class Sprite(event.EventDispatcher):
         self._create_vertex_list()
 
     @property
-    def batch(self) -> Batch:
+    def batch(self) -> Batch | None:
         """Graphics batch.
 
         The sprite can be migrated from one batch to another, or removed from
@@ -370,15 +372,19 @@ class Sprite(event.EventDispatcher):
         self._update_position()
 
     def _set_texture(self, texture: Texture) -> None:
-        if texture.id is not self._texture.id:
-            self._vertex_list.delete()
-            self._texture = texture
-            self._group = self.get_sprite_group()
-            self._create_vertex_list()
-            print("CREATE VERTEX LIST")
-        else:
-            self._vertex_list.tex_coords[:] = texture.tex_coords
+        texture_changed = texture.id != self._texture.id
         self._texture = texture
+
+        if texture_changed:
+            self._group = self.get_sprite_group()
+            if self._batch is not None:
+                self._batch.migrate(self._vertex_list, GeometryMode.TRIANGLES, self._group, self._batch)
+            else:
+                self._vertex_list.delete()
+                self._create_vertex_list()
+                return
+
+        self._vertex_list.tex_coords[:] = texture.tex_coords
 
     def _create_vertex_list(self) -> None:
         self._vertex_list = self.program.vertex_list_indexed(

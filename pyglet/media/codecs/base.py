@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import io
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, BinaryIO, Optional, Union
+from typing import TYPE_CHECKING, BinaryIO, Optional, Union, ClassVar
 
 from pyglet.media.exceptions import MediaException, CannotSeekException
 
@@ -130,7 +130,7 @@ class AudioData:
         duration: float = 0.0,
         events: list[MediaEvent] | None = None,
     ) -> None:
-        """Events (List[:class:`pyglet.media.drivers.base.MediaEvent`]):
+        """Create an audio packet.
 
         Args:
             data:
@@ -145,7 +145,7 @@ class AudioData:
                 List of events contained within this packet. Events are timestamped relative to this audio packet.
 
         .. deprecated:: 2.0.10
-        `timestamp` and `duration` are unused and will be removed eventually.
+           `timestamp` and `duration` are unused and will be removed eventually.
         """
         if isinstance(data, bytes):
             # bytes are treated specially by ctypes and can be cast to a void pointer, get
@@ -218,8 +218,8 @@ class Source:
             is the current source.
     """
 
-    _duration = None
-    _players: list[AudioPlayer] = []  # Players created through Source.play
+    _duration: float = 0.0
+    _players: ClassVar[list[AudioPlayer]] = []  # Players created through Source.play
 
     audio_format: AudioFormat | None = None
     video_format: VideoFormat | None = None

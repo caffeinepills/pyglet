@@ -11,12 +11,14 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Sequence
 
+from .enums import GraphicsAPI
+
 if TYPE_CHECKING:
     from types import FrameType
     from typing import Any, Callable, ItemsView, Sized
 
 #: The release version
-version = '3.0.dev2'
+version = '3.0.dev3'
 __version__ = version
 
 MIN_PYTHON_VERSION = 3, 8
@@ -101,7 +103,7 @@ class Options:
 
     debug_graphics_batch: bool = False
     """If ``True``, prints batch information being drawn, including :py:class:`~pyglet.graphics.Group`'s, VertexDomains,
-    and :py:class:`~pyglet.graphics.Texture` information. This can be useful to see how many Group's are being
+    and :py:class:`~pyglet.graphics.texture.Texture` information. This can be useful to see how many Group's are being
     consolidated."""
 
     debug_lib: bool = False
@@ -286,8 +288,15 @@ class Options:
     .. versionadded:: 3.0.0
     """
 
-    backend: Literal["opengl", "gl2", "gles3", "gles2", "webgl", "vulkan"] = "vulkan"
+    backend: Literal["opengl", "gl2", "gles3", "gles2", "webgl"] | GraphicsAPI = GraphicsAPI.OPENGL
     """Specify the graphics API backend."""
+
+    opengl_persistent_buffers: bool = False
+    """If ``True``, the OpenGL backend uses persistent mapped vertex buffers when supported.
+
+    Requires OpenGL 4.4 or the ``GL_ARB_buffer_storage`` extension. If unavailable or ``False``, pyglet
+    falls back to normal backed buffer objects.
+    """
 
     optimize_states: bool = True
     """Runs a second pass on the draw list to remove any redundant states.

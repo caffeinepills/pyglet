@@ -3,13 +3,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 import pyglet
-from pyglet.graphics.api.base import ResourceManagement
+
+from pyglet.enums import GraphicsAPI
+from pyglet.graphics.api.base import ResourceManagement, NullBackend
 
 if TYPE_CHECKING:
     from pyglet.graphics.api.base import GraphicsConfig
-    from pyglet.graphics.shader import ShaderType
+    from pyglet.graphics.draw import Batch
+    from pyglet.graphics.shader import ShaderType, ShaderProgram
 
-core = None
+core = NullBackend()
 
 resource_manager = ResourceManagement()
 
@@ -17,44 +20,24 @@ resource_manager = ResourceManagement()
 # Enforce WebGL if emscripten is detected.
 # Create better fallback/choosing system later.
 if pyglet.compat_platform == "emscripten":
-    pyglet.options.backend = "webgl"
+    pyglet.options.backend = GraphicsAPI.WEBGL
 
-if pyglet.options.backend in ("opengl", "gles3"):
+if pyglet.options.backend in (GraphicsAPI.OPENGL, GraphicsAPI.OPENGL_ES_3):
     from pyglet.graphics.api.gl.global_opengl import OpenGLBackend
 
-    core = OpenGLBackend("gles" if pyglet.options.backend == "gles3" else "gl")
+    core = OpenGLBackend(gl_api=pyglet.options.backend)
 
-    from pyglet.graphics.api.gl.draw import GLBatch as Batch
-    from pyglet.graphics.api.gl.draw import get_default_shader, get_default_batch
-    from pyglet.graphics.api.gl.shader import (
-        GLComputeShaderProgram as ComputeShaderProgram,
-        GLShader as Shader,
-        GLShaderProgram as ShaderProgram,
-    )
-
-elif pyglet.options.backend in ("gl2", "gles2"):
+elif pyglet.options.backend in (GraphicsAPI.OPENGL_2, GraphicsAPI.OPENGL_ES_2):
     from pyglet.graphics.api.gl2.global_opengl import OpenGL2Backend
 
-    core = OpenGL2Backend("gles" if pyglet.options.backend == "gles2" else "gl")
+    core = OpenGL2Backend(gl_api=pyglet.options.backend)
 
-    from pyglet.graphics.api.gl2.draw import GL2Batch as Batch
-    from pyglet.graphics.api.gl2.draw import get_default_shader, get_default_batch
-    from pyglet.graphics.api.gl2.shader import ShaderProgram, Shader, ComputeShaderProgram
-
-elif pyglet.options.backend == "webgl":
+elif pyglet.options.backend == GraphicsAPI.WEBGL:
     from pyglet.graphics.api.webgl import WebGLBackend
 
     core = WebGLBackend()
 
-    from pyglet.graphics.api.webgl.draw import WebGLBatch as Batch
-    from pyglet.graphics.api.webgl.draw import get_default_shader, get_default_batch
-    from pyglet.graphics.api.webgl.shader import (
-        WebGLComputeShaderProgram as ComputeShaderProgram,
-        WebGLShader as Shader,
-        WebGLShaderProgram as ShaderProgram,
-    )
-
-elif pyglet.options.backend == "vulkan":
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
     from pyglet.graphics.api.vulkan.instance import VulkanGlobal
     core = VulkanGlobal()
 
@@ -66,7 +49,7 @@ elif pyglet.options.backend == "vulkan":
         VulkanComputeShaderProgram as ComputeShaderProgram
     )
 else:
-    raise Exception("Backend not set. Cannot utilize a graphics API.")
+    raise Exception(f"Invalid rendering backend. Choose one of {[str(a) for a in GraphicsAPI]}.")
 
 
 def get_config(**kwargs: float | str | None) -> GraphicsConfig:
@@ -87,3 +70,15 @@ def have_extension(extension_name: str) -> bool:
 
 def get_cached_shader(name: str, *sources: tuple[str, ShaderType]) -> ShaderProgram:
     return core.get_cached_shader(name, *sources)
+
+
+def get_default_batch() -> Batch:
+    from pyglet.graphics.draw import get_default_batch as _get_default_batch
+
+    return _get_default_batch()
+
+
+def get_default_shader() -> ShaderProgram:
+    from pyglet.graphics.shader import get_default_shader as _get_default_shader
+
+    return _get_default_shader()

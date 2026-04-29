@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from ctypes import (
-    Structure,
     c_byte,
     c_double,
     c_float,
@@ -15,12 +14,14 @@ from typing import TYPE_CHECKING
 
 import pyglet
 import pyglet.graphics.api.gl.gl as gl
+from pyglet.graphics.api.gl2.buffer import UniformBufferObject  # noqa: F401
 from pyglet.graphics.api.gl.shader import GLDataType
 from pyglet.graphics.api.gl.shader import GLShader
 from pyglet.graphics.api.gl.shader import GLShaderProgram
 from pyglet.graphics.shader import ShaderException, ShaderSource, ShaderType
 
 if TYPE_CHECKING:
+    from pyglet.graphics.api.base import NullContext
     from pyglet.graphics.api.gl import OpenGLSurfaceContext
     from pyglet.customtypes import CType, DataTypes
 
@@ -64,16 +65,6 @@ class UniformBlock:
         uniform_count: int,
     ) -> None:
         raise NotImplementedError
-
-
-class UniformBufferObject:
-    """Not supported by OpenGL 2.0."""
-
-    def __init__(self, view_class: type[Structure], buffer_size: int, binding: int) -> None:
-        """Initialize the Uniform Buffer Object with the specified Structure."""
-        raise NotImplementedError
-
-
 
 
 # Shader & program classes:
@@ -164,7 +155,7 @@ class Shader(GLShader):
     You can reuse a Shader object in multiple ShaderPrograms.
     """
 
-    _context: OpenGLSurfaceContext | None
+    _context: OpenGLSurfaceContext | NullContext
     _id: int | None
     type: ShaderType
 
@@ -181,10 +172,6 @@ class ShaderProgram(GLShaderProgram):  # noqa: D101
     _uniform_blocks: None
     __slots__ = '_attributes', '_context', '_id', '_uniform_blocks', '_uniforms'
 
-    def __init__(self, *shaders: Shader) -> None:
-        """Initialize the ShaderProgram using at least two Shader instances."""
-        super().__init__(*shaders)
-
     def _get_uniform_blocks(self) -> None:
         """Return Uniform Block information."""
         return
@@ -198,3 +185,39 @@ class ComputeShaderProgram:
 
     def __init__(self, source: str) -> None:
         raise NotImplementedError
+
+
+_default_vertex_source: str = """#version 110
+    attribute vec3 position;
+    attribute vec4 colors;
+
+    varying vec4 vertex_colors;
+
+    uniform mat4 u_projection;
+    uniform mat4 u_view;
+
+    void main()
+    {
+        gl_Position = u_projection * u_view * vec4(position, 1.0);
+
+        vertex_colors = colors;
+    }
+"""
+
+_default_fragment_source: str = """#version 110
+    varying vec4 vertex_colors;
+
+    void main()
+    {
+        gl_FragColor = vertex_colors;
+    }
+"""
+
+
+def get_default_shader() -> ShaderProgram:
+    """A default basic shader for default batches."""
+    return pyglet.graphics.api.core.get_cached_shader(
+        "default_graphics",
+        (_default_vertex_source, 'vertex'),
+        (_default_fragment_source, 'fragment'),
+    )
