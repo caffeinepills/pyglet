@@ -9,7 +9,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VkRenderPassBeginInfo, \
     VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VkOffset2D, VkRect2D, VkClearColorValue, VkClearValue, \
     VK_SUBPASS_CONTENTS_INLINE
 
-from pyglet.graphics.draw import _DomainKey, BatchBase, Group
+from pyglet.graphics.draw import _DomainKey, Batch, Group
 from pyglet.graphics.shader import Attribute
 from pyglet.graphics.state import State, TextureState, UniformBufferState
 from pyglet.graphics.api.vulkan import vertexdomain, c_array_list, DeviceFunc
@@ -99,31 +99,6 @@ def get_default_batch() -> Batch:
     """Batch used globally for objects that have no Batch specified."""
     return pyglet.graphics.api.core.get_default_batch()
 
-
-def get_default_shader() -> ShaderProgram:
-    """Create and return the default sprite shader.
-
-    This method allows the module to be imported without an OpenGL Context.
-    """
-    try:
-        return pyglet.graphics.api.core.get_shader("default_graphics")
-    except KeyError:
-        load_package_shader = pyglet.graphics.api.core.load_package_shader
-        program = pyglet.graphics.api.core.create_shader_program(
-            "default_graphics",
-            (load_package_shader("pyglet.graphics.api.vulkan.shaders", "primitives.vert.spv"), 'vertex'),
-            (load_package_shader("pyglet.graphics.api.vulkan.shaders", "primitives.frag.spv"), 'fragment'),
-        )
-        if not program.is_defined:
-            program.set_attributes(
-                Attribute("position", location=0, components=3, data_type="f"),
-                Attribute("colors", location=1, components=4, data_type="f"),
-            )
-            from pyglet.graphics.api.vulkan.instance import WindowBlock
-            program.set_uniform_blocks(WindowBlock)
-
-        program.set_attribute_format("colors", data_type="B", normalize=True)
-        return program
 
 def get_default_blit_shader() -> ShaderProgram:
     """A default basic shader for blitting, provides no blending."""
@@ -227,7 +202,7 @@ def get_group_resource_states(group: Group):
             texture.append(state)
     return ubo + texture
 
-class VulkanBatch(BatchBase):
+class VulkanBatch(Batch):
     """Manage a collection of drawables for batched rendering.
 
     Many drawable pyglet objects accept an optional `Batch` argument in their
@@ -405,7 +380,6 @@ class VulkanBatch(BatchBase):
 
     def _update_draw_list(self) -> None:
         """Visit group tree in preorder and create a list of bound methods to call."""
-        print("---")
         current_pipeline: GraphicsPipeline | None = None
         current_desc_set: DescriptorSetObject | None = None
         current_resources: list[State] | None = None
@@ -474,20 +448,21 @@ class VulkanBatch(BatchBase):
                     # Get or create the descriptor set
                     current_desc_set, created = self.descriptor_mgr.get_descriptor_sets(pipeline.descriptor_set_layouts, group_resources)
 
-                    # If it was just created, we need to bind resources before binding it.
-                    current_desc_set.bind_ubo(self._window_ctx.window._matrices.ubo, 0)
-
-                    # Bind it to the pipeline.
+                    # Bind first so DescriptorSetObject.current_frame matches the frame being recorded.
                     current_desc_set.bind_to_pipeline(vk_command_buffer,
                                                       current_pipeline.pipeline_layout,
                                                       frame_sync.current_frame)
-                    #current_desc_set.bind_ubo(self._window_ctx.window._matrices.ubo, 0)
+
+                    # Update the per-frame window UBO binding after selecting the frame index above.
+                    current_desc_set.bind_ubo(self._window_ctx.window._matrices.ubo, 0)
 
                     for state in group._states:
                         if state.resolves_state:
                             state.resolve_state(current_desc_set)
                         if state.sets_state:
-                            state.set_state()
+                            state.set_state(None)
+
+                    current_resources = group_resources
 
                 pipeline.push_constants(vk_command_buffer, 0)
 

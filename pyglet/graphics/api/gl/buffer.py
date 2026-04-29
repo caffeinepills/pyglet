@@ -413,6 +413,13 @@ class GLUniformBufferObject(UniformBufferObject):
     def _create_buffer(self, context: OpenGLSurfaceContext, buffer_size: int) -> GLBufferObject:
         return GLBufferObject(context, buffer_size, target=GL_UNIFORM_BUFFER)
 
+    def bind(self) -> None:
+        self.buffer.bind()
+        self.buffer._context.glBindBufferBase(GL_UNIFORM_BUFFER, self.binding, self.buffer.id)
+
+    def unbind(self) -> None:
+        self.buffer._context.glBindBufferBase(GL_UNIFORM_BUFFER, self.binding, 0)
+
 
 class PersistentBufferObject(BaseMappedBufferObject):
     """A persistently mapped OpenGL buffer.

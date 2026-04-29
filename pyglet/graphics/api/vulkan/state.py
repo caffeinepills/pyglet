@@ -30,7 +30,7 @@ class TextureState(State):  # noqa: D101
                    set_id=set_id)
 
     def resolve_state(self, current_desc: DescriptorSetObject) -> None:
-        current_desc.bind_texture(self.texture, self.binding)
+        current_desc.bind_texture(self.texture, self.binding, self.set_id)
 
 
 @dataclass(frozen=True)
@@ -119,14 +119,15 @@ class ShaderUniformState(State):
     Does not take multiple push constants into account yet.
     """
     program: VulkanShaderProgram
-    name: str
-    group: Group
+    data: dict[str, Any]
 
     sets_state: bool = True
 
-    def set_state(self) -> None:
+    def set_state(self, ctx) -> None:
         pc = self.program.push_constants[0]
-        setattr(pc.struct, self.name, self.group.data[self.name] )
+        for name, value in self.data.items():
+            #self.program[name] = value
+            setattr(pc.struct, name, value)
 
     def __hash__(self) -> int:
         return id(self)

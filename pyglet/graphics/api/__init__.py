@@ -40,14 +40,6 @@ elif pyglet.options.backend == GraphicsAPI.WEBGL:
 elif pyglet.options.backend == GraphicsAPI.VULKAN:
     from pyglet.graphics.api.vulkan.instance import VulkanGlobal
     core = VulkanGlobal()
-
-    from pyglet.graphics.api.vulkan.draw import VulkanBatch as Batch
-    from pyglet.graphics.api.vulkan.draw import get_default_shader, get_default_batch
-    from pyglet.graphics.api.vulkan.shader import (
-        VulkanShaderProgram as ShaderProgram,
-        VulkanShader as Shader,
-        VulkanComputeShaderProgram as ComputeShaderProgram
-    )
 else:
     raise Exception(f"Invalid rendering backend. Choose one of {[str(a) for a in GraphicsAPI]}.")
 

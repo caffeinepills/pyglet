@@ -4,7 +4,7 @@ import ctypes
 from typing import TYPE_CHECKING, Any
 
 import pyglet
-from pyglet.config import VulkanConfig
+from pyglet.config import VulkanUserConfig
 from pyglet.graphics.api import resource_manager
 from pyglet.graphics.api.base import (
     BackendGlobalObject,
@@ -15,9 +15,10 @@ from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.graphics.api.vulkan.commands import CommandBuffer, CommandPool
 from pyglet.graphics.api.vulkan.descriptor import DescriptorManager
 from pyglet.graphics.api.vulkan.devices import VulkanDevices
+from pyglet.graphics.api.vulkan.vk_info import VulkanInfo
 from pyglet.graphics.api.vulkan.pipeline import GraphicsPipelineManager
 from pyglet.graphics.api.vulkan.renderpass import RenderPass, RenderPassManager
-from pyglet.graphics.api.vulkan.shader import Shader, VulkanShaderProgram, VulkanShader
+from pyglet.graphics.shader import Shader, ShaderProgram
 from pyglet.graphics.api.vulkan.swapchain import VulkanSwapchain
 from pyglet.graphics.api.vulkan.sync import DeferredResourceRemoval, FrameSync
 from pyglet.libs.shared.vulkan_lib import InstanceFunc, c_array_list, set_instance_functions, vulkan_core
@@ -73,7 +74,6 @@ class VulkanMatrices(UBOMatrixTransformations):
         self._default_program.set_uniform_blocks(WindowBlock)
 
         self.ubo = self._default_program.ubo["WindowBlock"]
-        self.ubo.buffer.create(backend.devices)
 
         # Change to work with this:
         #self.ubo = self._default_program.uniform_blocks['WindowBlock'].create_ubo()
@@ -226,8 +226,10 @@ class VulkanSurfaceContext(SurfaceContext):
     core: VulkanGlobal
     swapchain: VulkanSwapchain | None  # A vulkan swapchain can actually be none for headless.
     def __init__(self, global_ctx: VulkanGlobal, window: Window, config: VulkanSurfaceConfig, devices: VulkanDevices) -> None:
-        super().__init__(global_ctx, window, config)
         self.devices = devices
+        self.instance = global_ctx.instance
+        super().__init__(global_ctx, window, config)
+        self._info = VulkanInfo()
 
         self.surface = None
         self.swapchain = None
@@ -244,6 +246,7 @@ class VulkanSurfaceContext(SurfaceContext):
         if self.devices.logical_device.vk_device is None:
             self.devices.logical_device.create(self.surface)
         self.logical_device = self.devices.logical_device
+        self._info.query(self)
 
         # TODO: Handle no swapchain for headless environments and swapchain support with VK_EXT_headless_surface
         assert self.logical_device.supports_presentation() is True, "Device does not support presentation."
@@ -269,6 +272,13 @@ class VulkanSurfaceContext(SurfaceContext):
 
     def set_clear_color(self, r: float, g: float, b: float, a: float) -> None:
         self.clear_color = (r, g, b, a)
+
+    @property
+    def info(self) -> VulkanInfo:
+        return self._info
+
+    def get_info(self) -> VulkanInfo:
+        return self.info
 
     def resized(self, width, height):
         return
@@ -579,7 +589,7 @@ class VulkanGlobal(BackendGlobalObject):
 
         resource_manager.register_manager(self)
 
-        self.current_context = self.instance
+        self.current_context = self
 
     @property
     def object_space(self) -> ObjectSpace:
@@ -596,11 +606,11 @@ class VulkanGlobal(BackendGlobalObject):
 
     def get_default_configs(self):
         return [
-            VulkanConfig(),
+            VulkanUserConfig(),
         ]
 
-    def get_config(self, **kwargs: bool | int | str | None) -> VulkanConfig:
-        return VulkanConfig(**kwargs)
+    def get_config(self, **kwargs: bool | int | str | None) -> VulkanUserConfig:
+        return VulkanUserConfig(**kwargs)
 
     def get_default_batch(self):
         if not hasattr(self, "default_batch"):
@@ -616,12 +626,13 @@ class VulkanGlobal(BackendGlobalObject):
         """
         return list(self.windows.values())[0]
 
-    def get_surface_context(self, window: Window, config: VulkanSurfaceConfig) -> SurfaceContext:
+    def get_surface_context(self, window: Window, config: VulkanSurfaceConfig,
+                            shared: VulkanInstance) -> SurfaceContext:
         context = self.windows[window] = VulkanSurfaceContext(self, window, config, self.devices)
         self._have_context = True
         return context
 
-    def get_cached_shader(self, name: str, *sources: tuple[str, str]) -> VulkanShaderProgram:
+    def get_cached_shader(self, name: str, *sources: tuple[str, str]) -> ShaderProgram:
         """Create a ShaderProgram.
 
         .. note:: This method is cached. Given the same shader sources, the
@@ -637,11 +648,11 @@ class VulkanGlobal(BackendGlobalObject):
             return program
 
         shaders = (Shader(src, srctype) for (src, srctype) in sources)
-        program = VulkanShaderProgram(*shaders)
+        program = ShaderProgram(*shaders)
         self.cached_programs[name] = program
         return program
 
-    def get_shader(self, name: str) -> VulkanShaderProgram:
+    def get_shader(self, name: str) -> ShaderProgram:
         assert self.instance
         assert isinstance(name, str), "First argument must be a string name for the shader."
         return self.cached_programs[name]
@@ -651,13 +662,13 @@ class VulkanGlobal(BackendGlobalObject):
         # self.cached_programs[name] = program
         # return program
 
-    def create_shader_program(self, name: str, *sources: Shader) -> VulkanShaderProgram:
+    def create_shader_program(self, name: str, *sources: Shader) -> ShaderProgram:
         print("CREATING NAME!", name, self.cached_programs)
         if name in self.cached_programs:
             msg = f"Shader name: {name} already exists."
             raise Exception(msg)
-        shaders = (VulkanShader(src, srctype) for (src, srctype) in sources)
-        program = VulkanShaderProgram(*shaders)
+        shaders = (Shader(src, srctype) for (src, srctype) in sources)
+        program = ShaderProgram(*shaders)
         program._id = name
         self.cached_programs[name] = program
         print("CACHED!", self.cached_programs)

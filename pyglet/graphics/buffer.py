@@ -173,6 +173,14 @@ class UniformBufferObject:
     def _create_buffer(self, context: Any, buffer_size: int) -> AbstractBuffer:
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def bind(self) -> None:
+        """Bind this UBO to its backend bind point."""
+
+    @abc.abstractmethod
+    def unbind(self) -> None:
+        """Unbind this UBO from its backend bind point."""
+
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(id={self.buffer.id}, binding={self.binding})"
 

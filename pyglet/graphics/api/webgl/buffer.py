@@ -385,6 +385,13 @@ class WebGLUniformBufferObject(UniformBufferObject):
     def _create_buffer(self, context: OpenGLSurfaceContext, buffer_size: int) -> WebGLBufferObject:
         return WebGLBufferObject(context, buffer_size, target=GL_UNIFORM_BUFFER)
 
+    def bind(self) -> None:
+        self.buffer.bind()
+        self.buffer._gl.bindBufferBase(GL_UNIFORM_BUFFER, self.binding, self.buffer.id)
+
+    def unbind(self) -> None:
+        self.buffer._gl.bindBufferBase(GL_UNIFORM_BUFFER, self.binding, None)
+
 
 class WebGLPersistentBufferObject(BaseMappedBufferObject):
     """Persistently mapped buffers are not currently implemented."""

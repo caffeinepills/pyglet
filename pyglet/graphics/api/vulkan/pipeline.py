@@ -363,7 +363,6 @@ class GraphicsPipelineManager:
                      domain: VertexDomain,
                      ):
         key = (shader_program, renderpass, geometry_mode, width, height, domain._hashable_attributes)
-        print("KEY!", key)
         if key in self.pipelines:
             return self.pipelines[key]
 

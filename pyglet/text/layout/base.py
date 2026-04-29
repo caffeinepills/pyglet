@@ -54,6 +54,7 @@ elif pyglet.options.backend == GraphicsAPI.WEBGL:
 elif pyglet.options.backend == GraphicsAPI.VULKAN:
     from pyglet.graphics.api.vulkan.text import (
         get_default_decoration_shader,
+        get_default_image_layout_shader,  # noqa: F401
         get_default_layout_shader,
     )
 

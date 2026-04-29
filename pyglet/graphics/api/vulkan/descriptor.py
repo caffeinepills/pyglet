@@ -215,7 +215,8 @@ class DescriptorManager:
 
         Will return a descriptor set for each frame in flight.
         """
-        key = tuple(resource_states)
+        layout_key = tuple(int(getattr(layout, "value", 0) or 0) for layout in set_layout)
+        key = (layout_key, tuple(resource_states))
         if key in self.descriptor_set_cache:
             return self.descriptor_set_cache[key], False
 
@@ -299,8 +300,7 @@ class DescriptorSetObject:
             imageView=texture.image_view.vk_imageview,
             imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         )
-
-        image_info_array = c_array_list([image_info], VkDescriptorImageInfo)
+        image_info_array = (VkDescriptorImageInfo * 1)(image_info)
 
         write = VkWriteDescriptorSet(
             sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -312,7 +312,7 @@ class DescriptorSetObject:
             pImageInfo=image_info_array,
         )
 
-        write_array = c_array_list([write], VkWriteDescriptorSet)
+        write_array = (VkWriteDescriptorSet * 1)(write)
         self.device.vkUpdateDescriptorSets(self.device.vk_device, 1, write_array, 0, None)
 
     # Bind a uniform buffer to the descriptor set
@@ -322,8 +322,7 @@ class DescriptorSetObject:
             offset=0,
             range=ubo.buffer.size,
         )
-
-        buff_info_array = c_array_list([buffer_info], VkDescriptorBufferInfo)
+        buff_info_array = (VkDescriptorBufferInfo * 1)(buffer_info)
 
         write = VkWriteDescriptorSet(
             sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -335,5 +334,5 @@ class DescriptorSetObject:
             pBufferInfo=buff_info_array,
         )
 
-        write_array = c_array_list([write], VkWriteDescriptorSet)
+        write_array = (VkWriteDescriptorSet * 1)(write)
         self.device.vkUpdateDescriptorSets(self.device.vk_device, 1, write_array, 0, None)

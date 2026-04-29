@@ -8,7 +8,7 @@ from typing import Sequence, TYPE_CHECKING, Any, BinaryIO
 from ctypes import byref, Structure
 
 import pyglet
-from pyglet.graphics.api.vulkan.buffer import UniformBuffer
+from pyglet.graphics.api.vulkan.buffer import UniformBuffer, VulkanUniformBufferObject
 from pyglet.graphics.api.vulkan.spirv import COMPILATION_AVAILABLE, compile_shader, \
     INSPECTION_AVAILABLE, get_spirv_inspection_json, get_spirv_as_glsl, validate_spirv
 from pyglet.libs.shared.vulkan_lib.vulkan_core import (
@@ -66,7 +66,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkShaderModuleCreateInfo, VkShaderModule, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
     VkPushConstantRange)
 from pyglet.graphics.shader import Shader, ShaderProgram, ShaderType, UniformBlockDesc, UniformBlock, \
-    UniformBufferObject, Attribute, ShaderException, Sampler, PushConstants, ShaderSource, \
+    Attribute, ShaderException, Sampler, PushConstants, ShaderSource, \
     GraphicsAttribute, AttributeView
 
 if TYPE_CHECKING:
@@ -733,56 +733,6 @@ class WindowBlock(ctypes.Structure):
     #     self._view_ptr = pointer(self.view)
     #     self.binding = binding
 
-class VulkanUniformBufferObject(UniformBufferObject):
-    buffer: UniformBuffer
-    view: Structure
-    _view_ptr: CTypesPointer[Structure]
-    binding: int
-    layout_binding: VkDescriptorSetLayoutBinding | None
-    __slots__ = ('layout_binding',)
-
-    def __init__(self, context: Any, view_class: type[Structure], buffer_size: int, binding: int,
-                 layout_binding: VkDescriptorSetLayoutBinding | None = None) -> None:
-        super().__init__(context, view_class, buffer_size, binding)
-        self.layout_binding = layout_binding
-
-    def _create_buffer(self, _context: Any, buffer_size: int) -> UniformBuffer:
-        print("BUFFER SIZE?", buffer_size)
-        return UniformBuffer("b", buffer_size)
-
-    def delete(self):
-        if self.buffer:
-            self.buffer.delete()
-
-        self.buffer = None
-        self.view = None
-
-    @property
-    def id(self) -> int:
-        """The buffer ID associated with this UBO."""
-        if self.buffer and self.buffer.buffer and self.buffer.buffer.vk_buffer:
-            return int(self.buffer.buffer.vk_buffer.value)
-        return 0
-
-    def bind(self) -> None:
-        """Bind this buffer to the bind point established by the UniformBuffer parent."""
-        #glBindBufferBase(GL_UNIFORM_BUFFER, self.binding, self.buffer.id)
-
-    def read(self) -> bytes:
-        """Read the byte contents of the buffer."""
-        data = self.buffer.get_bytes()
-        return ctypes.string_at(ctypes.addressof(data), len(data))
-
-    def __exit__(self, _exc_type, _exc_val, _exc_tb) -> None:  # noqa: ANN001
-        self.buffer.set_data_ptr(self._view_ptr)
-        #projection_list = self.view.projection[:]
-        #view_list = self.view.view[:]
-        #buf = self.buffer.get_bytes()
-        #self.bind()
-        #self.buffer.set_data(self._view_ptr)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(id={self.id}, binding={self.binding})"
 
 def stages_to_bits(stages: Sequence[ShaderType]) -> int:
     """Convert our Shader stages into the Vulkan equivalent bits."""
@@ -873,3 +823,31 @@ class VulkanUniformBlock(UniformBlock):
 
 class VulkanComputeShaderProgram:
     ...
+
+
+
+
+def get_default_shader() -> ShaderProgram:
+    """Create and return the default sprite shader.
+
+    This method allows the module to be imported without an OpenGL Context.
+    """
+    try:
+        return pyglet.graphics.api.core.get_shader("default_graphics")
+    except KeyError:
+        load_package_shader = pyglet.graphics.api.core.load_package_shader
+        program = pyglet.graphics.api.core.create_shader_program(
+            "default_graphics",
+            (load_package_shader("pyglet.graphics.api.vulkan.shaders", "primitives.vert.spv"), 'vertex'),
+            (load_package_shader("pyglet.graphics.api.vulkan.shaders", "primitives.frag.spv"), 'fragment'),
+        )
+        if not program.is_defined:
+            program.set_attributes(
+                Attribute("position", location=0, components=3, data_type="f"),
+                Attribute("colors", location=1, components=4, data_type="f"),
+            )
+            from pyglet.graphics.api.vulkan.instance import WindowBlock
+            program.set_uniform_blocks(WindowBlock)
+
+        program.set_attribute_format("colors", data_type="B", normalize=True)
+        return program

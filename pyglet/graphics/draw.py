@@ -125,6 +125,25 @@ class Group:
             set_id:
                 The set that the sampler belongs to. Only applicable in Vulkan.
         """
+        if pyglet.options.backend == GraphicsAPI.VULKAN and texture_unit == 0:
+            # For Vulkan, OpenGL-style "unit 0" defaults can be wrong when the
+            # shader declares samplers on non-zero descriptor bindings.
+            program_state = self._state_names.get("ShaderProgramState")
+            program = getattr(program_state, "program", None) if program_state else None
+            samplers = getattr(program, "samplers", None)
+
+            sampler_list = []
+            if isinstance(samplers, dict):
+                sampler_list = list(samplers.values())
+            elif samplers is not None:
+                sampler_list = list(samplers)
+
+            # Only infer automatically when a single sampler exists.
+            if len(sampler_list) == 1:
+                sampler = sampler_list[0]
+                texture_unit = sampler.binding
+                set_id = sampler.desc_set
+
         self.add_state(TextureState.from_texture(texture, texture_unit, set_id))
 
     @property
@@ -607,6 +626,11 @@ if not _is_pyglet_doc_run:
             get_default_batch as _backend_get_default_batch,
         )
         get_default_batch = _backend_get_default_batch
+    elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan.draw import (
+            VulkanBatch as Batch,
+            get_default_batch as _backend_get_default_batch,
+        )
     else:
         msg = f"Unsupported backend: {pyglet.options.backend!r}"
         raise Exception(msg)

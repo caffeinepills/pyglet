@@ -297,6 +297,9 @@ class VulkanPhysicalGraphicsDevice:
 
         return None
 
+    def get_extensions(self) -> set[str]:
+        return set(self._extensions.keys())
+
     def _enumerate_extensions(self) -> None:
         extensions = EnumerateDeviceExtensionProperties(self.instance, self.vk_device, None)
         for ext in extensions:

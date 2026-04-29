@@ -8,6 +8,7 @@ from pyglet.enums import GraphicsAPI
 
 from .base import SurfaceConfig, UserConfig  # noqa: TC001
 from .gl import OpenGLUserConfig, WebGLUserConfig
+from .vulkan import VulkanUserConfig
 
 if TYPE_CHECKING:
     from pyglet.window import Window
@@ -20,6 +21,7 @@ class Config:
     gles2: OpenGLUserConfig
     gles3: OpenGLUserConfig
     webgl: WebGLUserConfig
+    vulkan: VulkanUserConfig
 
     __slots__ = 'gl2', 'gles2', 'gles3', 'opengl', 'vulkan', 'webgl'
 
@@ -29,14 +31,14 @@ class Config:
         self.gles2: OpenGLUserConfig = OpenGLUserConfig(major_version=2, minor_version=0, api=GraphicsAPI.OPENGL_ES_2)
         self.gles3: OpenGLUserConfig = OpenGLUserConfig(major_version=3, minor_version=2, api=GraphicsAPI.OPENGL_ES_3)
         self.webgl: WebGLUserConfig = WebGLUserConfig()
-        # self.vulkan: TBD
+        self.vulkan: VulkanUserConfig = VulkanUserConfig()
 
 
 def match_surface_config(config: UserConfig, surface: Window) -> SurfaceConfig | None:
     if isinstance(config, (OpenGLUserConfig, WebGLUserConfig)):
         from pyglet.config.gl import get_surface_config  # noqa: PLC0415
         return get_surface_config(config, surface)
-    if isinstance(config, VulkanConfig):
+    if isinstance(config, VulkanUserConfig):
         from pyglet.config.vulkan import get_surface_config  # noqa: PLC0415
         return get_surface_config(config, surface)
 

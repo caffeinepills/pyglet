@@ -938,7 +938,12 @@ if not _is_pyglet_doc_run:
         )
         from pyglet.graphics.api.webgl.shader import get_default_shader
     elif pyglet.options.backend == GraphicsAPI.VULKAN:
-        from pyglet.graphics.api.vulkan.shader import ComputeShaderProgram, Shader, ShaderProgram
+        from pyglet.graphics.api.vulkan.shader import (
+            VulkanShader as Shader,
+            VulkanShaderProgram as ShaderProgram,
+            VulkanComputeShaderProgram as ComputeShaderProgram,
+        )
+        from pyglet.graphics.api.vulkan.shader import get_default_shader
     else:
         msg = f"Unsupported backend: {pyglet.options.backend}"
         raise RuntimeError(msg)
