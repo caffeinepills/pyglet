@@ -93,18 +93,14 @@ class VulkanSwapchain:
             self.physical.vk_device,
             self.surface.vk_surface,
         )
-        print("SURF CAP", surface_capabilities)
         surface_formats = GetPhysicalDeviceSurfaceFormatsKHR(
             self.physical.vk_device,
             self.surface.vk_surface,
         )
-        print("END")
-        print("SFMT", surface_formats)
         surface_present_modes = GetPhysicalDeviceSurfacePresentModesKHR(
             self.physical.vk_device,
             self.surface.vk_surface,
         )
-        print("SPM", surface_present_modes)
 
         if len(surface_formats) == 0 and len(surface_present_modes) == 0:
             print("Swap chain unavailable.")

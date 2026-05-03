@@ -28,6 +28,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_API_VERSION_1_0,
     VK_DEBUG_REPORT_ERROR_BIT_EXT,
     VK_DEBUG_REPORT_WARNING_BIT_EXT,
+    VK_MAKE_API_VERSION,
     VK_MAKE_VERSION,
     VK_STRUCTURE_TYPE_APPLICATION_INFO,
     VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
@@ -478,11 +479,16 @@ class VulkanInstanceFuncs:
 
 class VulkanInstance(VulkanInstanceFuncs):
     """Class managing the Vulkan instance."""
-    def __init__(self) -> None:
+
+    def __init__(self, config: VulkanUserConfig | None = None) -> None:
         super().__init__()
         self._debug_callback_ptr = None
         self._debug_callback_handle = None
         self.modules = [vulkan_core]
+        self.api_version =VK_MAKE_API_VERSION(0, config.major_version, config.minor_version, 0)
+
+        if _debug_api:
+            print(f"(Vulkan) Requested API version={config.major_version}.{config.minor_version}, resolved apiVersion={self.api_version}.")
 
         self.available_layers = EnumerateInstanceLayerProperties()
         self.extensions = [b'VK_KHR_surface', b'VK_EXT_debug_report']
@@ -513,7 +519,7 @@ class VulkanInstance(VulkanInstanceFuncs):
             applicationVersion=VK_MAKE_VERSION(1, 0, 0),
             pEngineName=b"Pyglet",
             engineVersion=VK_MAKE_VERSION(1, 0, 0),
-            apiVersion=VK_API_VERSION_1_0,
+            apiVersion=self.api_version,
         )
 
         create_info = VkInstanceCreateInfo(
@@ -592,10 +598,11 @@ class VulkanGlobal(BackendGlobalObject):
         self.cached_programs = {}
         self.debug_callback_handle = None
         self._object_space = ObjectSpace()
+        self.user_config = VulkanUserConfig()
 
-        self.instance = VulkanInstance()
+        self.instance = VulkanInstance(self.user_config)
 
-        self.devices = VulkanDevices(self, None)
+        self.devices = VulkanDevices(self, self.user_config)
 
         resource_manager.set_pre_cleanup_func(self.wait_idle)
 

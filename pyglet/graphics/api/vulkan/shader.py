@@ -782,7 +782,6 @@ class VulkanUniformBlock(UniformBlock):
                  uniforms: tuple[tuple[str, str]],
                  uniform_count: int,
                  stages: Sequence[ShaderType]) -> None:
-        print("SIZE!!!", size)
         super().__init__(program, name, index, size, binding, uniforms, uniform_count)
 
         self._stages = stages
@@ -801,13 +800,11 @@ class VulkanUniformBlock(UniformBlock):
     def _introspect_uniforms(self):
         structure = create_structure(self.__class__.__name__, self.uniforms)
         size = ctypes.sizeof(structure)
-        print("actual size", size)
         self.size = size
         return structure
 
     def create_ubo(self) -> VulkanUniformBufferObject:
         """Create a new UniformBufferObject from this uniform block."""
-        print("SIZE CREATE", self.size)
         context = pyglet.graphics.api.core.resolve_context()
         return VulkanUniformBufferObject(
             context,

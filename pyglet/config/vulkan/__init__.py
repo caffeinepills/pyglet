@@ -48,10 +48,10 @@ class VulkanUserConfig(UserConfig):
     accum_blue_size: int | None = None
     #: Bits per pixel devoted to the alpha component in the accumulation buffer. Deprecated.
     accum_alpha_size: int | None = None
-    #: The OpenGL major version.
-    major_version: int | None = None
-    #: The OpenGL minor version.
-    minor_version: int | None = None
+    #: The Vulkan major version.
+    major_version: int | None = 1
+    #: The Vulkan minor version.
+    minor_version: int | None = 0
     #: Whether to use forward compatibility mode.
     forward_compatible: bool | None = None
     #: Debug mode.

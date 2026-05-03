@@ -88,12 +88,9 @@ def GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice: VkPhysicalDevice, su
 
 def GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR | None) -> list[VkSurfaceFormatKHR]:
     pSurfaceFormatCount = c_uint32()
-    print("ONE?", pSurfaceFormatCount)
     result = InstanceFunc.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, byref(pSurfaceFormatCount), None)
     if result != VK_SUCCESS:
         raise Exception(result)
-
-    print("TWO?", pSurfaceFormatCount)
 
     pSurfaceFormats = (VkSurfaceFormatKHR * pSurfaceFormatCount.value)()
     if result := InstanceFunc.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, byref(pSurfaceFormatCount), pSurfaceFormats) != VK_SUCCESS:
@@ -102,13 +99,10 @@ def GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice: VkPhysicalDevice, surface
     return list(pSurfaceFormats)
 
 def GetPhysicalDeviceSurfacePresentModesKHR(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR | None) -> list[VkPresentModeKHR]:
-    print("YO?")
     pPresentModeCount = c_uint32()
     result = InstanceFunc.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, byref(pPresentModeCount), None)
     if result != VK_SUCCESS:
         raise Exception(result)
-
-    print("PRESENT MODES?", pPresentModeCount)
 
     pPresentModes = (VkPresentModeKHR * pPresentModeCount.value)()
     result = InstanceFunc.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, byref(pPresentModeCount), pPresentModes)

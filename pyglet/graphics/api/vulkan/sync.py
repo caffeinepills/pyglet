@@ -2,8 +2,10 @@ from __future__ import annotations
 
 
 from _ctypes import byref
-from ctypes import c_uint32
+import ctypes
+from ctypes import POINTER, c_uint32, c_uint64
 from typing import TYPE_CHECKING
+import pyglet
 from pyglet.graphics.api.vulkan import c_array_list, DeviceFunc
 from pyglet.libs.shared.vulkan_lib.exceptions import VulkanNotReadyException
 
@@ -11,7 +13,9 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_PIPELINE_STAGE_COLOR_AT
     VkSemaphoreCreateInfo, VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, VkFenceCreateInfo, \
     VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, VK_FENCE_CREATE_SIGNALED_BIT, VkSemaphore, VkFence, VK_TRUE, VkCommandBuffer, \
     VkSubmitInfo, VK_STRUCTURE_TYPE_SUBMIT_INFO, VkSwapchainKHR, VkPresentInfoKHR, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, \
-    UINT64_MAX, VK_SUCCESS
+    UINT64_MAX, VK_SUCCESS, VkSemaphoreTypeCreateInfo, VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, \
+    VK_SEMAPHORE_TYPE_TIMELINE, VkTimelineSemaphoreSubmitInfo, VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, \
+    VkSemaphoreWaitInfo, VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, VK_NULL_HANDLE
 
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.swapchain import VulkanSwapchain
@@ -19,6 +23,7 @@ if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
     from pyglet.graphics.api.vulkan.commands import CommandBuffer, CommandPool
 
+_debug_api = pyglet.options.debug_api
 
 def create_semaphore(device: VulkanLogicalDevice, info: VkSemaphoreCreateInfo):
     vk_semaphore = VkSemaphore()
@@ -77,6 +82,22 @@ class DeferredResourceRemoval:
 class FrameSync:
     command_buffers: list[dict[int, CommandBuffer]]
 
+    @staticmethod
+    def _is_callable_loaded(func) -> bool:
+        return callable(func) and getattr(func, "__name__", "") != "MissingFunction"
+
+    def _resolve_wait_semaphores(self):
+        candidates = (
+            ("vkWaitSemaphores", getattr(self.device, "vkWaitSemaphores", None)),
+            ("vkWaitSemaphoresKHR", getattr(self.device, "vkWaitSemaphoresKHR", None)),
+            ("vkWaitSemaphores", getattr(DeviceFunc, "vkWaitSemaphores", None)),
+            ("vkWaitSemaphoresKHR", getattr(DeviceFunc, "vkWaitSemaphoresKHR", None)),
+        )
+        for name, wait_fn in candidates:
+            if self._is_callable_loaded(wait_fn):
+                return wait_fn, name
+        return None, None
+
     def __init__(self, device: VulkanLogicalDevice,
                  swapchain: VulkanSwapchain,
                  descriptor_mgr: DescriptorManager,
@@ -92,11 +113,28 @@ class FrameSync:
         self.command_buffers = [{} for _ in range(frames_in_flight)]
         self.image_index = [0 for _ in range(frames_in_flight)]
         self.image_fences: list[VkFence | None] = []
+        self.image_sync_values: list[int] = []
         self.counter = 0
         self._wait_stages = c_array_list([VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT], c_uint32)
+        self.vkWaitSemaphores, self._wait_semaphore_fn_name = self._resolve_wait_semaphores()
+        self.timeline_enabled = device.timeline_semaphore_enabled and self.vkWaitSemaphores is not None
+        self.timeline_semaphore: VkSemaphore | None = None
+        self.timeline_value = 0
+        self.frame_sync_values = [0 for _ in range(frames_in_flight)]
 
-        self.vkAcquireNextImageKHR = DeviceFunc.vkAcquireNextImageKHR
-        self.vkQueuePresentKHR = DeviceFunc.vkQueuePresentKHR
+        self.vkAcquireNextImageKHR = getattr(device, "vkAcquireNextImageKHR", DeviceFunc.vkAcquireNextImageKHR)
+        self.vkQueuePresentKHR = getattr(device, "vkQueuePresentKHR", DeviceFunc.vkQueuePresentKHR)
+
+        if _debug_api:
+            if self.timeline_enabled:
+                print(
+                    "(Vulkan) Frame sync using timeline semaphore path "
+                    f"(wait_fn={self._wait_semaphore_fn_name})."
+                )
+            elif device.timeline_semaphore_enabled:
+                print("(Vulkan) Timeline semaphore feature detected, but no wait function is available; using fences.")
+            else:
+                print("(Vulkan) Frame sync using fence path.")
 
         semaphore_info = VkSemaphoreCreateInfo(
             sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -121,8 +159,24 @@ class FrameSync:
         swapchain_image_count = len(self.swapchain.swapchain_images)
         self.render_finished_semaphores = [create_semaphore(device, semaphore_info) for _ in range(swapchain_image_count)]
         self.image_fences = [None] * swapchain_image_count
+        self.image_sync_values = [0] * swapchain_image_count
 
-        self.fences = [create_fence(device, fence_info) for _ in range(frames_in_flight)]
+        if self.timeline_enabled:
+            timeline_type_info = VkSemaphoreTypeCreateInfo(
+                sType=VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                pNext=None,
+                semaphoreType=VK_SEMAPHORE_TYPE_TIMELINE,
+                initialValue=0,
+            )
+            timeline_semaphore_info = VkSemaphoreCreateInfo(
+                sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                pNext=ctypes.cast(ctypes.pointer(timeline_type_info), POINTER(None)),
+                flags=0,
+            )
+            self.timeline_semaphore = create_semaphore(device, timeline_semaphore_info)
+            self.fences = []
+        else:
+            self.fences = [create_fence(device, fence_info) for _ in range(frames_in_flight)]
 
         # query_pool_info = VkQueryPoolCreateInfo(
         #     sType=VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
@@ -163,18 +217,32 @@ class FrameSync:
     def get_frame_resources(self):
         return
 
+    def _wait_timeline(self, value: int) -> None:
+        if not self.timeline_enabled or value <= 0 or self.timeline_semaphore is None:
+            return
+
+        wait_semaphores = c_array_list([self.timeline_semaphore], VkSemaphore)
+        wait_values = c_array_list([value], c_uint64)
+        wait_info = VkSemaphoreWaitInfo(
+            sType=VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+            pNext=None,
+            flags=0,
+            semaphoreCount=1,
+            pSemaphores=wait_semaphores,
+            pValues=wait_values,
+        )
+        self.vkWaitSemaphores(self.device.vk_device, byref(wait_info), UINT64_MAX)
+
     def before_draw(self):
         vk_device = self.device.vk_device
-        fence_array = c_array_list([self.fences[self.current_frame]], VkFence)
-
-        # DeviceFunc.vkCmdWriteTimestamp(
-        #     self.get_current_command_buffer(0).command_buffer,
-        #     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        #     self.query_pool, 0,
-        # )
-
-        self.vkWaitForFences(vk_device, 1, fence_array, VK_TRUE, UINT64_MAX)
-        self.vkResetFences(vk_device, 1, fence_array)
+        if self.timeline_enabled:
+            frame_value = self.frame_sync_values[self.current_frame]
+            if frame_value:
+                self._wait_timeline(frame_value)
+        else:
+            fence_array = c_array_list([self.fences[self.current_frame]], VkFence)
+            self.vkWaitForFences(vk_device, 1, fence_array, VK_TRUE, UINT64_MAX)
+            self.vkResetFences(vk_device, 1, fence_array)
 
         img_index = c_uint32()
         self.vkAcquireNextImageKHR(
@@ -189,39 +257,76 @@ class FrameSync:
         self.image_index[self.current_frame] = img_index.value
         image_idx = img_index.value
 
-        # If this image is already in flight from another frame, wait for that frame to complete.
-        image_fence = self.image_fences[image_idx]
-        if image_fence is not None and image_fence != self.fences[self.current_frame]:
-            image_fence_array = c_array_list([image_fence], VkFence)
-            self.vkWaitForFences(vk_device, 1, image_fence_array, VK_TRUE, UINT64_MAX)
+        if self.timeline_enabled:
+            image_value = self.image_sync_values[image_idx]
+            if image_value and image_value != self.frame_sync_values[self.current_frame]:
+                self._wait_timeline(image_value)
+        else:
+            # If this image is already in flight from another frame, wait for that frame to complete.
+            image_fence = self.image_fences[image_idx]
+            if image_fence is not None and image_fence != self.fences[self.current_frame]:
+                image_fence_array = c_array_list([image_fence], VkFence)
+                self.vkWaitForFences(vk_device, 1, image_fence_array, VK_TRUE, UINT64_MAX)
 
-        self.image_fences[image_idx] = self.fences[self.current_frame]
+            self.image_fences[image_idx] = self.fences[self.current_frame]
 
     def current_image_index(self) -> int:
         return self.image_index[self.current_frame]
 
     def flip(self):
         image_idx = self.image_index[self.current_frame]
-        signal_semaphores = c_array_list([self.render_finished_semaphores[image_idx]], VkSemaphore)
         wait_semaphores = c_array_list([self.image_available_semaphores[self.current_frame]], VkSemaphore)
 
         cmd_buffers = c_array_list([cb.command_buffer for cb in self.command_buffers[self.current_frame].values()], VkCommandBuffer)
         command_count = len(self.command_buffers[self.current_frame])
 
+        submit_pnext = None
+        queue_fence = VK_NULL_HANDLE
+        signal_list = [self.render_finished_semaphores[image_idx]]
+        timeline_signal_value = None
+
+        timeline_submit_info = None
+        if self.timeline_enabled and self.timeline_semaphore is not None:
+            timeline_signal_value = self.timeline_value + 1
+
+            signal_list.append(self.timeline_semaphore)
+
+            # Values map one-to-one with VkSubmitInfo semaphores.
+            wait_values = c_array_list([0], c_uint64)
+            signal_values = c_array_list([0, timeline_signal_value], c_uint64)
+            timeline_submit_info = VkTimelineSemaphoreSubmitInfo(
+                sType=VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                pNext=None,
+                waitSemaphoreValueCount=1,
+                pWaitSemaphoreValues=wait_values,
+                signalSemaphoreValueCount=len(signal_list),
+                pSignalSemaphoreValues=signal_values,
+            )
+            submit_pnext = ctypes.cast(ctypes.pointer(timeline_submit_info), POINTER(None))
+        else:
+            queue_fence = self.fences[self.current_frame]
+
+        signal_semaphores = c_array_list(signal_list, VkSemaphore)
         submit_create = VkSubmitInfo(
             sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            pNext=submit_pnext,
             waitSemaphoreCount=1,
             pWaitSemaphores=wait_semaphores,
             pWaitDstStageMask=self._wait_stages,
             commandBufferCount=command_count,
             pCommandBuffers=cmd_buffers,
-            signalSemaphoreCount=1,
+            signalSemaphoreCount=len(signal_list),
             pSignalSemaphores=signal_semaphores)
 
         submit_array = c_array_list([submit_create], VkSubmitInfo)
 
         self.vkQueueSubmit(self.device.graphics_queue.vk_queue,
-                      1, submit_array, self.fences[self.current_frame])
+                  1, submit_array, queue_fence)
+
+        if timeline_signal_value is not None:
+            self.timeline_value = timeline_signal_value
+            self.frame_sync_values[self.current_frame] = timeline_signal_value
+            self.image_sync_values[image_idx] = timeline_signal_value
 
         swapchains = c_array_list([self.swapchain.swapchain], VkSwapchainKHR)
         image_indices = c_array_list([image_idx], c_uint32)
@@ -275,6 +380,10 @@ class FrameSync:
         for semaphore in self.render_finished_semaphores:
             self.device.vkDestroySemaphore(self.device.vk_device, semaphore, None)
         self.render_finished_semaphores.clear()
+
+        if self.timeline_semaphore:
+            self.device.vkDestroySemaphore(self.device.vk_device, self.timeline_semaphore, None)
+            self.timeline_semaphore = None
 
         for fence in self.fences:
             self.device.vkDestroyFence(self.device.vk_device, fence, None)
