@@ -3,15 +3,19 @@ from dataclasses import dataclass
 from typing import Any, Callable, Generator, TYPE_CHECKING, Sequence
 
 from pyglet.enums import BlendFactor, BlendOp
+from pyglet.graphics.api.vulkan import DeviceFunc
+from pyglet.libs.shared.vulkan_lib.vulkan_core import VkOffset2D, VkRect2D, VkExtent2D
 
 from pyglet.graphics.state import State
 
 if TYPE_CHECKING:
     from pyglet.graphics import Group, Texture
+    from pyglet.customtypes import ScissorProtocol
     from pyglet.image.base import TextureBase
     from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram
     from pyglet.graphics.api.vulkan.descriptor import DescriptorSetObject
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
+    from pyglet.graphics.api.vulkan.instance import VulkanSurfaceContext
 
 
 class DescriptorResourceState(State):
@@ -59,10 +63,18 @@ class RenderAreaState(State):
 
 @dataclass(frozen=True)
 class ScissorState(State):
-    x: int
-    y: int
-    width: int
-    height: int
+    spo: ScissorProtocol
+
+    sets_state: bool = True
+
+    def set_state(self, ctx: VulkanSurfaceContext) -> None:
+        cb = ctx.frame_sync.get_current_command_buffer(ctx.default_cb_id).command_buffer
+        rect = VkRect2D(
+            offset=VkOffset2D(x=int(self.spo.x), y=int(self.spo.y)),
+            extent=VkExtent2D(max(0, int(self.spo.width)), max(0, int(self.spo.height))),
+        )
+        rects = (VkRect2D * 1)(rect)
+        DeviceFunc.vkCmdSetScissor(cb, 0, 1, rects)
 
 @dataclass(frozen=True)
 class BlendStateEnable(State):

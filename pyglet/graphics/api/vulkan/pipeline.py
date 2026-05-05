@@ -28,7 +28,8 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_SAMPLE_COUNT_1_BIT, VK_
     VkVertexInputBindingDescription, VkVertexInputAttributeDescription, VkPipelineShaderStageCreateInfo, \
     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VkPushConstantRange, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, \
     VkDescriptorImageInfo, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_NULL_HANDLE, VK_SHADER_STAGE_FRAGMENT_BIT, \
-    VkCommandBuffer
+    VkCommandBuffer, VkPipelineDynamicStateCreateInfo, VkDynamicState, VK_DYNAMIC_STATE_SCISSOR, \
+    VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
 
 if TYPE_CHECKING:
     from pyglet.graphics import Group
@@ -487,6 +488,14 @@ class _GraphicsPipelineBase:
             renderPass=self.render_pass.vk_renderpass,
             subpass=0,
         )
+
+        dynamic_states = (VkDynamicState * 1)(VK_DYNAMIC_STATE_SCISSOR)
+        dynamic_state = VkPipelineDynamicStateCreateInfo(
+            sType=VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            dynamicStateCount=1,
+            pDynamicStates=dynamic_states,
+        )
+        pipeline_create_info.pDynamicState = pointer(dynamic_state)
 
         self.pipeline_infos = [pipeline_create_info]
         pipeline_info_array = c_array_list(self.pipeline_infos, VkGraphicsPipelineCreateInfo)

@@ -223,6 +223,7 @@ class WindowBlock(UniformBlockDesc):
 
 
 class VulkanSurfaceContext(SurfaceContext):
+    frame_sync: FrameSync
     core: VulkanGlobal
     swapchain: VulkanSwapchain | None  # A vulkan swapchain can actually be none for headless.
     def __init__(self, global_ctx: VulkanGlobal, window: Window, config: VulkanSurfaceConfig, devices: VulkanDevices) -> None:
@@ -237,7 +238,6 @@ class VulkanSurfaceContext(SurfaceContext):
         self.descriptor_pool = None
         self.pipeline = None
         self.command_buffers = None
-        self.frame_sync = None
 
         # Can technically have multiple logical devices and surfaces, but we'll just use 1.
         self.surface = VulkanSurface.get_surface(self.core, window)

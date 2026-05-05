@@ -8,8 +8,13 @@ from pyglet.graphics.api.base import SurfaceContext
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.graphics.api.vulkan.buffer import AttributeBufferObject, IndexBufferObject
 from pyglet.graphics.api.vulkan.shader import get_vulkan_format
+from pyglet.graphics.instance import InstanceBucket, InstanceDomain
 from pyglet.graphics.vertexdomain import (
+    InstanceIndexedVertexList as BaseInstanceIndexedVertexList,
     InstanceStream,
+    InstanceVertexList as BaseInstanceVertexList,
+    InstancedIndexedVertexDomain as BaseInstancedIndexedVertexDomain,
+    InstancedVertexDomain as BaseInstancedVertexDomain,
     IndexStream,
     IndexedVertexDomain as BaseIndexedVertexDomain,
     IndexedVertexList as BaseIndexedVertexList,
@@ -91,7 +96,11 @@ class VulkanAttributeBufferObject(AttributeBufferObject):
     def get_region(self, start: int, count: int):
         return self.get_data_region_no_copy(start, count)
 
-    def set_region(self, start: int, count: int, data: Sequence[float | int]) -> None:  # noqa: ARG002
+    def set_region(self, start: int, count: int, data: Sequence[float | int]) -> None:
+        expected = count * self.attribute.count
+        if len(data) != expected:
+            msg = f"Invalid data size. Expected {expected}, got {len(data)}."
+            raise ValueError(msg)
         self.set_data_region(start, data)
 
     def invalidate_region(self, start: int, count: int) -> None:  # noqa: ARG002
@@ -107,7 +116,10 @@ class VulkanIndexBufferObject(IndexBufferObject):
     def get_region(self, start: int, count: int):
         return self.get_data_region(start, count)
 
-    def set_region(self, start: int, count: int, data: Sequence[int | float]) -> None:  # noqa: ARG002
+    def set_region(self, start: int, count: int, data: Sequence[int | float]) -> None:
+        if len(data) != count:
+            msg = f"Invalid index data size. Expected {count}, got {len(data)}."
+            raise ValueError(msg)
         self.set_data_region(start, data)
 
     def copy_region(self, dst: int, src: int, count: int) -> None:
@@ -132,8 +144,10 @@ class VulkanVertexStream(VertexStream):
         attrs: Sequence[Attribute],
         *,
         divisor: int = 0,
+        binding_offset: int = 0,
     ) -> None:
         self._devices = devices
+        self._binding_offset = binding_offset
         self._binding_desc: list[VkVertexInputBindingDescription] = []
         self._attrib_desc: list[VkVertexInputAttributeDescription] = []
         super().__init__(ctx, initial_size, attrs, divisor=divisor)
@@ -143,7 +157,7 @@ class VulkanVertexStream(VertexStream):
         return _VulkanAttribute(attribute)
 
     def get_buffer(self, _size: int, attribute: _VulkanAttribute) -> VulkanAttributeBufferObject:
-        index = len(self.buffers)
+        index = self._binding_offset + len(self.buffers)
         buffer = VulkanAttributeBufferObject(
             attribute.data_type,
             self._devices,
@@ -157,9 +171,13 @@ class VulkanVertexStream(VertexStream):
     def bind_into(self, _vao) -> None:
         pass
 
-    def bind(self, command_buffer, binding_start: int = 0) -> None:
+    def bind(self, command_buffer, binding_start: int | None = None) -> None:
         if not self.buffers:
             return
+
+        if binding_start is None:
+            binding_start = self.buffers[0].index
+
         buffers = [buffer.buffer.vk_buffer for buffer in self.buffers]
         offsets = [0] * len(buffers)
         buffer_array = (VkBuffer * len(buffers))(*buffers)
@@ -187,6 +205,10 @@ class VulkanVertexStream(VertexStream):
     def delete(self) -> None:
         for buffer in self.buffers:
             buffer.delete()
+
+
+class VulkanInstanceStream(VulkanVertexStream, InstanceStream):
+    pass
 
 
 class VulkanIndexStream(IndexStream):
@@ -237,10 +259,9 @@ class VulkanVertexList(BaseVertexList):
     def __init__(self, domain: VulkanVertexDomain, group: Group, start: int, count: int) -> None:  # noqa: D107
         super().__init__(domain, group, start, count)
 
-    def set_attribute_data(self, name: str, data: Any) -> None:
-        stream = self.domain.attrib_name_buffers[name]
-        buffer = stream.attrib_name_buffers[name]
-        buffer.set_region(self.start, self.count, data)
+
+class VulkanInstanceVertexList(BaseInstanceVertexList):
+    domain: VulkanInstancedVertexDomain
 
 
 class VulkanIndexedVertexList(BaseIndexedVertexList):
@@ -257,11 +278,13 @@ class VulkanIndexedVertexList(BaseIndexedVertexList):
     ) -> None:  # noqa: D107
         super().__init__(domain, group, start, count, index_start, index_count)
 
-    def set_attribute_data(self, name: str, data: Any) -> None:
-        stream = self.domain.attrib_name_buffers[name]
-        buffer = stream.attrib_name_buffers[name]
-        buffer.set_region(self.start, self.count, data)
 
+class VulkanInstanceIndexedVertexList(BaseInstanceIndexedVertexList):
+    domain: VulkanInstancedIndexedVertexDomain
+
+    def delete(self) -> None:
+        BaseVertexList.delete(self)
+        self.domain.index_stream.dealloc(self.index_start, self.index_count)
 
 
 class VulkanVertexDomain(BaseVertexDomain):
@@ -292,6 +315,10 @@ class VulkanVertexDomain(BaseVertexDomain):
     def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
         return self.vertex_buffers.get_attribute_descriptions()
 
+    def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanVertexList) -> None:
+        self.vertex_buffers.bind(command_buffer)
+        DeviceFunc.vkCmdDraw(command_buffer, vertex_list.count, 1, vertex_list.start, 0)
+
     def draw(self, command_buffer) -> None:
         self.vertex_buffers.bind(command_buffer)
 
@@ -299,11 +326,9 @@ class VulkanVertexDomain(BaseVertexDomain):
         for start, size in zip(starts, sizes):
             DeviceFunc.vkCmdDraw(command_buffer, size, 1, start, 0)
 
-    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanVertexList) -> None:  # noqa: ARG002
-        # Vulkan draws through recorded batch command buffers. For debug-style direct
-        # `vertex_list.draw()` calls, fall back to drawing the owning batch.
+    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanVertexList) -> None:
         for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
-            batch.draw()
+            batch.draw_subset([vertex_list])
             return
 
         msg = "Vulkan subset drawing requires a batch assignment."
@@ -356,6 +381,11 @@ class VulkanIndexedVertexDomain(BaseIndexedVertexDomain):
     def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
         return self.vertex_buffers.get_attribute_descriptions()
 
+    def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanIndexedVertexList) -> None:
+        self.vertex_buffers.bind(command_buffer)
+        self.index_stream.bind(command_buffer)
+        DeviceFunc.vkCmdDrawIndexed(command_buffer, vertex_list.index_count, 1, vertex_list.index_start, 0, 0)
+
     def draw(self, command_buffer) -> None:
         self.vertex_buffers.bind(command_buffer)
         self.index_stream.bind(command_buffer)
@@ -364,11 +394,9 @@ class VulkanIndexedVertexDomain(BaseIndexedVertexDomain):
         for start, size in zip(starts, sizes):
             DeviceFunc.vkCmdDrawIndexed(command_buffer, size, 1, start, 0, 0)
 
-    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanIndexedVertexList) -> None:  # noqa: ARG002
-        # Vulkan draws through recorded batch command buffers. For debug-style direct
-        # `vertex_list.draw()` calls, fall back to drawing the owning batch.
+    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanIndexedVertexList) -> None:
         for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
-            batch.draw()
+            batch.draw_subset([vertex_list])
             return
 
         msg = "Vulkan indexed subset drawing requires a batch assignment."
@@ -379,11 +407,193 @@ class VulkanIndexedVertexDomain(BaseIndexedVertexDomain):
         self.vertex_buffers.delete()
 
 
-class InstancedVertexDomain:
-    def __init__(self, *args, **kwargs):  # noqa: ANN002, D107
-        raise NotImplementedError("Instanced Vulkan vertex domains are not implemented.")
+class VulkanInstanceDomainArrays(InstanceDomain):
+    def __init__(self, domain: Any, initial_instances: int) -> None:
+        super().__init__(domain, initial_instances)
+        self._ctx = domain._context
+        self._devices = domain.devices
+        self._instance_binding_start = len(domain.vertex_buffers.buffers)
+
+    def _create_bucket_arrays(self) -> InstanceBucket:
+        istream = VulkanInstanceStream(
+            self._ctx,
+            self._devices,
+            self._initial,
+            self._domain.per_instance,
+            divisor=1,
+            binding_offset=self._instance_binding_start,
+        )
+        vao = VulkanVertexArrayBinding(self._ctx, [self._domain.vertex_buffers, istream])
+        return InstanceBucket(istream, vao)
+
+    def _create_bucket_elements(self) -> InstanceBucket:
+        raise NotImplementedError("Use VulkanInstanceDomainElements for indexed draws")
+
+    def draw(self, command_buffer) -> None:
+        for bucket in self._buckets.values():
+            if bucket.instance_count <= 0:
+                continue
+
+            first_vertex, vertex_count = self._geom[bucket]
+            self._domain.vertex_buffers.bind(command_buffer)
+            bucket.stream.bind(command_buffer)
+            DeviceFunc.vkCmdDraw(command_buffer, vertex_count, bucket.instance_count, first_vertex, 0)
+
+    def draw_subset(self, command_buffer, vertex_list: VulkanInstanceVertexList) -> None:
+        bucket = vertex_list.instance_bucket
+        if bucket.instance_count <= 0:
+            return
+
+        self._domain.vertex_buffers.bind(command_buffer)
+        bucket.stream.bind(command_buffer)
+        DeviceFunc.vkCmdDraw(command_buffer, vertex_list.count, bucket.instance_count, vertex_list.start, 0)
 
 
-class InstancedIndexedVertexDomain:
-    def __init__(self, *args, **kwargs):  # noqa: ANN002, D107
-        raise NotImplementedError("Instanced indexed Vulkan vertex domains are not implemented.")
+class VulkanInstanceDomainElements(InstanceDomain):
+    def __init__(self, domain: Any, initial_instances: int, index_stream: VulkanIndexStream) -> None:
+        super().__init__(domain, initial_instances)
+        self._ctx = domain._context
+        self._devices = domain.devices
+        self._index_stream = index_stream
+        self._instance_binding_start = len(domain.vertex_buffers.buffers)
+
+    def _create_bucket_elements(self) -> InstanceBucket:
+        istream = VulkanInstanceStream(
+            self._ctx,
+            self._devices,
+            self._initial,
+            self._domain.per_instance,
+            divisor=1,
+            binding_offset=self._instance_binding_start,
+        )
+        vao = VulkanVertexArrayBinding(self._ctx, [self._domain.vertex_buffers, istream, self._index_stream])
+        return InstanceBucket(istream, vao)
+
+    def _create_bucket_arrays(self) -> InstanceBucket:
+        raise NotImplementedError("Use VulkanInstanceDomainArrays for non-indexed draws")
+
+    def draw_bucket(self, command_buffer, bucket: InstanceBucket) -> None:
+        if bucket.instance_count <= 0:
+            return
+
+        first_index, index_count, _, base_vertex = self._geom[bucket]
+        self._domain.vertex_buffers.bind(command_buffer)
+        bucket.stream.bind(command_buffer)
+        self._index_stream.bind(command_buffer)
+        DeviceFunc.vkCmdDrawIndexed(command_buffer, index_count, bucket.instance_count, first_index, base_vertex, 0)
+
+    def draw(self, command_buffer) -> None:
+        for bucket in self._buckets.values():
+            self.draw_bucket(command_buffer, bucket)
+
+    def draw_subset(self, command_buffer, vertex_list: VulkanInstanceIndexedVertexList) -> None:
+        bucket = vertex_list.instance_bucket
+        if bucket.instance_count <= 0:
+            return
+
+        self._domain.vertex_buffers.bind(command_buffer)
+        bucket.stream.bind(command_buffer)
+        self._index_stream.bind(command_buffer)
+        DeviceFunc.vkCmdDrawIndexed(
+            command_buffer,
+            vertex_list.index_count,
+            bucket.instance_count,
+            vertex_list.index_start,
+            vertex_list.base_vertex,
+            0,
+        )
+
+
+class VulkanInstancedVertexDomain(BaseInstancedVertexDomain, VulkanVertexDomain):
+    _vertex_class = VulkanInstanceVertexList
+
+    def create_instance_domain(self, size: int) -> VulkanInstanceDomainArrays:
+        return VulkanInstanceDomainArrays(self, size)
+
+    def _get_instance_stream(self) -> VulkanInstanceStream | None:
+        for bucket in self.instance_domain._buckets.values():  # noqa: SLF001
+            return bucket.stream
+        return None
+
+    def get_binding_descriptions(self) -> list[VkVertexInputBindingDescription]:
+        bindings = list(self.vertex_buffers.get_binding_descriptions())
+        inst_stream = self._get_instance_stream()
+        if inst_stream is not None:
+            bindings.extend(inst_stream.get_binding_descriptions())
+        return bindings
+
+    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
+        attributes = list(self.vertex_buffers.get_attribute_descriptions())
+        inst_stream = self._get_instance_stream()
+        if inst_stream is not None:
+            attributes.extend(inst_stream.get_attribute_descriptions())
+        return attributes
+
+    def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanInstanceVertexList) -> None:
+        self.instance_domain.draw_subset(command_buffer, vertex_list)
+
+    def draw(self, command_buffer) -> None:
+        self.instance_domain.draw(command_buffer)
+
+    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanInstanceVertexList) -> None:
+        for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
+            batch.draw_subset([vertex_list])
+            return
+
+        msg = "Vulkan instanced subset drawing requires a batch assignment."
+        raise NotImplementedError(msg)
+
+
+class VulkanInstancedIndexedVertexDomain(BaseInstancedIndexedVertexDomain, VulkanIndexedVertexDomain):
+    _initial_index_count = 16
+    _vertex_class = VulkanInstanceIndexedVertexList
+
+    def __init__(
+        self,
+        context: SurfaceContext | None,
+        initial_count: int,
+        attribute_meta: dict[str, Attribute],
+        index_type: DataTypes = "H",
+    ) -> None:
+        super().__init__(context, initial_count, attribute_meta, index_type=index_type)
+
+    def create_instance_domain(self, size: int) -> VulkanInstanceDomainElements:
+        return VulkanInstanceDomainElements(self, size, index_stream=self.index_stream)
+
+    def _get_instance_stream(self) -> VulkanInstanceStream | None:
+        for bucket in self.instance_domain._buckets.values():  # noqa: SLF001
+            return bucket.stream
+        return None
+
+    def get_binding_descriptions(self) -> list[VkVertexInputBindingDescription]:
+        bindings = list(self.vertex_buffers.get_binding_descriptions())
+        inst_stream = self._get_instance_stream()
+        if inst_stream is not None:
+            bindings.extend(inst_stream.get_binding_descriptions())
+        return bindings
+
+    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
+        attributes = list(self.vertex_buffers.get_attribute_descriptions())
+        inst_stream = self._get_instance_stream()
+        if inst_stream is not None:
+            attributes.extend(inst_stream.get_attribute_descriptions())
+        return attributes
+
+    def _draw_subset_command(
+        self,
+        command_buffer,
+        _mode: GeometryMode,
+        vertex_list: VulkanInstanceIndexedVertexList,
+    ) -> None:
+        self.instance_domain.draw_subset(command_buffer, vertex_list)
+
+    def draw(self, command_buffer) -> None:
+        self.instance_domain.draw(command_buffer)
+
+    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanInstanceIndexedVertexList) -> None:
+        for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
+            batch.draw_subset([vertex_list])
+            return
+
+        msg = "Vulkan instanced indexed subset drawing requires a batch assignment."
+        raise NotImplementedError(msg)

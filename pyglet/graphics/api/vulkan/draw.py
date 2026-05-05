@@ -115,8 +115,8 @@ _domain_class_map: dict[tuple[bool, bool], type[vertexdomain.VulkanVertexDomain]
     # Indexed, Instanced : Domain
     (False, False): vertexdomain.VulkanVertexDomain,
     (True, False): vertexdomain.VulkanIndexedVertexDomain,
-   # (False, True): vertexdomain.InstancedVertexDomain,
-    #(True, True): vertexdomain.InstancedIndexedVertexDomain,
+    (False, True): vertexdomain.VulkanInstancedVertexDomain,
+    (True, True): vertexdomain.VulkanInstancedIndexedVertexDomain,
 }
 
 # States that are used for a pipeline match.
@@ -189,6 +189,7 @@ class VulkanBatch(Batch):
         self._devices = pyglet.graphics.api.core.devices
         self.pipeline_mgr = pyglet.graphics.api.core.pipeline_mgr
         self.descriptor_mgr = pyglet.graphics.api.core.descriptor_mgr
+        self._instance_count = 0
         self._live_batches.add(self)
 
     def delete(self) -> None:
@@ -381,6 +382,14 @@ class VulkanBatch(Batch):
 
         DeviceFunc.vkCmdBeginRenderPass(vk_command_buffer, byref(render_pass_begin_create), VK_SUBPASS_CONTENTS_INLINE)
 
+        def set_default_scissor() -> None:
+            rect = VkRect2D(
+                offset=VkOffset2D(x=0, y=0),
+                extent=self._window_ctx.swapchain.extent,
+            )
+            rects = c_array_list([rect], VkRect2D)
+            DeviceFunc.vkCmdSetScissor(vk_command_buffer, 0, 1, rects)
+
         def visit(group: Group) -> list:
             nonlocal current_pipeline
             nonlocal current_desc_set
@@ -400,6 +409,7 @@ class VulkanBatch(Batch):
                     continue
 
                 #print("DOMAIN!", domain)
+                set_default_scissor()
 
                 pipeline = self.pipeline_mgr.get_pipeline_from_group(group,
                                                                      self._window_ctx.renderpass,
@@ -447,7 +457,7 @@ class VulkanBatch(Batch):
 
                 for state in group._states:
                     if state.sets_state:
-                        state.set_state(None)
+                        state.set_state(self._window_ctx)
 
                 pipeline.push_constants(vk_command_buffer, 0)
 
@@ -552,18 +562,117 @@ class VulkanBatch(Batch):
 
         """
 
-        # Horrendously inefficient.
+        if not vertex_lists:
+            return
+
+        selected_by_domain: dict[Any, list[VertexList | IndexedVertexList]] = {}
+        for vertex_list in vertex_lists:
+            selected_by_domain.setdefault(vertex_list.domain, []).append(vertex_list)
+
+        current_pipeline: GraphicsPipeline | None = None
+        current_desc_set: DescriptorSetObject | None = None
+        current_descriptor_key: tuple[DescriptorSetLayoutsKey, tuple[DescriptorResourceState, ...]] | None = None
+
+        frame_sync = self._window_ctx.frame_sync
+
+        current_cb = frame_sync.get_current_command_buffer(self._window_ctx.default_cb_id)
+        current_cb.reset()
+        vk_command_buffer = current_cb.command_buffer
+
+        render_area = VkRect2D(offset=VkOffset2D(x=0, y=0), extent=self._window_ctx.swapchain.extent)
+        color = VkClearColorValue(float32=(c_float * 4)(*self._window_ctx.clear_color))
+        clear_value = VkClearValue(color=color)
+        cb_array = c_array_list([clear_value], VkClearValue)
+
+        render_pass_begin_create = VkRenderPassBeginInfo(
+            sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            renderPass=self._window_ctx.renderpass.vk_renderpass,
+            framebuffer=self._window_ctx.swapchain.framebuffers[frame_sync.current_image_index()],
+            renderArea=render_area,
+            clearValueCount=1,
+            pClearValues=cb_array,
+        )
+
+        current_cb.begin()
+        DeviceFunc.vkCmdBeginRenderPass(vk_command_buffer, byref(render_pass_begin_create), VK_SUBPASS_CONTENTS_INLINE)
+
+        def set_default_scissor() -> None:
+            rect = VkRect2D(
+                offset=VkOffset2D(x=0, y=0),
+                extent=self._window_ctx.swapchain.extent,
+            )
+            rects = c_array_list([rect], VkRect2D)
+            DeviceFunc.vkCmdSetScissor(vk_command_buffer, 0, 1, rects)
+
         def visit(group: Group) -> None:
-            group.set_state()
+            nonlocal current_pipeline
+            nonlocal current_desc_set
+            nonlocal current_descriptor_key
 
-            # Draw domains using this group
             domain_map = self.group_map[group]
-            for (_, _, mode, _), domain in domain_map.items():
-                for alist in vertex_lists:
-                    if alist.domain is domain:
-                        alist.draw(mode)
+            for (indexed, instanced, mode, formats), domain in list(domain_map.items()):
+                if domain.is_empty:
+                    domain.delete()
+                    del domain_map[(indexed, instanced, mode, formats)]
+                    continue
 
-            # Sort and visit child groups of this group
+                selected_lists = selected_by_domain.get(domain)
+                if not selected_lists:
+                    continue
+
+                set_default_scissor()
+
+                pipeline = self.pipeline_mgr.get_pipeline_from_group(
+                    group,
+                    self._window_ctx.renderpass,
+                    mode,
+                    self._window_ctx.window.width,
+                    self._window_ctx.window.height,
+                    domain,
+                )
+                pipeline_changed = current_pipeline is not pipeline
+                if pipeline_changed:
+                    pipeline.bind(vk_command_buffer)
+                    current_pipeline = pipeline
+
+                group_resources = tuple(get_group_resource_states(group))
+                descriptor_set_layouts_info = pipeline.descriptor_set_layouts_info
+                assert descriptor_set_layouts_info is not None
+                descriptor_key = (descriptor_set_layouts_info.key, group_resources)
+                descriptor_changed = current_descriptor_key != descriptor_key
+
+                if descriptor_changed:
+                    if descriptor_set_layouts_info.layouts:
+                        current_desc_set = self.descriptor_mgr.get_descriptor_sets(
+                            descriptor_set_layouts_info,
+                            list(group_resources),
+                            owner=self._window_ctx,
+                        )
+                    else:
+                        current_desc_set = None
+                    current_descriptor_key = descriptor_key
+
+                if current_desc_set and (descriptor_changed or pipeline_changed):
+                    current_desc_set.bind_to_pipeline(
+                        vk_command_buffer,
+                        current_pipeline.pipeline_layout,
+                        frame_sync.current_frame,
+                    )
+                    self._bind_program_uniform_blocks(current_desc_set, pipeline)
+
+                if current_desc_set and descriptor_changed:
+                    for state in group_resources:
+                        state.write_descriptor(current_desc_set)
+
+                for state in group._states:
+                    if state.sets_state:
+                        state.set_state(self._window_ctx)
+
+                pipeline.push_constants(vk_command_buffer, 0)
+
+                for selected in selected_lists:
+                    domain._draw_subset_command(vk_command_buffer, mode, selected)  # noqa: SLF001
+
             children = self.group_children.get(group)
             if children:
                 children.sort()
@@ -571,11 +680,12 @@ class VulkanBatch(Batch):
                     if child.visible:
                         visit(child)
 
-            group.unset_state()
-
         self.top_groups.sort()
         for top_group in self.top_groups:
             if top_group.visible:
                 visit(top_group)
+
+        DeviceFunc.vkCmdEndRenderPass(vk_command_buffer)
+        current_cb.end()
 
 
