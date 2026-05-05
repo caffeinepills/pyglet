@@ -232,9 +232,9 @@ class VulkanVertexArrayBinding(VertexArrayBinding):
 
 
 class VulkanVertexList(BaseVertexList):
-    domain: VertexDomain
+    domain: VulkanVertexDomain
 
-    def __init__(self, domain: VertexDomain, group: Group, start: int, count: int) -> None:  # noqa: D107
+    def __init__(self, domain: VulkanVertexDomain, group: Group, start: int, count: int) -> None:  # noqa: D107
         super().__init__(domain, group, start, count)
 
     def set_attribute_data(self, name: str, data: Any) -> None:
@@ -244,11 +244,11 @@ class VulkanVertexList(BaseVertexList):
 
 
 class VulkanIndexedVertexList(BaseIndexedVertexList):
-    domain: IndexedVertexDomain
+    domain: VulkanIndexedVertexDomain
 
     def __init__(
         self,
-        domain: IndexedVertexDomain,
+        domain: VulkanIndexedVertexDomain,
         group: Group,
         start: int,
         count: int,
@@ -263,12 +263,8 @@ class VulkanIndexedVertexList(BaseIndexedVertexList):
         buffer.set_region(self.start, self.count, data)
 
 
-# Preserve the conventional module-level names used elsewhere.
-VertexList = VulkanVertexList
-IndexedVertexList = VulkanIndexedVertexList
 
-
-class VertexDomain(BaseVertexDomain):
+class VulkanVertexDomain(BaseVertexDomain):
     _vertex_class = VulkanVertexList
     vertex_buffers: VulkanVertexStream
 
@@ -303,7 +299,7 @@ class VertexDomain(BaseVertexDomain):
         for start, size in zip(starts, sizes):
             DeviceFunc.vkCmdDraw(command_buffer, size, 1, start, 0)
 
-    def draw_subset(self, mode: GeometryMode, vertex_list: VertexList) -> None:  # noqa: ARG002
+    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanVertexList) -> None:  # noqa: ARG002
         # Vulkan draws through recorded batch command buffers. For debug-style direct
         # `vertex_list.draw()` calls, fall back to drawing the owning batch.
         for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
@@ -317,7 +313,7 @@ class VertexDomain(BaseVertexDomain):
         self.vertex_buffers.delete()
 
 
-class IndexedVertexDomain(BaseIndexedVertexDomain):
+class VulkanIndexedVertexDomain(BaseIndexedVertexDomain):
     _vertex_class = VulkanIndexedVertexList
     vertex_buffers: VulkanVertexStream
     index_stream: VulkanIndexStream
@@ -368,7 +364,7 @@ class IndexedVertexDomain(BaseIndexedVertexDomain):
         for start, size in zip(starts, sizes):
             DeviceFunc.vkCmdDrawIndexed(command_buffer, size, 1, start, 0, 0)
 
-    def draw_subset(self, mode: GeometryMode, vertex_list: IndexedVertexList) -> None:  # noqa: ARG002
+    def draw_subset(self, mode: GeometryMode, vertex_list: VulkanIndexedVertexList) -> None:  # noqa: ARG002
         # Vulkan draws through recorded batch command buffers. For debug-style direct
         # `vertex_list.draw()` calls, fall back to drawing the owning batch.
         for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001

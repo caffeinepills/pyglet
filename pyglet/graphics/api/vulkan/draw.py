@@ -111,10 +111,10 @@ def get_default_blit_shader() -> ShaderProgram:
 
 
 
-_domain_class_map: dict[tuple[bool, bool], type[vertexdomain.VertexDomain]] = {
+_domain_class_map: dict[tuple[bool, bool], type[vertexdomain.VulkanVertexDomain]] = {
     # Indexed, Instanced : Domain
-    (False, False): vertexdomain.VertexDomain,
-    (True, False): vertexdomain.IndexedVertexDomain,
+    (False, False): vertexdomain.VulkanVertexDomain,
+    (True, False): vertexdomain.VulkanIndexedVertexDomain,
    # (False, True): vertexdomain.InstancedVertexDomain,
     #(True, True): vertexdomain.InstancedIndexedVertexDomain,
 }

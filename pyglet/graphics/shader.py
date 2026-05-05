@@ -222,7 +222,42 @@ class _AbstractShaderProgram(ABC):
     def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] | None = None,
                             instances: dict[str, int] | None = None, batch: Batch | None = None, group: Group | None = None,
                             **data: Any) -> VertexList | InstanceVertexList | IndexedVertexList | InstanceIndexedVertexList:
-        raise NotImplementedError
+        attributes = {}
+        initial_arrays = []
+        indexed = indices is not None
+
+        for name, fmt in data.items():
+            try:
+                current_attrib = self._attributes[name]
+            except KeyError:
+                msg = f"Attribute {name} not found. Existing attributes: {list(self._attributes.keys())}"
+                raise ShaderException(msg) from None
+
+            if isinstance(fmt, tuple):
+                fmt, array = fmt  # noqa: PLW2901
+                initial_arrays.append((name, array))
+                normalize = len(fmt) == 2
+                current_attrib.set_data_type(fmt[0], normalize)
+
+            attributes[name] = current_attrib
+
+        if instances:
+            for name, divisor in instances.items():
+                attributes[name].set_divisor(divisor)
+
+        if pyglet.options.debug_api_shaders and (missing_data := [key for key in attributes if key not in data]):
+            msg = f"No data was supplied for the following found attributes: `{missing_data}`.\n"
+            warnings.warn(msg)
+
+        batch = batch or pyglet.graphics.get_default_batch()
+        group = group or pyglet.graphics.ShaderGroup(program=self)
+        domain = batch.get_domain(indexed, bool(instances), mode, group, attributes)
+
+        vlist = domain.create(group, count, indices)
+        for name, array in initial_arrays:
+            vlist.set_attribute_data(name, array)
+
+        return vlist
 
     def vertex_list(self, count: int, mode: GeometryMode, batch: Batch | None = None, group: Group | None = None,
                     **data: Any) -> VertexList:

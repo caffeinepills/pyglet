@@ -914,52 +914,15 @@ class WebGLShaderProgram(ShaderProgram):
                             batch: Batch | None = None, group: Group | None = None,
                             **data: Any) -> VertexList | InstanceVertexList | IndexedVertexList | InstanceIndexedVertexList:
         assert isinstance(mode, GeometryMode), f"Mode {mode} is not geometry mode."
-        attributes = {}
-        initial_arrays = []
-
-        indexed = indices is not None
-
-        # Probably just remove all of this?
-        for name, fmt in data.items():
-            current_attrib = self._attributes[name]
-            try:
-                if isinstance(fmt, tuple):
-                    fmt, array = fmt  # noqa: PLW2901
-                    initial_arrays.append((name, array))
-                    normalize = len(fmt) == 2
-                    current_attrib.set_data_type(fmt[0], normalize)
-
-                attributes[name] = current_attrib#, 'format': fmt, 'instance': name in instances if instances else False}
-            except KeyError:
-                if _debug_api_shaders:
-                    msg = (f"The attribute `{name}` was not found in the Shader Program.\n"
-                           f"Please check the spelling, or it may have been optimized out by the OpenGL driver.\n"
-                           f"Valid names: {list(attributes)}")
-                    warnings.warn(msg)
-                continue
-
-        if instances:
-            for name, divisor in instances.items():
-                attributes[name].set_divisor(divisor)
-
-        if _debug_api_shaders:
-            if missing_data := [key for key in attributes if key not in data]:
-                msg = (
-                    f"No data was supplied for the following found attributes: `{missing_data}`.\n"
-                )
-                warnings.warn(msg)
-
-        batch = batch or pyglet.graphics.get_default_batch()
-        group = group or pyglet.graphics.ShaderGroup(program=self)
-        domain = batch.get_domain(indexed, bool(instances), mode, group, attributes)
-
-        # Create vertex list and initialize
-        vlist = domain.create(group, count, indices)
-
-        for name, array in initial_arrays:
-            vlist.set_attribute_data(name, array)
-
-        return vlist
+        return super()._vertex_list_create(
+            count,
+            mode,
+            indices=indices,
+            instances=instances,
+            batch=batch,
+            group=group,
+            **data,
+        )
 
 
 class WebGLComputeShaderProgram:

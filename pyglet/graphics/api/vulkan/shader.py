@@ -5,7 +5,7 @@ import re
 import weakref
 import warnings
 from dataclasses import dataclass
-from typing import Sequence, TYPE_CHECKING, Any, BinaryIO, ClassVar
+from typing import Sequence, TYPE_CHECKING, Any, BinaryIO, ClassVar, overload
 from ctypes import byref, Structure
 
 import pyglet
@@ -157,54 +157,6 @@ class VulkanShaderSource(ShaderSource):
     def validate(self) -> str:
         return ""
 
-class VulkanAttribute(GraphicsAttribute):
-    """Abstract accessor for an attribute in a mapped buffer."""
-    gl_type: int
-
-    def __init__(self, attribute: Attribute, view: AttributeView) -> None:
-        """Create the attribute accessor.
-
-        Args:
-            attribute: The base shader Attribute object.
-            view: The view intended for the buffer of this Attribute.
-        """
-        self._gl = pyglet.graphics.api.core.current_context.gl
-        super().__init__(attribute, view)
-        data_type = self.attribute.fmt.data_type
-        self.gl_type = _data_type_to_gl_type[data_type]
-
-        # If the data type is not normalized and is not a float, consider it an int pointer.
-        self._is_int = data_type != "f" and self.attribute.fmt.normalized is False
-
-    def enable(self) -> None:
-        """Enable the attribute."""
-        self._gl.enableVertexAttribArray(self.attribute.location)
-
-    def disable(self) -> None:
-        self._gl.disableVertexAttribArray(self.attribute.location)
-
-    def set_pointer(self) -> None:
-        """Setup this attribute to point to the currently bound buffer at the given offset."""
-        if self._is_int:
-            self._gl.vertexAttribIPointer(
-                self.attribute.location,
-                self.attribute.fmt.components,
-                self.gl_type,
-                self.view.stride,
-                self.view.offset,
-            )
-        else:
-            self._gl.vertexAttribPointer(
-                self.attribute.location,
-                self.attribute.fmt.components,
-                self.gl_type,
-                self.attribute.fmt.normalized,
-                self.view.stride,
-                self.view.offset,
-            )
-
-    def set_divisor(self) -> None:
-        self._gl.vertexAttribDivisor(self.attribute.location, self.attribute.fmt.divisor)
 
 
 def get_vulkan_format(component_count: int, data_type: DataTypes, normalized: bool) -> int | None:
@@ -350,18 +302,15 @@ class VulkanShaderProgram(ShaderProgram):
     _name_map: dict[str, Structure]
     device: VulkanLogicalDevice | None
     push_constants: list[_PushConstant]
-    shaders: tuple[Shader, ...]
+    shaders: tuple[VulkanShader, ...]
     ubo: dict[str, UniformBlock]
     _live_programs: ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
-    def __init__(self, *shaders: Shader) -> None:
+    def __init__(self, *shaders: VulkanShader) -> None:
         super().__init__(*shaders)
         self.device = None
         self.linked = False
         self.shaders = shaders
-        self._ubo_to_stage = {}
-        self._samplers = {}
-        self._sets = {}
         self.ubo = {}
         self.push_constants = []
         self._name_map = {}
@@ -422,6 +371,7 @@ class VulkanShaderProgram(ShaderProgram):
                 name=sampler_data['name'],
                 desc_set=sampler_data['set'],
                 binding=sampler_data['binding'],
+                stages=(shader_type,),
             ))
 
         # Extract push constants:
@@ -441,15 +391,36 @@ class VulkanShaderProgram(ShaderProgram):
         self.set_samplers(*samplers)
         self.set_push_constants(*push_constants)
 
-    @property
-    def samplers(self) -> Sequence[Sampler]:
-        return self._samplers.values()
-
-    def set_attributes(self, *attributes: Attribute):
-        super().set_attributes(*attributes)
-
     def set_shader_uniforms(self, push_constants: PushConstants):
         self.set_push_constants(push_constants)
+
+    def set_samplers(self, *samplers: Sampler) -> None:
+        """Register samplers via base storage, with Vulkan stage merge on duplicates."""
+        for sampler in samplers:
+            existing = self._samplers.get(sampler.name)
+            if existing is None:
+                super().set_samplers(sampler)
+                continue
+
+            if (
+                existing.desc_set != sampler.desc_set
+                or existing.binding != sampler.binding
+                or existing.count != sampler.count
+            ):
+                msg = (
+                    f"Sampler '{sampler.name}' was declared with incompatible binding metadata. "
+                    "Ensure descriptor set, binding, and count match across shader stages."
+                )
+                raise ShaderException(msg)
+
+            merged_stages = tuple(dict.fromkeys((*existing.stages, *sampler.stages)))
+            self._samplers[sampler.name] = Sampler(
+                name=existing.name,
+                desc_set=existing.desc_set,
+                binding=existing.binding,
+                count=existing.count,
+                stages=merged_stages,
+            )
 
     def set_push_constants(self, *push_constants: PushConstants):
         # We will map push constant names to the right structure. Ensure no overlap of variable names.
@@ -529,7 +500,7 @@ class VulkanShaderProgram(ShaderProgram):
                     stageFlags=stages_to_bits(sampler.stages),
                 ),
             )
-            for name, sampler in self._samplers.items()
+            for name, sampler in self.samplers.items()
         }
 
     def _get_ubo_layout_bindings(self) -> dict[str, tuple[int, VkDescriptorSetLayoutBinding]]:
@@ -657,59 +628,42 @@ class VulkanShaderProgram(ShaderProgram):
     def get_uniform_block_cls(self) -> type[VulkanUniformBlock]:
         return VulkanUniformBlock
 
+    @overload
+    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: None = None,
+                            instances: None = None, batch: Batch | None = None, group: Group | None = None,
+                            **data: Any) -> VertexList:
+        ...
+
+    @overload
+    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] = ...,
+                            instances: None = None, batch: Batch | None = None, group: Group | None = None,
+                            **data: Any) -> IndexedVertexList:
+        ...
+
+    @overload
+    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: None = None,
+                            instances: dict[str, int] = ..., batch: Batch | None = None, group: Group | None = None,
+                            **data: Any) -> InstanceVertexList:
+        ...
+
+    @overload
+    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] = ...,
+                            instances: dict[str, int] = ..., batch: Batch | None = None, group: Group | None = None,
+                            **data: Any) -> InstanceIndexedVertexList:
+        ...
+
     def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] | None = None,
                             instances: dict[str, int] | None = None, batch: Batch = None, group: Group = None,
                             **data: Any) -> VertexList | InstanceVertexList | IndexedVertexList | InstanceIndexedVertexList:
-        attributes = {}
-        initial_arrays = []
-
-        indexed = indices is not None
-
-        # Probably just remove all of this?
-        for name, fmt in data.items():
-            try:
-                current_attrib = self._attributes[name]
-            except KeyError:
-                msg = f"Attribute {name} not found. Existing attributes: {list(self._attributes.keys())}"
-                raise ShaderException(msg) from None
-            try:
-                if isinstance(fmt, tuple):
-                    fmt, array = fmt  # noqa: PLW2901
-                    initial_arrays.append((name, array))
-                    normalize = len(fmt) == 2
-                    current_attrib.set_data_type(fmt[0], normalize)
-
-                attributes[
-                    name] = current_attrib  # , 'format': fmt, 'instance': name in instances if instances else False}
-            except KeyError:
-                if _debug_api_shaders:
-                    msg = (f"The attribute `{name}` was not found in the Shader Program.\n"
-                           f"Please check the spelling, or it may have been optimized out by the OpenGL driver.\n"
-                           f"Valid names: {list(attributes)}")
-                    warnings.warn(msg)
-                continue
-
-        if instances:
-            for name, divisor in instances.items():
-                attributes[name].set_divisor(divisor)
-
-        if _debug_api_shaders and (missing_data := [key for key in attributes if key not in data]):
-            msg = (
-                f"No data was supplied for the following found attributes: `{missing_data}`.\n"
-            )
-            warnings.warn(msg)
-
-        batch = batch or pyglet.graphics.get_default_batch()
-        group = group or pyglet.graphics.ShaderGroup(program=self)
-        domain = batch.get_domain(indexed, bool(instances), mode, group, attributes)
-
-        # Create vertex list and initialize
-        vlist = domain.create(group, count, indices)
-
-        for name, array in initial_arrays:
-            vlist.set_attribute_data(name, array)
-
-        return vlist
+        return super()._vertex_list_create(
+            count,
+            mode,
+            indices=indices,
+            instances=instances,
+            batch=batch,
+            group=group,
+            **data,
+        )
 
     def __setitem__(self, key: str, value: Any) -> None:
         try:
