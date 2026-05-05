@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import re
+import weakref
 import warnings
 from dataclasses import dataclass
-from typing import Sequence, TYPE_CHECKING, Any, BinaryIO
+from typing import Sequence, TYPE_CHECKING, Any, BinaryIO, ClassVar
 from ctypes import byref, Structure
 
 import pyglet
@@ -351,6 +352,7 @@ class VulkanShaderProgram(ShaderProgram):
     push_constants: list[_PushConstant]
     shaders: tuple[Shader, ...]
     ubo: dict[str, UniformBlock]
+    _live_programs: ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
     def __init__(self, *shaders: Shader) -> None:
         super().__init__(*shaders)
@@ -363,6 +365,7 @@ class VulkanShaderProgram(ShaderProgram):
         self.ubo = {}
         self.push_constants = []
         self._name_map = {}
+        self._live_programs.add(self)
 
         if INSPECTION_AVAILABLE:
             for shader in self.shaders:
@@ -489,13 +492,29 @@ class VulkanShaderProgram(ShaderProgram):
         """
         for ubo in ubos:
             name = ubo.__name__
+            existing_block = self._uniform_blocks.get(name)
+            if isinstance(existing_block, VulkanUniformBlock):
+                if (
+                    existing_block.index == ubo.set_num
+                    and existing_block.binding == ubo.bind_num
+                    and existing_block.uniforms == ubo.uniforms
+                ):
+                    merged_stages = tuple(dict.fromkeys((*existing_block._stages, *ubo.stages)))
+                    existing_block._stages = merged_stages
+                    existing_block._stage_bit = stages_to_bits(merged_stages)
+                    existing_block.layout_binding.stageFlags = existing_block._stage_bit
+                    continue
+
+                existing_ubo = self.ubo.pop(name, None)
+                if existing_ubo:
+                    existing_ubo.delete()
+
             size = 0
             self._uniform_blocks[name] = self.get_uniform_block_cls()(
                 self, name, ubo.set_num, size, ubo.bind_num, ubo.uniforms, len(ubo.uniforms),
                 ubo.stages,
             )
             self.ubo[name] = self._uniform_blocks[name].create_ubo()
-            print("UBO!", self.ubo)
 
         #print("Loading", self._id, [get_spirv_as_glsl(shader.compiled_data) for shader in self.shaders])
 
@@ -524,7 +543,7 @@ class VulkanShaderProgram(ShaderProgram):
 
         resource_bindings = list(resources.values())
         all_bindings = [binding.binding for binding in resource_bindings]
-        assert len(all_bindings) == len(set(all_bindings)), "Duplicate bindings detected!"
+        assert len(all_bindings) == len(set(all_bindings)), "Duplicate bindings detected: {}"
         return resources
 
     def attach(self, device: VulkanLogicalDevice) -> None:
@@ -545,29 +564,32 @@ class VulkanShaderProgram(ShaderProgram):
         return stages
 
     def __del__(self):
-        self.delete()
+        try:
+            self.delete()
+        except Exception:
+            pass
 
     def delete(self):
-        if self.shaders:
-            for shader in self.shaders:
-                shader.delete()
-
-        self.shaders = None
-        self.ubo.clear()
-
-    def cleanup(self) -> None:
-        """On application exit, we want to remove all resources."""
-        if self.shaders:
-            for shader in self.shaders:
-                shader.delete()
-
-        self.shaders = None
-
+        type(self)._live_programs.discard(self)
         if self.ubo:
             for ubo in self.ubo.values():
                 ubo.delete()
-
         self.ubo.clear()
+        self._uniform_blocks.clear()
+
+        if self.shaders:
+            for shader in self.shaders:
+                shader.delete()
+        self.shaders = None
+
+    @classmethod
+    def _delete_tracked_instances(cls) -> None:
+        for program in tuple(cls._live_programs):
+            program.delete()
+
+    def cleanup(self) -> None:
+        """On application exit, we want to remove all resources."""
+        self.delete()
 
     def get_uniform_block_cls(self) -> type[VulkanUniformBlock]:
         return VulkanUniformBlock

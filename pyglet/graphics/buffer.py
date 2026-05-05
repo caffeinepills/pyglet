@@ -146,7 +146,7 @@ class UniformBufferObject:
     view: ctypes.Structure
     _view_ptr: Any
     binding: int
-    __slots__ = "_view_ptr", "binding", "buffer", "view"
+    __slots__ = "_view_ptr", "binding", "buffer", "view", "__weakref__"
 
     def __init__(self, context: Any, view_class: type[ctypes.Structure], buffer_size: int, binding: int) -> None:
         self.buffer = self._create_buffer(context, buffer_size)

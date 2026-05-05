@@ -14,14 +14,19 @@ if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
 
 
+class DescriptorResourceState(State):
+    """Vulkan-only state that writes resources into descriptor sets."""
+    group_hash: bool = True
+
+    def write_descriptor(self, current_desc: DescriptorSetObject) -> None:
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
-class TextureState(State):  # noqa: D101
+class TextureState(DescriptorResourceState):  # noqa: D101
     texture: VulkanTexture
     binding: int = 0
     set_id: int = 0
-
-    resolves_state: bool = True
 
     @classmethod
     def from_texture(cls, texture: VulkanTexture, binding: int, set_id: int) -> TextureState:
@@ -29,7 +34,7 @@ class TextureState(State):  # noqa: D101
                    binding=binding,
                    set_id=set_id)
 
-    def resolve_state(self, current_desc: DescriptorSetObject) -> None:
+    def write_descriptor(self, current_desc: DescriptorSetObject) -> None:
         current_desc.bind_texture(self.texture, self.binding, self.set_id)
 
 

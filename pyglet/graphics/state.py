@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Generator, Any, TYPE_CHECKING
+from typing import Generator, TYPE_CHECKING
 
 import pyglet
 
@@ -17,9 +17,6 @@ class State:
 
     #: Flag whether this state has a function to call when it leaves scope.
     unsets_state: bool = False
-
-    #: Flag whether this state needs resolution during the draw phase.
-    resolves_state: bool = True
 
     #: Flag whether this state is to be used to calculate the group hash and comparison.
     group_hash: bool = True
@@ -39,16 +36,6 @@ class State:
 
     def unset_state(self, ctx: SurfaceContext) -> None:
         """Called when the state is unset (leaves scope)."""
-
-    def resolve_state(self, *args: Any) -> None:
-        """Resolve state during the draw phase.
-
-        In some cases, a state may rely on something existing only during the draw phase. This allows an argument to be
-        passed to the function to process the state being set.
-
-        For example, in Vulkan, a descriptor set is not available during the Group creation, it only gets created
-        when the draw list is being processed.
-        """
 
 
 def _expand_states_in_order(states: list[State]) -> list[State]:

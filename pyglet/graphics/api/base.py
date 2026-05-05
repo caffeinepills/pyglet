@@ -460,12 +460,10 @@ class ResourceManagement:
     In some graphical API's, the order in which you free resources can be very specific.
     """
     managers: list[GraphicsResource]
-    weak_resources: weakref.WeakSet[GraphicsResource]
 
     def __init__(self) -> None:  # noqa: D107
         self._func = None
         self.managers = []
-        self.weak_resources = weakref.WeakSet()
         atexit.register(self.on_exit_cleanup)
 
     def set_pre_cleanup_func(self, func: Callable) -> None:
@@ -480,12 +478,12 @@ class ResourceManagement:
         self.managers.append(resource)
 
     def register_resource(self, resource: GraphicsResource) -> None:
-        """Registers a resource as a weak reference.
+        """Compatibility no-op.
 
-        Some resources do not have a manager, but they do need to be freed before others. Keeping them permanently
-        may prevent them from being garbage collected prior to shutdown.
+        Vulkan now owns explicit shutdown ordering internally, so this
+        registration hook is no longer required for backend cleanup.
         """
-        self.weak_resources.add(resource)
+        _ = resource
 
     def on_exit_cleanup(self) -> None:
         """Cleans up all graphical resources that have been registered on application exit."""
@@ -494,14 +492,10 @@ class ResourceManagement:
     def cleanup_all(self) -> None:
         """Cleans up all graphical resources that have been registered.
 
-        Weak resources registered are destroyed first.
-
         Managers are called last, and in reverse order of registered.
         """
         if self._func:
             self._func()
 
-        for resource in self.weak_resources:
-            resource.delete()
         for resource in reversed(self.managers):
             resource.delete()

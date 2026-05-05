@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 
-from typing import Callable, Sequence, Any, TYPE_CHECKING
+import weakref
+from typing import Callable, Sequence, Any, TYPE_CHECKING, ClassVar
 from ctypes import byref, c_float
 import pyglet
-from pyglet.graphics.api import resource_manager
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VkRenderPassBeginInfo, \
     VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VkOffset2D, VkRect2D, VkClearColorValue, VkClearValue, \
     VK_SUBPASS_CONTENTS_INLINE
 
 from pyglet.graphics.draw import _DomainKey, Batch, Group
 from pyglet.graphics.shader import Attribute
-from pyglet.graphics.state import State, TextureState, UniformBufferState
+from pyglet.graphics.api.vulkan.state import DescriptorResourceState
 from pyglet.graphics.api.vulkan import vertexdomain, c_array_list, DeviceFunc
 
 _debug_graphics_batch = pyglet.options.debug_graphics_batch
@@ -141,69 +141,8 @@ _callable_states = {
 }
 
 
-class DrawListManager:
-    def __init__(self):
-        self.pipeline_mgr = pyglet.graphics.api.core.pipeline_mgr
-        self.descriptor_mgr = pyglet.graphics.api.core.descriptor_mgr
-        self.optimized_draw_list = []  # Optimized draw list
-
-    def process_groups(self, groups):
-        """Process all groups in bulk to create an optimized draw list.
-        """
-        # Step 2: Generate pipelines and descriptor sets
-        current_pipeline = None
-        current_descriptor_set = None
-
-        for group in groups:
-            # Get or create the pipeline
-            pipeline = self.pipeline_mgr.get_pipeline_from_group(group)
-            if pipeline != current_pipeline:
-                self.optimized_draw_list.append({"bind_pipeline": pipeline})
-                current_pipeline = pipeline
-
-            # Get or create the descriptor set
-            resources = get_group_resource_states(group)
-            if resources:
-                descriptor_set, _ = self.descriptor_mgr.get_descriptor_sets(
-                    pipeline.descriptor_set_layouts,
-                    resources,
-                )
-                if descriptor_set != current_descriptor_set:
-                    self.optimized_draw_list.append({"bind_descriptor_set": descriptor_set})
-                    current_descriptor_set = descriptor_set
-
-            # Add the draw calls
-            for draw_call in group.draw_calls:
-                self.optimized_draw_list.append({
-                    "draw_call": {
-                        "vertices": draw_call["vertices"],
-                        "indices": draw_call["indices"],
-                    },
-                })
-
-
-
-    def get_descriptor_set(self, resources):
-        """Determine or reuse a Vulkan descriptor set for the group.
-        """
-        resource_key = sha256(str(resources).encode()).hexdigest()
-        if resource_key not in self.descriptor_set_cache:
-            # Simulate descriptor set creation
-            self.descriptor_set_cache[resource_key] = f"DescriptorSet_{resource_key[:6]}"
-        return self.descriptor_set_cache[resource_key]
-
-#_dl_manager = DrawListManager()
-
-
 def get_group_resource_states(group: Group):
-    ubo = []
-    texture = []
-    for state in group._states:
-        if isinstance(state, UniformBufferState):
-            ubo.append(state)
-        elif isinstance(state, TextureState):
-            texture.append(state)
-    return ubo + texture
+    return [state for state in group._states if isinstance(state, DescriptorResourceState)]
 
 class VulkanBatch(Batch):
     """Manage a collection of drawables for batched rendering.
@@ -236,6 +175,7 @@ class VulkanBatch(Batch):
     top_groups: list[Group]
     group_children: dict[Group, list[Group]]
     group_map: dict[Group, dict[_DomainKey, vertexdomain.VertexDomain]]
+    _live_batches: ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
     def __init__(self) -> None:
         """Create a graphics batch."""
@@ -249,13 +189,25 @@ class VulkanBatch(Batch):
         self._devices = pyglet.graphics.api.core.devices
         self.pipeline_mgr = pyglet.graphics.api.core.pipeline_mgr
         self.descriptor_mgr = pyglet.graphics.api.core.descriptor_mgr
-        resource_manager.register_resource(self)
+        self._live_batches.add(self)
 
     def delete(self) -> None:
+        type(self)._live_batches.discard(self)
         for group in self.group_map.values():
             for domain in group.values():
                 print("DOMAIN", domain)
                 domain.delete()
+
+    def __del__(self) -> None:
+        try:
+            self.delete()
+        except Exception:
+            pass
+
+    @classmethod
+    def _delete_tracked_instances(cls) -> None:
+        for batch in tuple(cls._live_batches):
+            batch.delete()
 
     def invalidate(self) -> None:
         """Force the batch to update the draw list.
@@ -381,11 +333,26 @@ class VulkanBatch(Batch):
         group._assigned_batches.add(self)  # noqa: SLF001
         self._draw_list_dirty = True
 
+    def _bind_program_uniform_blocks(self, descriptor_set: DescriptorSetObject, pipeline: GraphicsPipeline) -> None:
+        program = pipeline.program
+        matrices = getattr(self._window_ctx.window, "_matrices", None)
+        window_ubo = getattr(matrices, "ubo", None)
+
+        for block_name, uniform_block in program.uniform_blocks.items():
+            if block_name == "WindowBlock":
+                if window_ubo is not None:
+                    descriptor_set.bind_ubo(window_ubo, uniform_block.binding, uniform_block.index)
+                continue
+
+            ubo = program.ubo.get(block_name)
+            if ubo is not None:
+                descriptor_set.bind_ubo(ubo, uniform_block.binding, uniform_block.index)
+
     def _update_draw_list(self) -> None:
         """Visit group tree in preorder and create a list of bound methods to call."""
         current_pipeline: GraphicsPipeline | None = None
         current_desc_set: DescriptorSetObject | None = None
-        current_resources: list[State] | None = None
+        current_descriptor_key: tuple[tuple[int, ...], tuple[DescriptorResourceState, ...]] | None = None
 
         frame_sync = self._window_ctx.frame_sync
 
@@ -417,7 +384,7 @@ class VulkanBatch(Batch):
         def visit(group: Group) -> list:
             nonlocal current_pipeline
             nonlocal current_desc_set
-            nonlocal current_resources
+            nonlocal current_descriptor_key
 
             draw_list = []
 
@@ -428,6 +395,7 @@ class VulkanBatch(Batch):
             for (indexed, instanced, mode, formats), domain in list(domain_map.items()):
                 # Remove unused domains from batch
                 if domain.is_empty:
+                    domain.delete()
                     del domain_map[(indexed, instanced, mode, formats)]
                     continue
 
@@ -439,37 +407,44 @@ class VulkanBatch(Batch):
                                                                      self._window_ctx.window.width,
                                                                      self._window_ctx.window.height,
                                                                      domain)
-                if current_pipeline is not pipeline:
+                pipeline_changed = current_pipeline is not pipeline
+                if pipeline_changed:
                     pipeline.bind(vk_command_buffer)
 
                     #self.descriptor_mgr.get
                     current_pipeline = pipeline
 
-                group_resources = get_group_resource_states(group)
-                # If the descriptor set is not the same, change it.
-                if current_resources != group_resources:
+                group_resources = tuple(get_group_resource_states(group))
+                print("LAYOUTS", pipeline.descriptor_set_layouts, [str(layout) for layout in pipeline.descriptor_set_layouts])
+                layout_key = tuple(int(getattr(layout, "value", 0) or 0) for layout in pipeline.descriptor_set_layouts)
+                descriptor_key = (layout_key, group_resources)
+                descriptor_changed = current_descriptor_key != descriptor_key
+
+                if descriptor_changed:
                     # Get or create the descriptor set
-                    current_desc_set, created = self.descriptor_mgr.get_descriptor_sets(
+                    current_desc_set, _ = self.descriptor_mgr.get_descriptor_sets(
                         pipeline.descriptor_set_layouts,
-                        group_resources,
+                        list(group_resources),
                         owner=self._window_ctx,
                     )
+                    current_descriptor_key = descriptor_key
 
+                if current_desc_set and (descriptor_changed or pipeline_changed):
                     # Bind first so DescriptorSetObject.current_frame matches the frame being recorded.
-                    current_desc_set.bind_to_pipeline(vk_command_buffer,
-                                                      current_pipeline.pipeline_layout,
-                                                      frame_sync.current_frame)
+                    current_desc_set.bind_to_pipeline(
+                        vk_command_buffer,
+                        current_pipeline.pipeline_layout,
+                        frame_sync.current_frame,
+                    )
+                    self._bind_program_uniform_blocks(current_desc_set, pipeline)
 
-                    # Update the per-frame window UBO binding after selecting the frame index above.
-                    current_desc_set.bind_ubo(self._window_ctx.window._matrices.ubo, 0)
+                if current_desc_set and descriptor_changed:
+                    for state in group_resources:
+                        state.write_descriptor(current_desc_set)
 
-                    for state in group._states:
-                        if state.resolves_state:
-                            state.resolve_state(current_desc_set)
-                        if state.sets_state:
-                            state.set_state(None)
-
-                    current_resources = group_resources
+                for state in group._states:
+                    if state.sets_state:
+                        state.set_state(None)
 
                 pipeline.push_constants(vk_command_buffer, 0)
 

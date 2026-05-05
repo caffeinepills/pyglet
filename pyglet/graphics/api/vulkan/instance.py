@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 
 import pyglet
 from pyglet.config import VulkanUserConfig
-from pyglet.graphics.api import resource_manager
 from pyglet.graphics.api.base import (
     BackendGlobalObject,
     SurfaceContext,
@@ -334,7 +333,7 @@ class VulkanSurfaceContext(SurfaceContext):
 
     def before_draw(self):
         self.set_current()
-        self.frame_sync.before_draw()
+        return self.frame_sync.before_draw()
 
     def flip(self):
         self.frame_sync.flip()
@@ -604,15 +603,13 @@ class VulkanGlobal(BackendGlobalObject):
 
         self.devices = VulkanDevices(self, self.user_config)
 
-        resource_manager.set_pre_cleanup_func(self.wait_idle)
+        assert self.devices.logical_device is not None
 
         self.descriptor_mgr = DescriptorManager(self.devices.logical_device)
         self.renderpass_mgr = RenderPassManager(self.devices.logical_device)
         self.pipeline_mgr = GraphicsPipelineManager(self.devices, self.descriptor_mgr, self.cached_programs, self.renderpass_mgr)
         self.command_pool = CommandPool(self.devices.logical_device)
         self.resource_removal = DeferredResourceRemoval(self.devices.logical_device)
-
-        resource_manager.register_manager(self)
 
     @property
     def object_space(self) -> ObjectSpace:
@@ -719,28 +716,32 @@ class VulkanGlobal(BackendGlobalObject):
 
         wait_idle(vk_device)
 
+    @staticmethod
+    def _delete_tracked_resources() -> None:
+        """Delete internally tracked Vulkan resources prior to manager teardown."""
+        # To prevent any possible circular imports.
+        from pyglet.graphics.api.vulkan.buffer import VulkanUniformBufferObject  # noqa: PLC0415
+        from pyglet.graphics.api.vulkan.draw import VulkanBatch  # noqa: PLC0415
+        from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.api.vulkan.texture import VulkanTexture, VulkanSampler  # noqa: PLC0415
+
+        VulkanBatch._delete_tracked_instances()  # noqa: SLF001
+        VulkanUniformBufferObject._delete_tracked_instances()  # noqa: SLF001
+        VulkanShaderProgram._delete_tracked_instances()  # noqa: SLF001
+        VulkanTexture._delete_tracked_instances()  # noqa: SLF001
+        VulkanSampler._delete_tracked_shared_samplers()  # noqa: SLF001
+
     def delete(self):
         self.wait_idle()
+        self._delete_tracked_resources()
 
         """Initialize a full cleanup."""
         for window in self.windows.values():
             window.delete()
         self.windows.clear()
 
-        # Clear all shaders.
-        print("CLEANUP SHADERS", self.cached_programs)
-        for shader in self.cached_programs.values():
-            print("CLEAR SHADER!", shader._id)
-            shader.cleanup()
+        # Shader programs are deleted by _delete_tracked_resources().
         self.cached_programs.clear()
-
-        # for texture in VulkanTexture._all_textures:
-        #     texture.delete()
-        # VulkanTexture._all_textures.clear()
-        #
-        # for sampler in VulkanSampler._shared_samplers.values():
-        #     sampler.delete()
-        # VulkanSampler._shared_samplers.clear()
 
         self.resource_removal.delete()
 

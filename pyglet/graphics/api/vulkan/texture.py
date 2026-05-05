@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import weakref
 from ctypes import byref
 from typing import TYPE_CHECKING, ClassVar
 
@@ -48,7 +49,6 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
 from . import DeviceFunc, c_array_list
 from .buffer import StagingBufferObject
 from .enums import IMAGE_VIEW_TYPE_MAP, TEXTURE_FILTER_MAP, ADDRESS_MODE_MAP
-from pyglet.graphics.api import resource_manager
 from pyglet.graphics.texture import Texture, TextureRegion
 
 if TYPE_CHECKING:
@@ -455,8 +455,6 @@ class VulkanSampler:
         self.vk_sampler = VkSampler()
         DeviceFunc.vkCreateSampler(self.vk_device, byref(self.info), None, byref(self.vk_sampler))
 
-        resource_manager.register_resource(self)
-
     def delete(self) -> None:
         """Destroy the VkSampler."""
         if self.vk_sampler:
@@ -464,6 +462,12 @@ class VulkanSampler:
         self.vk_sampler = None
         self.vk_device = None
         self.info = None
+
+    def __del__(self):
+        try:
+            self.delete()
+        except Exception:
+            pass
 
     @classmethod
     def get_shared_sampler(cls, vk_device: VkDevice,
@@ -478,12 +482,18 @@ class VulkanSampler:
         key = str((vk_device, mag_filter, min_filter, address_mode_u, address_mode_v, address_mode_w, anisotropy_level,
                  bordercolor, unnormalized))
 
-        if key in cls._shared_samplers:
-            return cls._shared_samplers[key]
+        if sampler := cls._shared_samplers.get(key):
+            return sampler
 
         cls._shared_samplers[key] = sampler = cls(vk_device, mag_filter, min_filter, address_mode_u, address_mode_v, address_mode_w, anisotropy_level,
                  bordercolor, unnormalized)
         return sampler
+
+    @classmethod
+    def _delete_tracked_shared_samplers(cls) -> None:
+        for sampler in tuple(cls._shared_samplers.values()):
+            sampler.delete()
+        cls._shared_samplers.clear()
 
 
 class UniqueIDHandler:
@@ -564,7 +574,7 @@ class VulkanTextureRegion(TextureRegion):
 
 
 class VulkanTexture(Texture, UniqueIDHandler):
-    _all_textures: ClassVar[list[VulkanTexture]] = []  # For cleanup on exit.
+    _all_textures: ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
     """An image loaded into GPU memory."""
     tex_coords = (0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0)
@@ -616,8 +626,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
         self.texture_image = None  # Vulkan Image (assume created elsewhere)
         self.texture_image_memory = None  # Vulkan memory for the image (assume created elsewhere)
 
-        # Cache all vulkan textures to clear them on application removal.
-        resource_manager.register_resource(self)
+        self._all_textures.add(self)
 
     def upload_data(self, image_data: ImageData):
         self.image.upload_data(image_data)
@@ -748,6 +757,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
         self.delete()
 
     def delete(self):
+        type(self)._all_textures.discard(self)
         if self.image:
             self.image.delete()
 
@@ -759,6 +769,11 @@ class VulkanTexture(Texture, UniqueIDHandler):
         if self.id is not None:
             self._release_id(self.id)
             self.id = None
+
+    @classmethod
+    def _delete_tracked_instances(cls) -> None:
+        for texture in tuple(cls._all_textures):
+            texture.delete()
 
 class VulkanTexture3D(VulkanTexture):
     ...

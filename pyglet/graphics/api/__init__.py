@@ -14,8 +14,6 @@ if TYPE_CHECKING:
 
 core = NullBackend()
 
-resource_manager = ResourceManagement()
-
 
 # Enforce WebGL if emscripten is detected.
 # Create better fallback/choosing system later.

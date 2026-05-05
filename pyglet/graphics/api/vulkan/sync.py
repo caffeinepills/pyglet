@@ -7,7 +7,7 @@ from ctypes import POINTER, c_uint32, c_uint64
 from typing import TYPE_CHECKING
 import pyglet
 from pyglet.graphics.api.vulkan import c_array_list, DeviceFunc
-from pyglet.libs.shared.vulkan_lib.exceptions import VulkanNotReadyException
+from pyglet.libs.shared.vulkan_lib.exceptions import VulkanNotReadyException, VulkanOutOfDateKHRException
 
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, \
     VkSemaphoreCreateInfo, VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, VkFenceCreateInfo, \
@@ -45,33 +45,48 @@ class DeferredResourceRemoval:
         self.pending_fences = []
 
     def queue_fence(self, resource, fence: VkFence, destroy: bool):
-        """Queue a resource with a fence to be destroyed after the frame is completed.
+        """Queue a resource with one fence to be destroyed after completion."""
+        self.queue_fences(resource, (fence,), destroy)
 
-        If destroy is True, then it's expected the fence needs to be destroyed after the resource is.
-        """
-        self.pending_fences.append((resource, fence, destroy))
+    def queue_fences(self, resource, fences: tuple[VkFence, ...] | list[VkFence], destroy: bool):
+        """Queue a resource to be destroyed after all fences are signaled."""
+        valid_fences = tuple(fence for fence in fences if fence)
+        if not valid_fences:
+            resource.delete()
+            return
+
+        self.pending_fences.append((resource, valid_fences, destroy))
 
     def delete(self):
         """Clear all pending on API cleanup."""
         while self.pending_fences:
-            resource, fence, destroy = self.pending_fences.pop()
+            resource, fences, destroy = self.pending_fences.pop()
             if destroy:
-                self.device.vkDestroyFence(self.device.vk_device, fence, None)
+                for fence in fences:
+                    self.device.vkDestroyFence(self.device.vk_device, fence, None)
             resource.delete()
 
     def process(self):
-        for resource, fence, destroy in list(self.pending_fences):
-            try:
-                status = self.device.vkGetFenceStatus(self.device.vk_device, fence)
-            except VulkanNotReadyException:
-                continue
+        for resource, fences, destroy in list(self.pending_fences):
+            all_signaled = True
+            for fence in fences:
+                try:
+                    status = self.device.vkGetFenceStatus(self.device.vk_device, fence)
+                except VulkanNotReadyException:
+                    all_signaled = False
+                    break
 
-            if status == VK_SUCCESS:
+                if status != VK_SUCCESS:
+                    all_signaled = False
+                    break
+
+            if all_signaled:
                 print("Destroying resource", resource)
-                resource.delete()  # Destroy the resource
+                resource.delete()
                 if destroy:
-                    self.device.vkDestroyFence(self.device.vk_device, fence, None)
-                self.pending_fences.remove((resource, fence, destroy))
+                    for fence in fences:
+                        self.device.vkDestroyFence(self.device.vk_device, fence, None)
+                self.pending_fences.remove((resource, fences, destroy))
 
 
         # for resource in self.pending_resources:
@@ -121,6 +136,7 @@ class FrameSync:
         self.timeline_semaphore: VkSemaphore | None = None
         self.timeline_value = 0
         self.frame_sync_values = [0 for _ in range(frames_in_flight)]
+        self._has_acquired_image = False
 
         self.vkAcquireNextImageKHR = getattr(device, "vkAcquireNextImageKHR", DeviceFunc.vkAcquireNextImageKHR)
         self.vkQueuePresentKHR = getattr(device, "vkQueuePresentKHR", DeviceFunc.vkQueuePresentKHR)
@@ -233,7 +249,8 @@ class FrameSync:
         )
         self.vkWaitSemaphores(self.device.vk_device, byref(wait_info), UINT64_MAX)
 
-    def before_draw(self):
+    def before_draw(self) -> bool:
+        self._has_acquired_image = False
         vk_device = self.device.vk_device
         if self.timeline_enabled:
             frame_value = self.frame_sync_values[self.current_frame]
@@ -242,17 +259,25 @@ class FrameSync:
         else:
             fence_array = c_array_list([self.fences[self.current_frame]], VkFence)
             self.vkWaitForFences(vk_device, 1, fence_array, VK_TRUE, UINT64_MAX)
-            self.vkResetFences(vk_device, 1, fence_array)
 
         img_index = c_uint32()
-        self.vkAcquireNextImageKHR(
-            vk_device,
-            self.swapchain.swapchain,
-            UINT64_MAX,
-            self.image_available_semaphores[self.current_frame],
-            0,
-            byref(img_index),
-        )
+        try:
+            self.vkAcquireNextImageKHR(
+                vk_device,
+                self.swapchain.swapchain,
+                UINT64_MAX,
+                self.image_available_semaphores[self.current_frame],
+                0,
+                byref(img_index),
+            )
+        except VulkanOutOfDateKHRException:
+            return False
+
+        if not self.timeline_enabled:
+            # Reset only after a successful acquire; otherwise no submit happens and
+            # this fence would remain unsignaled indefinitely.
+            fence_array = c_array_list([self.fences[self.current_frame]], VkFence)
+            self.vkResetFences(vk_device, 1, fence_array)
 
         self.image_index[self.current_frame] = img_index.value
         image_idx = img_index.value
@@ -269,11 +294,16 @@ class FrameSync:
                 self.vkWaitForFences(vk_device, 1, image_fence_array, VK_TRUE, UINT64_MAX)
 
             self.image_fences[image_idx] = self.fences[self.current_frame]
+        self._has_acquired_image = True
+        return True
 
     def current_image_index(self) -> int:
         return self.image_index[self.current_frame]
 
     def flip(self):
+        if not self._has_acquired_image:
+            return False
+
         image_idx = self.image_index[self.current_frame]
         wait_semaphores = c_array_list([self.image_available_semaphores[self.current_frame]], VkSemaphore)
 
@@ -339,7 +369,12 @@ class FrameSync:
             pSwapchains=swapchains,
             pImageIndices=image_indices)
 
-        self.vkQueuePresentKHR(self.device.present_queue.vk_queue, byref(present_create))
+        try:
+            self.vkQueuePresentKHR(self.device.present_queue.vk_queue, byref(present_create))
+        except VulkanOutOfDateKHRException:
+            self.current_frame = (self.current_frame + 1) % self.frames_in_flight
+            self._has_acquired_image = False
+            return False
 
         # DeviceFunc.vkCmdWriteTimestamp(
         #     self.get_current_command_buffer(0).command_buffer,
@@ -368,6 +403,8 @@ class FrameSync:
 
         # Advance the frame element_count.
         self.current_frame = (self.current_frame + 1) % self.frames_in_flight
+        self._has_acquired_image = False
+        return True
 
     def __del__(self) -> None:
         self.delete()

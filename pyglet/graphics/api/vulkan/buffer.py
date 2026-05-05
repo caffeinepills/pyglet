@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import ctypes
+import weakref
 from ctypes import byref, c_byte, c_void_p
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, ClassVar
 
 import pyglet
 from pyglet.graphics.api.vulkan import DeviceFunc, c_array_list
@@ -24,6 +25,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_SHARING_MODE_EXCLUSIVE,
     VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    VK_SUCCESS,
     VkBuffer,
     VkBufferCopy,
     VkBufferCreateInfo,
@@ -308,10 +310,35 @@ class VulkanBufferObject(AbstractBuffer):
             current_window = None
         frame_sync = getattr(current_window, "frame_sync", None) if current_window else None
 
-        if removal and frame_sync and frame_sync.fences:
-            fence = frame_sync.fences[frame_sync.current_frame]
-            removal.queue_fence(old_resource, fence, False)
-            return
+        if removal and frame_sync:
+            fences = getattr(frame_sync, "fences", None) or []
+            if fences:
+                logical_device = getattr(frame_sync, "device", None)
+                vk_device = getattr(logical_device, "vk_device", None) if logical_device else None
+                get_fence_status = getattr(logical_device, "vkGetFenceStatus", None) if logical_device else None
+                pending_fences = []
+                for fence in fences:
+                    if not fence:
+                        continue
+                    try:
+                        status = get_fence_status(vk_device, fence)
+                    except Exception:
+                        pending_fences.append(fence)
+                        continue
+                    if status != VK_SUCCESS:
+                        pending_fences.append(fence)
+
+                if pending_fences:
+                    removal.queue_fences(old_resource, tuple(pending_fences), False)
+                    return
+
+            # Timeline fallback: host-wait until the last submitted value is complete.
+            if getattr(frame_sync, "timeline_enabled", False):
+                timeline_value = getattr(frame_sync, "timeline_value", 0)
+                if timeline_value:
+                    frame_sync._wait_timeline(timeline_value)
+                    old_resource.delete()
+                    return
 
         old_resource.delete()
 
@@ -352,8 +379,9 @@ class VulkanBufferObject(AbstractBuffer):
                     self.buffer.vk_device_memory,
                 )
             self._persistent_map_ptr = None
-            self.buffer.delete()
+            old_resource = self.buffer
             self.buffer = None
+            self._retire_old_resource(old_resource)
 
     def __del__(self) -> None:
         try:
@@ -637,6 +665,7 @@ class VulkanUniformBufferObject(UniformBufferObject):
     _view_ptr: CTypesPointer[Structure]
     binding: int
     layout_binding: VkDescriptorSetLayoutBinding | None
+    _live_ubos: ClassVar[weakref.WeakSet] = weakref.WeakSet()
     __slots__ = ("_context", "_pending_upload", "layout_binding")
 
     def __init__(
@@ -651,6 +680,7 @@ class VulkanUniformBufferObject(UniformBufferObject):
         self._pending_upload = False
         super().__init__(context, view_class, buffer_size, binding)
         self.layout_binding = layout_binding
+        self._live_ubos.add(self)
 
     def _resolve_devices(self):
         for candidate in (
@@ -697,10 +727,22 @@ class VulkanUniformBufferObject(UniformBufferObject):
         return buffer
 
     def delete(self) -> None:
+        type(self)._live_ubos.discard(self)
         if self.buffer:
             self.buffer.delete()
         self.buffer = None
         self.view = None
+
+    def __del__(self) -> None:
+        try:
+            self.delete()
+        except Exception:
+            pass
+
+    @classmethod
+    def _delete_tracked_instances(cls) -> None:
+        for ubo in tuple(cls._live_ubos):
+            ubo.delete()
 
     @property
     def id(self) -> int:

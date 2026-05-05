@@ -62,8 +62,9 @@ def errcheck(result: int | None, func: Callable, arguments: Sequence) -> Any:
         else:
             print(name)
 
-    # If not VK_SUCCESS or None, then it is most likely an error.
-    if result:
+    # Vulkan uses positive VkResult values for non-error statuses.
+    # Only negative values are errors.
+    if result and result < 0:
         VkException = exceptions.get(result)
         raise VkException(result)
     return result

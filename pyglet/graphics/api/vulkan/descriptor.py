@@ -46,6 +46,7 @@ _debug_api = pyglet.options.debug_api
 # from vulkan import VkDescriptorPoolSize, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
 
 if TYPE_CHECKING:
+    from pyglet.graphics.api.vulkan.state import DescriptorResourceState
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
     from pyglet.graphics.api.vulkan.buffer import UniformBuffer
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
@@ -316,12 +317,13 @@ class DescriptorManager:
 
     def get_descriptor_sets(self,
                             set_layout: list[VkDescriptorSetLayout],
-                            resource_states: list[State],
+                            resource_states: list[DescriptorResourceState],
                             owner: object | None = None) -> tuple[DescriptorSetObject, bool]:
         """Allocate the descriptor sets.
 
         Will return a descriptor set for each frame in flight.
         """
+        print("get_descriptor_sets, ", set_layout)
         layout_key = tuple(int(getattr(layout, "value", 0) or 0) for layout in set_layout)
         owner_key = id(owner) if owner is not None else None
         key = (layout_key, tuple(resource_states), owner_key)
