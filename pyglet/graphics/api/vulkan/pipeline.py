@@ -34,7 +34,13 @@ if TYPE_CHECKING:
     from pyglet.graphics import Group
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
     from pyglet.graphics.api.vulkan.vertexdomain import VertexDomain
-    from pyglet.graphics.api.vulkan.descriptor import DescriptorPool, DescriptorManager, DescriptorSetObject
+    from pyglet.graphics.api.vulkan.descriptor import (
+        DescriptorPool,
+        DescriptorManager,
+        DescriptorSetObject,
+        DescriptorSetLayouts,
+        DescriptorSetLayoutsKey,
+    )
     from pyglet.graphics.api.vulkan.renderpass import ColorAttachment, RenderPass, RenderPassManager
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice, VulkanDevices
     from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram, VulkanUniformBufferObject, _PushConstant
@@ -287,11 +293,15 @@ class PipelineLayoutCache:
         self.device = device
         self.cache = {}
 
-    def get(self, push_constants: Sequence[_PushConstant],
-            descriptor_set_layouts: Sequence[VkDescriptorSetLayout]) -> VkPipelineLayout:
+    def get(
+        self,
+        push_constants: Sequence[_PushConstant],
+        descriptor_set_layouts: Sequence[VkDescriptorSetLayout],
+        descriptor_layout_key: DescriptorSetLayoutsKey | None = None,
+    ) -> VkPipelineLayout:
 
         constant_ranges = [pc.constant_range for pc in push_constants]
-        key = self._hash_info(constant_ranges, descriptor_set_layouts)
+        key = self._hash_info(constant_ranges, descriptor_set_layouts, descriptor_layout_key)
         if key not in self.cache:
             pipeline_layout_info = VkPipelineLayoutCreateInfo(
                 sType=VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -314,9 +324,16 @@ class PipelineLayoutCache:
         self.cache.clear()
 
     @staticmethod
-    def _hash_info(constant_ranges: list[VkPushConstantRange], set_layouts: Sequence[VkDescriptorSetLayout]) -> int:
-        # Convert layout info into a hashable format (e.g., tuple of descriptor set layouts, push constants)
-        return hash((tuple([layout.value for layout in set_layouts]), tuple([(cr.stageFlags, cr.offset, cr.size) for cr in constant_ranges])))
+    def _hash_info(
+        constant_ranges: list[VkPushConstantRange],
+        set_layouts: Sequence[VkDescriptorSetLayout],
+        descriptor_layout_key: DescriptorSetLayoutsKey | None = None,
+    ) -> int:
+        # Use the structural descriptor layout key when available, with a fallback for legacy call sites.
+        layout_key = descriptor_layout_key if descriptor_layout_key is not None else tuple(
+            layout.value for layout in set_layouts
+        )
+        return hash((layout_key, tuple((cr.stageFlags, cr.offset, cr.size) for cr in constant_ranges)))
 
 
 
@@ -388,6 +405,7 @@ class GraphicsPipelineManager:
 
 class _GraphicsPipelineBase:
     descriptor_set_layouts: list[VkDescriptorSetLayout]
+    descriptor_set_layouts_info: DescriptorSetLayouts | None
     vk_pipeline: None
     program: VulkanShaderProgram
 
@@ -408,6 +426,7 @@ class _GraphicsPipelineBase:
         self.geometry_mode = geometry_mode
         self.descriptor_mgr = descriptor_mgr
         self.descriptor_set_layouts = []
+        self.descriptor_set_layouts_info = None
         self.current_frame = 0
         self.layout_cache = layout_cache
         self.program = program
@@ -440,10 +459,16 @@ class _GraphicsPipelineBase:
 
     def _create_pipeline(self):
         """Creates a Vulkan graphics pipeline."""
-        self.descriptor_set_layouts = self.descriptor_mgr.get_descriptor_set_layouts(self.program)
+        descriptor_set_layouts_info = self.descriptor_mgr.get_descriptor_set_layouts(self.program)
+        self.descriptor_set_layouts_info = descriptor_set_layouts_info
+        self.descriptor_set_layouts = list(descriptor_set_layouts_info.layouts)
 
         push_constants = self.program.push_constants
-        self.pipeline_layout = self.layout_cache.get(push_constants, self.descriptor_set_layouts)
+        self.pipeline_layout = self.layout_cache.get(
+            push_constants,
+            self.descriptor_set_layouts,
+            descriptor_layout_key=descriptor_set_layouts_info.key,
+        )
 
         stages = self.program.get_stages()
         vertex_input = self.get_vertex_input_state_info()
@@ -495,6 +520,7 @@ class _GraphicsPipelineBase:
             print("Destroy pipeline")
 
         self.descriptor_set_layouts.clear()
+        self.descriptor_set_layouts_info = None
         self.pipeline_layout = None
 
 

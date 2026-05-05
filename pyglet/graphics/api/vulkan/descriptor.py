@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from dataclasses import dataclass
 from ctypes import POINTER, byref
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -48,7 +49,7 @@ _debug_api = pyglet.options.debug_api
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.state import DescriptorResourceState
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
-    from pyglet.graphics.api.vulkan.buffer import UniformBuffer
+    from pyglet.graphics.api.vulkan.buffer import UniformBuffer, VulkanUniformBufferObject
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
     from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram, stages_to_bits
 
@@ -64,6 +65,68 @@ if TYPE_CHECKING:
 # VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC = 8
 # VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC = 9
 # VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT = 10
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorBindingKey:
+    binding: int
+    descriptor_type: int
+    descriptor_count: int
+    stage_flags: int
+
+    @classmethod
+    def from_layout_binding(cls, layout_binding: VkDescriptorSetLayoutBinding) -> DescriptorBindingKey:
+        return cls(
+            binding=int(layout_binding.binding),
+            descriptor_type=int(layout_binding.descriptorType),
+            descriptor_count=int(layout_binding.descriptorCount),
+            stage_flags=int(layout_binding.stageFlags),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorSetLayoutKey:
+    flags: int
+    bindings: tuple[DescriptorBindingKey, ...]
+    binding_flags: tuple[int, ...] = ()
+
+    @classmethod
+    def from_layout_bindings(
+        cls,
+        layout_bindings: Sequence[VkDescriptorSetLayoutBinding],
+        flags: int = 0,
+        binding_flags: Sequence[int] | None = None,
+    ) -> DescriptorSetLayoutKey:
+        return cls(
+            flags=int(flags),
+            bindings=tuple(DescriptorBindingKey.from_layout_binding(binding) for binding in layout_bindings),
+            binding_flags=tuple(binding_flags) if binding_flags else (),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorSetLayoutEntryKey:
+    set_index: int
+    layout_key: DescriptorSetLayoutKey
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorSetLayoutsKey:
+    set_layouts: tuple[DescriptorSetLayoutEntryKey, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorSetLayouts:
+    key: DescriptorSetLayoutsKey
+    layouts: tuple[VkDescriptorSetLayout, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorSetCacheKey:
+    layout_key: DescriptorSetLayoutsKey
+    resource_states: tuple[DescriptorResourceState, ...]
+    owner_key: int | None
+
 
 class DescriptorPool:
     flags: VkDescriptorPoolCreateFlags
@@ -158,27 +221,27 @@ class DescriptorPool:
 
 class DescriptorSetLayoutCache:
     # Layout is cached by the flag, tuple
-    layout_cache: dict[tuple[int, tuple], VkDescriptorSetLayout]
+    layout_cache: dict[DescriptorSetLayoutKey, VkDescriptorSetLayout]
 
     def __init__(self, device: VulkanLogicalDevice) -> None:
         self.device = device
         self.layout_cache = {}  # Cache for VkDescriptorSetLayout objects
 
-    def get(self, layout_bindings: dict[str, VkDescriptorSetLayoutBinding],
-            flags: VkDescriptorSetLayoutCreateFlags=0,
-            binding_flags: Sequence[int] | None = None) -> VkDescriptorSetLayout:
+    def get(
+        self,
+        layout_key: DescriptorSetLayoutKey,
+        layout_bindings: Sequence[VkDescriptorSetLayoutBinding],
+    ) -> VkDescriptorSetLayout:
         """Retrieve a cached VkDescriptorSetLayout or create a new one if not cached.
 
         flags = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT - Possible addition later.
         """
-        all_bindings: tuple[VkDescriptorSetLayoutBinding] = tuple(layout_bindings.values())
-        binding_flags_key = tuple(binding_flags) if binding_flags else ()
-        key = (flags, self._create_cache_key(all_bindings), binding_flags_key)
-        if key in self.layout_cache:
-            return self.layout_cache[key]
+        if layout_key in self.layout_cache:
+            return self.layout_cache[layout_key]
 
         layout_pnext = None
         binding_flags_info = None
+        binding_flags = layout_key.binding_flags
         if binding_flags:
             binding_flags_arr = c_array_list(binding_flags, VkDescriptorBindingFlags)
             binding_flags_info = VkDescriptorSetLayoutBindingFlagsCreateInfo(
@@ -192,29 +255,16 @@ class DescriptorSetLayoutCache:
         layout_info = VkDescriptorSetLayoutCreateInfo(
             sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             pNext=layout_pnext,
-            flags=flags,
-            bindingCount=len(all_bindings),
-            pBindings=c_array_list(all_bindings, VkDescriptorSetLayoutBinding),
+            flags=layout_key.flags,
+            bindingCount=len(layout_bindings),
+            pBindings=c_array_list(layout_bindings, VkDescriptorSetLayoutBinding),
         )
 
         layout = VkDescriptorSetLayout()
         self.device.vkCreateDescriptorSetLayout(self.device.vk_device, byref(layout_info), None, byref(layout))
 
-        self.layout_cache[key] = layout
+        self.layout_cache[layout_key] = layout
         return layout
-
-    def _create_cache_key(self, layout_bindings: Sequence[VkDescriptorSetLayoutBinding]) -> tuple:
-        """Create a hashable key based on the layout info."""
-        bindings = [
-            (
-                binding.binding,
-                binding.descriptorType,
-                binding.descriptorCount,
-                binding.stageFlags,
-            )
-            for binding in layout_bindings
-        ]
-        return tuple(bindings)
 
     def delete(self) -> None:
         """Destroy all cached layouts."""
@@ -231,8 +281,7 @@ class DescriptorManager:
         self.layout_cache = DescriptorSetLayoutCache(self.device)
         self.descriptor_pool = DescriptorPool(self.device)
         self.frames_in_flight = 0
-        self.descriptor_set_cache = {}
-        self._key = {}
+        self.descriptor_set_cache: dict[DescriptorSetCacheKey, DescriptorSetObject] = {}
 
         if self._supports_update_after_bind():
             print("(Vulkan) Descriptor pool using UPDATE_AFTER_BIND (descriptor indexing path).")
@@ -259,15 +308,43 @@ class DescriptorManager:
             pool_flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT
         self.descriptor_pool.create_pool(frames_in_flight, max_sets, flags=pool_flags)
 
-    def get_descriptor_set_layouts(self, program: VulkanShaderProgram) -> list[VkDescriptorSetLayout]:
-        """Get the descriptor set layout for the given program.
+    def get_descriptor_set_layouts(self, program: VulkanShaderProgram) -> DescriptorSetLayouts:
+        """Get descriptor set layouts for the given shader program, keyed structurally."""
+        bindings_by_set = program.get_layout_bindings_by_set()
+        if not bindings_by_set:
+            return DescriptorSetLayouts(DescriptorSetLayoutsKey(tuple()), tuple())
 
-        Eventually may need to support multiple set layouts. (Other than, set 0)
-        """
-        bindings = program.get_layout_bindings()
-        layout_bindings = tuple(bindings.values())
-        layout_flags, binding_flags = self._descriptor_indexing_layout_flags(layout_bindings)
-        return [self.layout_cache.get(bindings, flags=layout_flags, binding_flags=binding_flags)]
+        set_indices = sorted(bindings_by_set)
+        if set_indices != list(range(set_indices[-1] + 1)):
+            missing_sets = sorted(set(range(set_indices[-1] + 1)) - set(set_indices))
+            msg = (
+                "Descriptor sets must be contiguous and start from set 0. "
+                f"Missing set indices: {missing_sets}"
+            )
+            raise ValueError(msg)
+
+        layout_entries: list[DescriptorSetLayoutEntryKey] = []
+        set_layouts: list[VkDescriptorSetLayout] = []
+
+        for set_index in set_indices:
+            ordered_bindings = tuple(
+                bindings_by_set[set_index][binding]
+                for binding in sorted(bindings_by_set[set_index])
+            )
+            layout_flags, binding_flags = self._descriptor_indexing_layout_flags(ordered_bindings)
+            layout_key = DescriptorSetLayoutKey.from_layout_bindings(
+                ordered_bindings,
+                flags=layout_flags,
+                binding_flags=binding_flags,
+            )
+            layout = self.layout_cache.get(layout_key, ordered_bindings)
+            layout_entries.append(DescriptorSetLayoutEntryKey(set_index, layout_key))
+            set_layouts.append(layout)
+
+        return DescriptorSetLayouts(
+            key=DescriptorSetLayoutsKey(tuple(layout_entries)),
+            layouts=tuple(set_layouts),
+        )
 
     def _supports_descriptor_indexing(self) -> bool:
         return self.device.descriptor_indexing_enabled
@@ -287,9 +364,6 @@ class DescriptorManager:
     ) -> tuple[int, list[int]]:
         """Build descriptor indexing flags for each binding if the device supports it."""
         if not self._supports_descriptor_indexing():
-            if _debug_api and not self._descriptor_indexing_mode_logged:
-                print("(Vulkan) Descriptor set layouts using legacy binding flags.")
-                self._descriptor_indexing_mode_logged = True
             return 0, []
 
         binding_flags: list[int] = []
@@ -316,31 +390,42 @@ class DescriptorManager:
         return layout_flags, binding_flags
 
     def get_descriptor_sets(self,
-                            set_layout: list[VkDescriptorSetLayout],
-                            resource_states: list[DescriptorResourceState],
-                            owner: object | None = None) -> tuple[DescriptorSetObject, bool]:
+                            set_layouts: DescriptorSetLayouts,
+                            resource_states: Sequence[DescriptorResourceState],
+                            owner: object | None = None) -> DescriptorSetObject:
         """Allocate the descriptor sets.
 
         Will return a descriptor set for each frame in flight.
         """
-        print("get_descriptor_sets, ", set_layout)
-        layout_key = tuple(int(getattr(layout, "value", 0) or 0) for layout in set_layout)
         owner_key = id(owner) if owner is not None else None
-        key = (layout_key, tuple(resource_states), owner_key)
+        key = DescriptorSetCacheKey(set_layouts.key, tuple(resource_states), owner_key)
         if key in self.descriptor_set_cache:
-            return self.descriptor_set_cache[key], False
+            return self.descriptor_set_cache[key]
 
-        self.descriptor_set_cache[key] = dset = DescriptorSetObject(self.device, self.descriptor_pool.allocate_descriptor_sets(set_layout))
-        return dset, True
+        if not set_layouts.layouts:
+            msg = "Cannot allocate descriptor sets for an empty descriptor set layout list."
+            raise RuntimeError(msg)
 
-    def get_shared_descriptor_sets(self, set_layout: list[VkDescriptorSetLayout]) -> DescriptorSetObject:
+        self.descriptor_set_cache[key] = dset = DescriptorSetObject(
+            self.device,
+            self.descriptor_pool.allocate_descriptor_sets(list(set_layouts.layouts)),
+        )
+        return dset
+
+    def get_shared_descriptor_sets(self, set_layouts: DescriptorSetLayouts) -> DescriptorSetObject:
         """Allocate a shared descriptor set.
 
         A shared descriptor set is meant to be used for frequently updated descriptors. Instead of resources being set
         to a specific descriptor, the descriptor set updates the pointer to a different resource every frame or
         very frequently. This can lower the need for lots of descriptor sets.
         """
-        return DescriptorSetObject(self.device, self.descriptor_pool.allocate_descriptor_sets(set_layout))
+        if not set_layouts.layouts:
+            msg = "Cannot allocate descriptor sets for an empty descriptor set layout list."
+            raise RuntimeError(msg)
+        return DescriptorSetObject(
+            self.device,
+            self.descriptor_pool.allocate_descriptor_sets(list(set_layouts.layouts)),
+        )
 
     def delete(self) -> None:
         self.layout_cache.delete()
@@ -428,7 +513,7 @@ class DescriptorSetObject:
         self.device.vkUpdateDescriptorSets(self.device.vk_device, 1, write_array, 0, None)
 
     # Bind a uniform buffer to the descriptor set
-    def bind_ubo(self, ubo: UniformBufferObject, binding=0, desc_set=0):
+    def bind_ubo(self, ubo: VulkanUniformBufferObject, binding=0, desc_set=0):
         buffer_info = VkDescriptorBufferInfo(
             buffer=ubo.buffer.buffer.vk_buffer,
             offset=0,

@@ -518,16 +518,75 @@ class VulkanShaderProgram(ShaderProgram):
 
         #print("Loading", self._id, [get_spirv_as_glsl(shader.compiled_data) for shader in self.shaders])
 
-    def _get_sampler_layout_bindings(self) -> dict[str, VkDescriptorSetLayoutBinding]:
-        return { name : VkDescriptorSetLayoutBinding(
-                binding=sampler.binding,
-                descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                descriptorCount=sampler.count,
-                stageFlags=stages_to_bits(sampler.stages),
-            ) for name, sampler in self._samplers.items()}
+    def _get_sampler_layout_bindings(self) -> dict[str, tuple[int, VkDescriptorSetLayoutBinding]]:
+        return {
+            name: (
+                sampler.desc_set,
+                VkDescriptorSetLayoutBinding(
+                    binding=sampler.binding,
+                    descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    descriptorCount=sampler.count,
+                    stageFlags=stages_to_bits(sampler.stages),
+                ),
+            )
+            for name, sampler in self._samplers.items()
+        }
 
-    def _get_ubo_layout_bindings(self) -> dict[str, VkDescriptorSetLayoutBinding]:
-        return { name: ubo.layout_binding for name, ubo in self.ubo.items()}
+    def _get_ubo_layout_bindings(self) -> dict[str, tuple[int, VkDescriptorSetLayoutBinding]]:
+        return {
+            name: (block.index, block.layout_binding)
+            for name, block in self.uniform_blocks.items()
+        }
+
+    @staticmethod
+    def _merge_layout_binding(
+        bindings_by_set: dict[int, dict[int, VkDescriptorSetLayoutBinding]],
+        set_index: int,
+        resource_name: str,
+        layout_binding: VkDescriptorSetLayoutBinding,
+    ) -> None:
+        set_bindings = bindings_by_set.setdefault(set_index, {})
+        binding_index = int(layout_binding.binding)
+        existing = set_bindings.get(binding_index)
+        if existing is None:
+            set_bindings[binding_index] = VkDescriptorSetLayoutBinding(
+                binding=layout_binding.binding,
+                descriptorType=layout_binding.descriptorType,
+                descriptorCount=layout_binding.descriptorCount,
+                stageFlags=layout_binding.stageFlags,
+                pImmutableSamplers=layout_binding.pImmutableSamplers,
+            )
+            return
+
+        if (
+            int(existing.descriptorType) != int(layout_binding.descriptorType)
+            or int(existing.descriptorCount) != int(layout_binding.descriptorCount)
+        ):
+            msg = (
+                f"Descriptor binding collision in set {set_index}, binding {binding_index}. "
+                f"Resource '{resource_name}' does not match existing descriptor type/count."
+            )
+            raise ShaderException(msg)
+
+        existing.stageFlags |= layout_binding.stageFlags
+
+    def get_layout_bindings_by_set(self) -> dict[int, dict[int, VkDescriptorSetLayoutBinding]]:
+        """Descriptor layout bindings grouped by descriptor set and binding index."""
+        resources: dict[str, tuple[int, VkDescriptorSetLayoutBinding]] = {}
+        resources.update(self._get_ubo_layout_bindings())
+        resources.update(self._get_sampler_layout_bindings())
+
+        by_set: dict[int, dict[int, VkDescriptorSetLayoutBinding]] = {}
+        for resource_name, (set_index, layout_binding) in resources.items():
+            self._merge_layout_binding(by_set, set_index, resource_name, layout_binding)
+
+        return {
+            set_index: {
+                binding_index: set_bindings[binding_index]
+                for binding_index in sorted(set_bindings)
+            }
+            for set_index, set_bindings in sorted(by_set.items())
+        }
 
     def get_layout_bindings(self) -> dict[str, VkDescriptorSetLayoutBinding]:
         """Defines the metadata on types of resources the shader will access.
@@ -536,15 +595,19 @@ class VulkanShaderProgram(ShaderProgram):
 
         This layout may be discarded if a cached version already exists through the Descriptor Manager.
         """
-        # TODO: Support multiple Sets (More than Set 0)
-        resources = {}
+        resources: dict[str, tuple[int, VkDescriptorSetLayoutBinding]] = {}
         resources.update(self._get_ubo_layout_bindings())
         resources.update(self._get_sampler_layout_bindings())
 
-        resource_bindings = list(resources.values())
+        set_indices = {set_index for set_index, _ in resources.values()}
+        if len(set_indices) > 1:
+            msg = "Shader defines multiple descriptor sets; use get_layout_bindings_by_set()."
+            raise ShaderException(msg)
+
+        resource_bindings = [layout_binding for _, layout_binding in resources.values()]
         all_bindings = [binding.binding for binding in resource_bindings]
         assert len(all_bindings) == len(set(all_bindings)), "Duplicate bindings detected: {}"
-        return resources
+        return {name: layout_binding for name, (_, layout_binding) in resources.items()}
 
     def attach(self, device: VulkanLogicalDevice) -> None:
         """Attach the device to all shaders.

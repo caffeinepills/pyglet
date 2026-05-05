@@ -19,7 +19,7 @@ _debug_graphics_batch = pyglet.options.debug_graphics_batch
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.vertexdomain import VertexList, IndexedVertexList
     from pyglet.graphics.api.vulkan.pipeline import GraphicsPipeline
-    from pyglet.graphics.api.vulkan.descriptor import DescriptorSetObject
+    from pyglet.graphics.api.vulkan.descriptor import DescriptorSetObject, DescriptorSetLayoutsKey
     from pyglet.graphics import GeometryMode
     from pyglet.graphics.api.gl2.shader import ShaderProgram
 
@@ -352,7 +352,7 @@ class VulkanBatch(Batch):
         """Visit group tree in preorder and create a list of bound methods to call."""
         current_pipeline: GraphicsPipeline | None = None
         current_desc_set: DescriptorSetObject | None = None
-        current_descriptor_key: tuple[tuple[int, ...], tuple[DescriptorResourceState, ...]] | None = None
+        current_descriptor_key: tuple[DescriptorSetLayoutsKey, tuple[DescriptorResourceState, ...]] | None = None
 
         frame_sync = self._window_ctx.frame_sync
 
@@ -415,18 +415,21 @@ class VulkanBatch(Batch):
                     current_pipeline = pipeline
 
                 group_resources = tuple(get_group_resource_states(group))
-                print("LAYOUTS", pipeline.descriptor_set_layouts, [str(layout) for layout in pipeline.descriptor_set_layouts])
-                layout_key = tuple(int(getattr(layout, "value", 0) or 0) for layout in pipeline.descriptor_set_layouts)
-                descriptor_key = (layout_key, group_resources)
+                descriptor_set_layouts_info = pipeline.descriptor_set_layouts_info
+                assert descriptor_set_layouts_info is not None
+                descriptor_key = (descriptor_set_layouts_info.key, group_resources)
                 descriptor_changed = current_descriptor_key != descriptor_key
 
                 if descriptor_changed:
-                    # Get or create the descriptor set
-                    current_desc_set, _ = self.descriptor_mgr.get_descriptor_sets(
-                        pipeline.descriptor_set_layouts,
-                        list(group_resources),
-                        owner=self._window_ctx,
-                    )
+                    if descriptor_set_layouts_info.layouts:
+                        # Get or create the descriptor set
+                        current_desc_set = self.descriptor_mgr.get_descriptor_sets(
+                            descriptor_set_layouts_info,
+                            list(group_resources),
+                            owner=self._window_ctx,
+                        )
+                    else:
+                        current_desc_set = None
                     current_descriptor_key = descriptor_key
 
                 if current_desc_set and (descriptor_changed or pipeline_changed):
