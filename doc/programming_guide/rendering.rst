@@ -195,6 +195,39 @@ There may come a point where you don't want a specific :py:class:`~pyglet.graphi
 
 .. note:: Binding point 0 cannot be set, as it is used internally for ``WindowBlock``.
 
+Transform Feedback
+^^^^^^^^^^^^^^^^^^
+
+:py:class:`~pyglet.graphics.shader.TransformFeedbackShaderProgram` is a specialized
+ShaderProgram that captures vertex (or geometry) shader outputs into a buffer,
+instead of only rasterizing them to the framebuffer.
+
+This is useful for GPU particle updates, simulation steps, and other workflows
+where one draw pass generates data for later passes.
+
+Create one the same way as a normal ShaderProgram, but provide ``varyings`` when
+linking::
+
+    tf_program = pyglet.graphics.TransformFeedbackShaderProgram(
+        vertex_shader,
+        fragment_shader,
+        varyings=("next_position", "next_velocity"),
+    )
+
+``varyings`` names must match ``out`` variables declared in your shader stage.
+Captured values are written to transform feedback buffer binding points in the
+order provided by ``varyings``.
+
+Use ``varying_buffer_type="separate"`` (default) to write each varying to a
+separate binding point, or ``"interleaved"`` to pack them into one stream.
+
+After linking, bind one or more
+:py:class:`~pyglet.graphics.buffer.TransformFeedbackBuffer` objects with
+``bind_base``/``bind_range`` and run a draw call while transform feedback is
+active.
+
+See ``examples/opengl/transform_shader.py`` for a complete end-to-end example.
+
 
 Creating Vertex Lists
 ^^^^^^^^^^^^^^^^^^^^^
@@ -409,6 +442,22 @@ Example (indexed instancing)::
 
 If you lose track of your instances or wish to get them by index, you can do so via the helper method on the mesh
 vertex list: ``instance = vlist.get_instance_by_index(0)``.
+
+Instanced vertex lists also provide helper APIs for ordering:
+
+* ``vlist.instance_count`` to inspect the number of active instances.
+* ``vlist.get_instance_index(instance)`` to get the current slot for an instance.
+* ``vlist.swap_instances(a, b)`` to swap two instances.
+* ``vlist.move_instance_to_index(instance, index)`` to move one instance to a specific index.
+* ``vlist.move_to_back([inst1, inst2, ...])`` to move a subset to lower indices (drawn earlier).
+* ``vlist.move_to_top([inst1, inst2, ...])`` to move a subset to higher indices (drawn later).
+* ``vlist.set_instance_order([...])`` to set the full exact order of all active instances.
+
+.. note:: Moving instances may involve shifting existing instances around in the buffer, which can be slow.
+
+Groups control draw order between different vertex lists, but not between
+instances inside the same instanced vertex list. Use the ordering helpers above
+when you need explicit ordering among instances of a single mesh.
 
 Resource Management
 ~~~~~~~~~~~~~~~~~~~
