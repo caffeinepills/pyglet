@@ -510,6 +510,30 @@ class UniqueIDHandler:
 class VulkanTextureRegion(_TextureRegionShared, Texture):
     owner: VulkanTexture
 
+    def _init_region(self, x: int, y: int, z: int, width: int, height: int, owner: Texture) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+        self._width = width
+        self._height = height
+        self.owner = owner
+
+        owner_u1 = owner.tex_coords[0]
+        owner_v1 = owner.tex_coords[1]
+        owner_u2 = owner.tex_coords[3]
+        owner_v2 = owner.tex_coords[7]
+        scale_u = owner_u2 - owner_u1
+        scale_v = owner_v2 - owner_v1
+
+        u1 = x / owner.width * scale_u + owner_u1
+        # Vulkan textures use inverted V coordinates relative to OpenGL.
+        v1 = (owner.height - (y + height)) / owner.height * scale_v + owner_v1
+        u2 = (x + width) / owner.width * scale_u + owner_u1
+        v2 = (owner.height - y) / owner.height * scale_v + owner_v1
+        r = z / owner.images + owner.tex_coords[2]
+
+        self.tex_coords = (u1, v1, r, u2, v1, r, u2, v2, r, u1, v2, r)
+
     def __init__(self, x: int, y: int, z: int, width: int, height: int, owner: VulkanTexture) -> None:
         super().__init__(
             width,
