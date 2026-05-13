@@ -12,8 +12,8 @@ import contextlib
 
 import pyglet
 
-from experimental.sdf import DistFieldFont, DistFieldLabel
-from experimental.sdf.layout_sdf import get_msdf_layout_shader, get_sdf_layout_shader
+from pyglet.experimental.sdf import DistFieldFont, DistFieldLabel
+from pyglet.experimental.sdf.layout_sdf import get_msdf_layout_shader, get_sdf_layout_shader
 from pyglet.window import key
 
 
@@ -163,7 +163,7 @@ controls_label = pyglet.text.Label(
     batch=ui_batch,
     color=(220, 220, 220, 255),
 )
-print(controls_text)
+print(controls_text)  # noqa: T201
 
 
 def update_mode_label(mode_label: pyglet.text.Label) -> None:
