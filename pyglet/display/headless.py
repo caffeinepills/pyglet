@@ -1,25 +1,39 @@
 from __future__ import annotations
 
 from typing import Literal
-
-import warnings
 from ctypes import byref
+import warnings
 
 import pyglet
 
 from .base import Display, Screen
-from pyglet.libs import egl
 from pyglet.util import debug_print
 
 _debug = debug_print('debug_api')
 
 
 class HeadlessDisplay(Display):
+    """Backend-neutral headless display stub.
+
+    This display does not require a windowing system or EGL connection.
+    It is suitable for APIs such as Vulkan when rendering offscreen.
+    """
 
     def __init__(self):
         super().__init__()
-        # TODO: fix this placeholder:
+        self._display_connection = None
         self._screens = [HeadlessScreen(self, 0, 0, 1920, 1080)]
+
+    def get_screens(self):
+        return self._screens
+
+
+class EGLHeadlessDisplay(HeadlessDisplay):
+    """EGL-backed headless display used by OpenGL/EGL contexts."""
+
+    def __init__(self):
+        super().__init__()
+        from pyglet.libs import egl  # Local import: avoid hard EGL dependency for non-EGL headless backends.
 
         num_devices = egl.EGLint()
         try:
@@ -44,10 +58,10 @@ class HeadlessDisplay(Display):
         egl.eglInitialize(self._display_connection, majorver, minorver)
         assert _debug(f"EGL version: {majorver.value}.{minorver.value}")
 
-    def get_screens(self):
-        return self._screens
-
     def __del__(self):
+        if self._display_connection is None:
+            return
+        from pyglet.libs import egl  # noqa: PLC0415
         egl.eglTerminate(self._display_connection)
 
 
@@ -73,3 +87,9 @@ class HeadlessScreen(Screen):
 
     def get_monitor_name(self) -> str | Literal["Unknown"]:
         return "Headless"
+
+    def get_dpi(self):
+        return 96
+
+    def get_scale(self) -> float:
+        return 1.0

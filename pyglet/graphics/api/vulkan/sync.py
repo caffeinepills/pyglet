@@ -18,7 +18,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_PIPELINE_STAGE_COLOR_AT
     VkSemaphoreWaitInfo, VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, VK_NULL_HANDLE
 
 if TYPE_CHECKING:
-    from pyglet.graphics.api.vulkan.swapchain import VulkanSwapchain
+    from pyglet.graphics.api.vulkan.swapchain import VulkanOffscreenSwapchain, VulkanSwapchain
     from pyglet.graphics.api.vulkan.descriptor import DescriptorManager
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
     from pyglet.graphics.api.vulkan.commands import CommandBuffer, CommandPool
@@ -114,7 +114,7 @@ class FrameSync:
         return None, None
 
     def __init__(self, device: VulkanLogicalDevice,
-                 swapchain: VulkanSwapchain,
+                 swapchain: VulkanSwapchain | VulkanOffscreenSwapchain,
                  descriptor_mgr: DescriptorManager,
                  command_pool: CommandPool,
                  frames_in_flight: int,
@@ -124,6 +124,7 @@ class FrameSync:
         self.frames_in_flight = frames_in_flight
         self.device = device
         self.swapchain = swapchain
+        self.offscreen = not device.supports_presentation()
         self.command_pool = command_pool
         self.command_buffers = [{} for _ in range(frames_in_flight)]
         self.image_index = [0 for _ in range(frames_in_flight)]
@@ -132,17 +133,31 @@ class FrameSync:
         self.counter = 0
         self._wait_stages = c_array_list([VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT], c_uint32)
         self.vkWaitSemaphores, self._wait_semaphore_fn_name = self._resolve_wait_semaphores()
-        self.timeline_enabled = device.timeline_semaphore_enabled and self.vkWaitSemaphores is not None
+        self.timeline_enabled = (
+            device.timeline_semaphore_enabled
+            and self.vkWaitSemaphores is not None
+            and not self.offscreen
+        )
         self.timeline_semaphore: VkSemaphore | None = None
         self.timeline_value = 0
         self.frame_sync_values = [0 for _ in range(frames_in_flight)]
         self._has_acquired_image = False
+        self.last_acquired_image_index: int | None = None
+        self.last_presented_image_index: int | None = None
 
-        self.vkAcquireNextImageKHR = getattr(device, "vkAcquireNextImageKHR", DeviceFunc.vkAcquireNextImageKHR)
-        self.vkQueuePresentKHR = getattr(device, "vkQueuePresentKHR", DeviceFunc.vkQueuePresentKHR)
+        self.vkAcquireNextImageKHR = (
+            getattr(device, "vkAcquireNextImageKHR", DeviceFunc.vkAcquireNextImageKHR)
+            if not self.offscreen else None
+        )
+        self.vkQueuePresentKHR = (
+            getattr(device, "vkQueuePresentKHR", DeviceFunc.vkQueuePresentKHR)
+            if not self.offscreen else None
+        )
 
         if _debug_api:
-            if self.timeline_enabled:
+            if self.offscreen:
+                print("(Vulkan) Frame sync running in offscreen mode; using fences.")
+            elif self.timeline_enabled:
                 print(
                     "(Vulkan) Frame sync using timeline semaphore path "
                     f"(wait_fn={self._wait_semaphore_fn_name})."
@@ -260,6 +275,16 @@ class FrameSync:
             fence_array = c_array_list([self.fences[self.current_frame]], VkFence)
             self.vkWaitForFences(vk_device, 1, fence_array, VK_TRUE, UINT64_MAX)
 
+        if self.offscreen:
+            if not self.timeline_enabled:
+                fence_array = c_array_list([self.fences[self.current_frame]], VkFence)
+                self.vkResetFences(vk_device, 1, fence_array)
+            image_idx = self.current_frame % max(1, len(self.swapchain.swapchain_images))
+            self.image_index[self.current_frame] = image_idx
+            self.last_acquired_image_index = image_idx
+            self._has_acquired_image = True
+            return True
+
         img_index = c_uint32()
         try:
             self.vkAcquireNextImageKHR(
@@ -281,6 +306,7 @@ class FrameSync:
 
         self.image_index[self.current_frame] = img_index.value
         image_idx = img_index.value
+        self.last_acquired_image_index = image_idx
 
         if self.timeline_enabled:
             image_value = self.image_sync_values[image_idx]
@@ -305,7 +331,7 @@ class FrameSync:
             return False
 
         image_idx = self.image_index[self.current_frame]
-        wait_semaphores = c_array_list([self.image_available_semaphores[self.current_frame]], VkSemaphore)
+        wait_semaphores = None if self.offscreen else c_array_list([self.image_available_semaphores[self.current_frame]], VkSemaphore)
 
         cmd_buffers = c_array_list([cb.command_buffer for cb in self.command_buffers[self.current_frame].values()], VkCommandBuffer)
         command_count = len(self.command_buffers[self.current_frame])
@@ -340,9 +366,9 @@ class FrameSync:
         submit_create = VkSubmitInfo(
             sType=VK_STRUCTURE_TYPE_SUBMIT_INFO,
             pNext=submit_pnext,
-            waitSemaphoreCount=1,
+            waitSemaphoreCount=0 if self.offscreen else 1,
             pWaitSemaphores=wait_semaphores,
-            pWaitDstStageMask=self._wait_stages,
+            pWaitDstStageMask=None if self.offscreen else self._wait_stages,
             commandBufferCount=command_count,
             pCommandBuffers=cmd_buffers,
             signalSemaphoreCount=len(signal_list),
@@ -357,6 +383,12 @@ class FrameSync:
             self.timeline_value = timeline_signal_value
             self.frame_sync_values[self.current_frame] = timeline_signal_value
             self.image_sync_values[image_idx] = timeline_signal_value
+
+        if self.offscreen:
+            self.last_presented_image_index = image_idx
+            self.current_frame = (self.current_frame + 1) % self.frames_in_flight
+            self._has_acquired_image = False
+            return True
 
         swapchains = c_array_list([self.swapchain.swapchain], VkSwapchainKHR)
         image_indices = c_array_list([image_idx], c_uint32)
@@ -375,6 +407,8 @@ class FrameSync:
             self.current_frame = (self.current_frame + 1) % self.frames_in_flight
             self._has_acquired_image = False
             return False
+
+        self.last_presented_image_index = image_idx
 
         # DeviceFunc.vkCmdWriteTimestamp(
         #     self.get_current_command_buffer(0).command_buffer,

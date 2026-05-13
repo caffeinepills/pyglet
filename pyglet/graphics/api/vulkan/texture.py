@@ -45,7 +45,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkComponentMapping, VkImageAspectFlagBits, VkFormat, VkImageViewType, VkImageView, VkSampler, VkBorderColor,
     VkDevice, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VkClearColorValue, VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
     VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8_SRGB, VK_FORMAT_R8G8_SRGB,
-    VK_FORMAT_R8_SRGB, VkAccessFlags, VkPipelineStageFlags)
+    VK_FORMAT_R8_SRGB, VkAccessFlags, VkPipelineStageFlags, VK_FORMAT_B8G8R8A8_SRGB)
 from . import DeviceFunc, c_array_list
 from .buffer import StagingBufferObject
 from .enums import IMAGE_VIEW_TYPE_MAP, TEXTURE_FILTER_MAP, ADDRESS_MODE_MAP, TEXTURE_TYPE_MAP
@@ -87,6 +87,7 @@ TEXTURE_FORMAT_MAP = {
     'RGBA': VK_FORMAT_R8G8B8A8_SRGB,
     'D': VK_FORMAT_D32_SFLOAT,  # Or VK_FORMAT_D16_UNORM for lower precision
     'DS': VK_FORMAT_D24_UNORM_S8_UINT,  # Depth-Stencil combined format
+    'BGRA': VK_FORMAT_B8G8R8A8_SRGB,
 
     # Luminance and Alpha, as Vulkan doesn't support GL_LUMINANCE or GL_ALPHA directly:
     'L': VK_FORMAT_R8_UNORM,  # Use the red channel for luminance.
@@ -636,7 +637,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
             blank_data=False,
             context=context,
         )
-        texture.upload(image_data, image_data.anchor_x, image_data.anchor_y, 0)
+        texture.upload(image_data, 0, 0, 0)
         return texture
 
     @classmethod
@@ -763,7 +764,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
             msg = f"Depth layer {z} is out of range for mipmap level {level}."
             raise ImageException(msg)
         if x < 0 or y < 0 or x + image_data.width > width or y + image_data.height > height:
-            msg = "Image upload region exceeds texture dimensions."
+            msg = f"Image upload region exceeds texture dimensions.: {x}x{y}x{z} (Image: {image_data.width}x{image_data.height})"
             raise ImageException(msg)
 
         texture_format = self.internal_format.value

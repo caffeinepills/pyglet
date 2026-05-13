@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from pyglet.libs.shared.vulkan_lib import InstanceFunc, DeviceFunc
 from pyglet.libs.shared.vulkan_lib import exceptions
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_SUCCESS, VkExtensionProperties, \
-    vkEnumerateInstanceLayerProperties, VkLayerProperties, \
+    vkEnumerateInstanceExtensionProperties, vkEnumerateInstanceLayerProperties, VkLayerProperties, \
     VkDevice, VkInstance, VkInstanceCreateInfo, vkCreateInstance, VkPhysicalDevice, VkDeviceCreateInfo, \
     VkAllocationCallbacks, VkQueueFamilyProperties, VkSurfaceKHR, VkSurfaceCapabilitiesKHR, \
     VkSurfaceFormatKHR, VkPresentModeKHR, VkSwapchainKHR, VkImage, VkBool32
@@ -55,6 +55,19 @@ def EnumerateInstanceLayerProperties() -> list[VkLayerProperties]:
     vkEnumerateInstanceLayerProperties(byref(pPropertyCount), pProperties)
 
     return pProperties[:]
+
+def EnumerateInstanceExtensionProperties(pLayerName: bytes | None = None) -> list[VkExtensionProperties]:
+    pPropertyCount = c_uint32()
+    result = vkEnumerateInstanceExtensionProperties(pLayerName, byref(pPropertyCount), None)
+    if result != VK_SUCCESS:
+        raise Exception(result)
+
+    pProperties = (VkExtensionProperties * pPropertyCount.value)()
+    result = vkEnumerateInstanceExtensionProperties(pLayerName, byref(pPropertyCount), pProperties)
+    if result != VK_SUCCESS:
+        raise Exception(result)
+
+    return list(pProperties)
 
 def EnumerateDeviceExtensionProperties(instance: VulkanInstance, physicalDevice: VkPhysicalDevice, pLayerName: bytes | None) -> list[VkExtensionProperties]:
     pPropertyCount = c_uint32()

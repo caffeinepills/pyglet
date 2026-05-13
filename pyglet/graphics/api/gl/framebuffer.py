@@ -13,6 +13,7 @@ if you don't need to access their data at a later time. For example::
     framebuffer = pyglet.image.Framebuffer()
     framebuffer.attach_texture(color_buffer, attachment=GL_COLOR_ATTACHMENT0)
     framebuffer.attach_renderbuffer(depth_buffer, attachment=GL_DEPTH_ATTACHMENT)
+    framebuffer.finalize()
 
     # Bind the Framebuffer, which sets it as the active render target:
     framebuffer.bind()
@@ -181,6 +182,7 @@ class GLFramebuffer:
         self._attachment_types = 0
         self._width = 0
         self._height = 0
+        self._finalized = False
         self.target = target
         self._gl_target = _gl_target_map[target]
 
@@ -204,6 +206,12 @@ class GLFramebuffer:
 
         This activates it as the current drawing target.
         """
+        if not self._finalized:
+            msg = "Framebuffer must be finalized before it can be bound."
+            raise RuntimeError(msg)
+        self._bind_raw()
+
+    def _bind_raw(self) -> None:
         self._context.glBindFramebuffer(self._gl_target, self._id)
 
     def unbind(self) -> None:
@@ -213,7 +221,22 @@ class GLFramebuffer:
         to the framebuffer, or if you wish to access data
         from its Texture atachments.
         """
+        if not self._finalized:
+            msg = "Framebuffer must be finalized before it can be unbound."
+            raise RuntimeError(msg)
+        self._unbind_raw()
+
+    def _unbind_raw(self) -> None:
         self._context.glBindFramebuffer(self._gl_target, 0)
+
+    def _ensure_mutable(self) -> None:
+        if self._finalized:
+            msg = "Framebuffer attachments are immutable after finalize()."
+            raise RuntimeError(msg)
+
+    def finalize(self) -> None:
+        """Freeze attachments and allow this framebuffer to be used."""
+        self._finalized = True
 
     def clear(self) -> None:
         """Clear the attachments."""
@@ -226,6 +249,7 @@ class GLFramebuffer:
         """Explicitly delete the Framebuffer."""
         self._context.glDeleteFramebuffers(1, self._id)
         self._id = None
+        self._finalized = False
 
     def __del__(self) -> None:
         if self._id is not None:
@@ -264,13 +288,14 @@ class GLFramebuffer:
             level:
                 The mipmap level of the targeted texture to attach to the framebuffer.
         """
-        self.bind()
+        self._ensure_mutable()
+        self._bind_raw()
         gl_attachment = _gl_attachment_map[attachment]
         self._context.glFramebufferTexture(self._gl_target, gl_attachment, texture.id, level)
         self._attachment_types |= gl_attachment
         self._width = max(texture.width, self._width)
         self._height = max(texture.height, self._height)
-        self.unbind()
+        self._unbind_raw()
 
     def attach_texture_layer(self, texture: GLTexture, layer: int, level: int,
                              attachment: FramebufferAttachment = FramebufferAttachment.COLOR0) -> None:
@@ -287,13 +312,14 @@ class GLFramebuffer:
             attachment:
                 Specifies the attachment point of the framebuffer.
         """
-        self.bind()
+        self._ensure_mutable()
+        self._bind_raw()
         gl_attachment = _gl_attachment_map[attachment]
         self._context.glFramebufferTextureLayer(self._gl_target, gl_attachment, texture.id, level, layer)
         self._attachment_types |= gl_attachment
         self._width = max(texture.width, self._width)
         self._height = max(texture.height, self._height)
-        self.unbind()
+        self._unbind_raw()
 
     def attach_renderbuffer(self, renderbuffer: GLRenderbuffer,
                             attachment: FramebufferAttachment = FramebufferAttachment.COLOR0) -> None:
@@ -306,13 +332,14 @@ class GLFramebuffer:
             attachment:
                 Specifies the attachment point of the framebuffer.
         """
-        self.bind()
+        self._ensure_mutable()
+        self._bind_raw()
         gl_attachment = _gl_attachment_map[attachment]
         self._context.glFramebufferRenderbuffer(self._gl_target, gl_attachment, gl.GL_RENDERBUFFER, renderbuffer.id)
         self._attachment_types |= gl_attachment
         self._width = max(renderbuffer.width, self._width)
         self._height = max(renderbuffer.height, self._height)
-        self.unbind()
+        self._unbind_raw()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(id={self._id.value})"

@@ -37,6 +37,7 @@ class FixedResolution:
                                           component_format=ComponentFormat.D, bit_size=24)
         self.framebuffer.attach_renderbuffer(self._depth_buffer,
                                              attachment=FramebufferAttachment.DEPTH)
+        self.framebuffer.finalize()
 
         # Use a Sprite to render the Color Buffer Texture:
         self._sprite = pyglet.sprite.Sprite(self._color_buffer)

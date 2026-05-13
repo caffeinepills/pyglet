@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from pyglet.enums import GeometryMode, BlendFactor, BlendOp, TextureType, TextureFilter, AddressMode, TextureWrapping
+from pyglet.enums import (
+    GeometryMode,
+    BlendFactor,
+    BlendOp,
+    TextureType,
+    TextureFilter,
+    AddressMode,
+    TextureWrapping,
+    CompareOp,
+)
 from pyglet.libs.shared.vulkan_lib import vulkan_core as vk
 
 geometry_map = {
@@ -37,6 +46,17 @@ BLEND_OP_MAP = {
     BlendOp.REVERSE_SUBTRACT: vk.VK_BLEND_OP_REVERSE_SUBTRACT,
     BlendOp.MIN: vk.VK_BLEND_OP_MIN,
     BlendOp.MAX: vk.VK_BLEND_OP_MAX,
+}
+
+compare_op_map = {
+    CompareOp.NEVER: vk.VK_COMPARE_OP_NEVER,
+    CompareOp.LESS: vk.VK_COMPARE_OP_LESS,
+    CompareOp.EQUAL: vk.VK_COMPARE_OP_EQUAL,
+    CompareOp.LESS_OR_EQUAL: vk.VK_COMPARE_OP_LESS_OR_EQUAL,
+    CompareOp.GREATER: vk.VK_COMPARE_OP_GREATER,
+    CompareOp.NOT_EQUAL: vk.VK_COMPARE_OP_NOT_EQUAL,
+    CompareOp.GREATER_OR_EQUAL: vk.VK_COMPARE_OP_GREATER_OR_EQUAL,
+    CompareOp.ALWAYS: vk.VK_COMPARE_OP_ALWAYS,
 }
 
 

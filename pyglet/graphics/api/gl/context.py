@@ -132,6 +132,7 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
             if self.info.get_opengl_api() in (GraphicsAPI.OPENGL_ES_2, GraphicsAPI.OPENGL_ES_3):
                 from pyglet.graphics.api.gl.framebuffer import GLFramebuffer
                 self.gles_pixel_fbo = GLFramebuffer(context=self)
+                self.gles_pixel_fbo.finalize()
 
         if self.object_space.doomed_textures:
             self._delete_objects(self.object_space.doomed_textures, self.glDeleteTextures)

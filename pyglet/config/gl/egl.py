@@ -13,7 +13,7 @@ from pyglet.enums import GraphicsAPI
 if TYPE_CHECKING:
     from pyglet.graphics.api import OpenGLBackend
     from pyglet.config import OpenGLUserConfig
-    from pyglet.window.headless import HeadlessWindow
+    from pyglet.window.headless import EGLHeadlessWindow
     from pyglet.window.wayland import WaylandWindow
 
 _fake_gl_attributes = {
@@ -27,7 +27,7 @@ _fake_gl_attributes = {
 }
 
 
-def match(config: OpenGLUserConfig, window: HeadlessWindow | WaylandWindow) -> EGLSurfaceConfig:
+def match(config: OpenGLUserConfig, window: EGLHeadlessWindow | WaylandWindow) -> EGLSurfaceConfig:
     display_connection = window.egl_display_connection  # noqa: SLF001
     assert display_connection is not None
 
@@ -73,7 +73,7 @@ def match(config: OpenGLUserConfig, window: HeadlessWindow | WaylandWindow) -> E
 
 
 class EGLSurfaceConfig(SurfaceConfig):
-    window: HeadlessWindow | WaylandWindow
+    window: EGLHeadlessWindow | WaylandWindow
 
     attribute_ids = {  # noqa: RUF012
         'buffer_size': egl.EGL_BUFFER_SIZE,
@@ -88,7 +88,7 @@ class EGLSurfaceConfig(SurfaceConfig):
         'samples': egl.EGL_SAMPLES,
     }
 
-    def __init__(self, window: HeadlessWindow | WaylandWindow, config: OpenGLUserConfig, egl_config: egl.EGLConfig) -> None:
+    def __init__(self, window: EGLHeadlessWindow | WaylandWindow, config: OpenGLUserConfig, egl_config: egl.EGLConfig) -> None:
         super().__init__(window, config, egl_config)
         self._egl_config = egl_config
 

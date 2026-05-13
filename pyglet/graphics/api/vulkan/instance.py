@@ -19,18 +19,24 @@ from pyglet.graphics.api.vulkan.vk_info import VulkanInfo
 from pyglet.graphics.api.vulkan.pipeline import GraphicsPipelineManager
 from pyglet.graphics.api.vulkan.renderpass import RenderPass, RenderPassManager
 from pyglet.graphics.shader import Shader, ShaderProgram
-from pyglet.graphics.api.vulkan.swapchain import VulkanSwapchain
+from pyglet.graphics.api.vulkan.swapchain import VulkanOffscreenSwapchain, VulkanSwapchain
 from pyglet.graphics.api.vulkan.sync import DeferredResourceRemoval, FrameSync
 from pyglet.libs.shared.vulkan_lib import InstanceFunc, c_array_list, set_instance_functions, vulkan_core
-from pyglet.libs.shared.vulkan_lib.func_helpers import CreateInstance, EnumerateInstanceLayerProperties
+from pyglet.libs.shared.vulkan_lib.func_helpers import (
+    CreateInstance,
+    EnumerateInstanceExtensionProperties,
+    EnumerateInstanceLayerProperties,
+)
 from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_API_VERSION_1_0,
     VK_DEBUG_REPORT_ERROR_BIT_EXT,
     VK_DEBUG_REPORT_WARNING_BIT_EXT,
+    VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME,
     VK_MAKE_API_VERSION,
     VK_MAKE_VERSION,
     VK_STRUCTURE_TYPE_APPLICATION_INFO,
     VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT,
+    VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT,
     VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
     VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT,
     VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -44,6 +50,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkClearValue,
     VkDebugReportCallbackCreateInfoEXT,
     VkDebugReportCallbackEXT,
+    VkHeadlessSurfaceCreateInfoEXT,
     VkInstanceCreateInfo,
     VkOffset2D,
     VkRect2D,
@@ -140,7 +147,12 @@ class VulkanSurface:
     @classmethod
     def get_surface(cls, global_vulkan: VulkanGlobal, window: Window):
         extensions = global_vulkan.instance.extensions
-        print("EXTENSIONS", extensions)
+        if pyglet.options.headless:
+            if global_vulkan.instance.headless_surface_enabled and VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME.encode("utf-8") in extensions:
+                return cls.create_headless_surface(global_vulkan)
+            msg = "Headless Vulkan surface creation is disabled."
+            raise RuntimeError(msg)
+
         if b'VK_KHR_win32_surface' in extensions:
             return cls.create_win32_surface(global_vulkan, window)
 
@@ -151,6 +163,32 @@ class VulkanSurface:
             return cls.create_metal_surface(global_vulkan, window)
 
         raise Exception("Surface is currently not supported.")
+
+    @classmethod
+    def create_headless_surface(cls, global_vulkan: VulkanGlobal):
+        """This is not commonly used.
+
+        Vulkan just not use a window and render to an image and imageview instead.
+        """
+        vkCreateHeadlessSurfaceEXT = global_vulkan.instance.vkCreateHeadlessSurfaceEXT
+
+        create_info = VkHeadlessSurfaceCreateInfoEXT(
+            sType=VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT,
+            pNext=None,
+            flags=0,
+        )
+
+        vk_surface = VkSurfaceKHR()
+        result = vkCreateHeadlessSurfaceEXT(
+            global_vulkan.instance.vk_instance,
+            ctypes.byref(create_info),
+            None,
+            ctypes.byref(vk_surface),
+        )
+        if result != VK_SUCCESS:
+            raise RuntimeError("Failed to create Vulkan headless surface.")
+
+        return cls(vk_surface, global_vulkan)
 
     @classmethod
     def create_metal_surface(cls, global_vulkan: VulkanGlobal, window: CocoaWindow):
@@ -223,9 +261,9 @@ class WindowBlock(UniformBlockDesc):
 
 
 class VulkanSurfaceContext(SurfaceContext):
-    frame_sync: FrameSync
+    frame_sync: FrameSync | None
     core: VulkanGlobal
-    swapchain: VulkanSwapchain | None  # A vulkan swapchain can actually be none for headless.
+    swapchain: VulkanSwapchain | VulkanOffscreenSwapchain | None
     def __init__(self, global_ctx: VulkanGlobal, window: Window, config: VulkanSurfaceConfig, devices: VulkanDevices) -> None:
         self.devices = devices
         self.instance = global_ctx.instance
@@ -238,9 +276,16 @@ class VulkanSurfaceContext(SurfaceContext):
         self.descriptor_pool = None
         self.pipeline = None
         self.command_buffers = None
+        self.frame_sync = None
+        self.vkAcquireNextImageKHR = None
+        self.vkQueuePresentKHR = None
 
         # Can technically have multiple logical devices and surfaces, but we'll just use 1.
-        self.surface = VulkanSurface.get_surface(self.core, window)
+        use_surface = (not pyglet.options.headless) or self.instance.headless_surface_enabled
+        if use_surface:
+            self.surface = VulkanSurface.get_surface(self.core, window)
+        else:
+            self.surface = None
 
         # Create the Logical Device once we have a surface to get a presentation queue.
         if self.devices.logical_device.vk_device is None:
@@ -249,16 +294,31 @@ class VulkanSurfaceContext(SurfaceContext):
         self.core.command_pool.create()
         self._info.query(self)
 
-        # TODO: Handle no swapchain for headless environments and swapchain support with VK_EXT_headless_surface
-        assert self.logical_device.supports_presentation() is True, "Device does not support presentation."
-
-        # Swapchain and image views.
-        assert self.surface
-        self.swapchain = VulkanSwapchain(self.core, self.logical_device, self.devices.physical_device,
-                                         self.surface, self.window)
+        if self.logical_device.supports_presentation():
+            # Swapchain and image views.
+            assert self.surface
+            self.swapchain = VulkanSwapchain(
+                self.core,
+                self.logical_device,
+                self.devices.physical_device,
+                self.surface,
+                self.window,
+            )
+            self.vkAcquireNextImageKHR = self.devices.logical_device.vkAcquireNextImageKHR
+            self.vkQueuePresentKHR = self.devices.logical_device.vkQueuePresentKHR
+        else:
+            self.swapchain = VulkanOffscreenSwapchain(
+                self.logical_device,
+                self.devices,
+                self.window,
+            )
 
         # Renderpass
-        self.renderpass = RenderPass(self.logical_device, self.swapchain.surface_format.format)
+        self.renderpass = RenderPass(
+            self.logical_device,
+            (self.swapchain.surface_format.format,),
+            offscreen=not self.logical_device.supports_presentation(),
+        )
 
         # Framebuffers
         self.swapchain.create_framebuffers(self.renderpass)
@@ -273,9 +333,6 @@ class VulkanSurfaceContext(SurfaceContext):
         )
 
         self.default_cb_id = 0
-
-        self.vkAcquireNextImageKHR = self.devices.logical_device.vkAcquireNextImageKHR
-        self.vkQueuePresentKHR = self.devices.logical_device.vkQueuePresentKHR
 
     def set_clear_color(self, r: float, g: float, b: float, a: float) -> None:
         self.clear_color = (r, g, b, a)
@@ -295,7 +352,8 @@ class VulkanSurfaceContext(SurfaceContext):
 
     def recreate(self, width: int, height: int):
         """Recreate the swapchain resources when the window changes."""
-        self.swapchain.recreate(width, height, self.renderpass)
+        if self.swapchain and self.renderpass:
+            self.swapchain.recreate(width, height, self.renderpass)
 
     def attach(self, window: Window) -> None:
         assert self.window is window
@@ -333,10 +391,13 @@ class VulkanSurfaceContext(SurfaceContext):
 
     def before_draw(self):
         self.set_current()
+        if not self.frame_sync:
+            return False
         return self.frame_sync.before_draw()
 
     def flip(self):
-        self.frame_sync.flip()
+        if self.frame_sync:
+            self.frame_sync.flip()
 
     def delete(self):
         if self.logical_device and self.logical_device.vk_device:
@@ -478,6 +539,8 @@ class VulkanInstanceFuncs:
 
 class VulkanInstance(VulkanInstanceFuncs):
     """Class managing the Vulkan instance."""
+    DEBUG_ENABLE_HEADLESS_SURFACE: bool = False
+    headless_surface_enabled: bool
 
     def __init__(self, config: VulkanUserConfig | None = None) -> None:
         super().__init__()
@@ -490,25 +553,39 @@ class VulkanInstance(VulkanInstanceFuncs):
             print(f"(Vulkan) Requested API version={config.major_version}.{config.minor_version}, resolved apiVersion={self.api_version}.")
 
         self.available_layers = EnumerateInstanceLayerProperties()
-        self.extensions = [b'VK_KHR_surface', b'VK_EXT_debug_report']
+        self.available_extensions = {
+            ext.extensionName.split(b"\x00", 1)[0]
+            for ext in EnumerateInstanceExtensionProperties()
+        }
+        self.extensions = [b'VK_EXT_debug_report']
+        self.headless_surface_enabled = False
 
         # Only include for debug API?
         self.layers = [b'VK_LAYER_KHRONOS_validation'] if self.is_validation_layer_available() else []
 
-        if pyglet.compat_platform == "win32":
-            from pyglet.libs.shared.vulkan_lib import vulkan_win32
+        if pyglet.options.headless:
+            if self.DEBUG_ENABLE_HEADLESS_SURFACE:
+                headless_extension = b'VK_EXT_headless_surface'
+                self.extensions.append(b'VK_KHR_surface')
+                if headless_extension not in self.available_extensions:
+                    msg = "VK_EXT_headless_surface debug mode is enabled but not supported by this runtime."
+                    raise RuntimeError(msg)
+                self.extensions.append(headless_extension)
+                self.headless_surface_enabled = True
+        elif pyglet.compat_platform == "win32":
+            from pyglet.libs.shared.vulkan_lib import vulkan_win32  # noqa: PLC0415
             self.modules.append(vulkan_win32)
-            self.extensions.append(b'VK_KHR_win32_surface')
+            self.extensions.extend([b'VK_KHR_surface', b'VK_KHR_win32_surface'])
         elif pyglet.compat_platform == "linux":
-            from pyglet.libs.shared.vulkan_lib import vulkan_xlib
+            from pyglet.libs.shared.vulkan_lib import vulkan_xlib  # noqa: PLC0415
             self.modules.append(vulkan_xlib)
-            self.extensions.append(b'VK_KHR_xlib_surface')
+            self.extensions.extend([b'VK_KHR_surface', b'VK_KHR_xlib_surface'])
         elif pyglet.compat_platform == "wayland":
-            self.extensions.append(b'VK_KHR_wayland_surface')
+            self.extensions.extend([b'VK_KHR_surface', b'VK_KHR_wayland_surface'])
         elif pyglet.compat_platform == "darwin":
-            from pyglet.libs.shared.vulkan_lib import vulkan_metal
+            from pyglet.libs.shared.vulkan_lib import vulkan_metal  # noqa: PLC0415
             self.modules.append(vulkan_metal)
-            self.extensions.append(b'VK_EXT_metal_surface')
+            self.extensions.extend([b'VK_KHR_surface', b'VK_EXT_metal_surface'])
         else:
             raise Exception("Platform not supported")
 

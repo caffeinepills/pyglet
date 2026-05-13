@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from ctypes import pointer, byref
 
+from pyglet.enums import ComponentFormat
 from pyglet.graphics.api.vulkan import c_array_list
 from pyglet.math import clamp
 from pyglet.libs.shared.vulkan_lib import DeviceFunc
@@ -10,11 +12,13 @@ from pyglet.libs.shared.vulkan_lib import DeviceFunc
 from pyglet.libs.shared.vulkan_lib.func_helpers import GetPhysicalDeviceSurfaceCapabilitiesKHR, GetPhysicalDeviceSurfaceFormatsKHR, \
     GetPhysicalDeviceSurfacePresentModesKHR, GetSwapchainImagesKHR
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_FORMAT_B8G8R8A8_SRGB, \
+    VK_FORMAT_R8G8B8A8_SRGB, \
     VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, VK_PRESENT_MODE_FIFO_KHR, \
     VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VkExtent2D, VkImageViewCreateInfo, \
     VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, VK_IMAGE_VIEW_TYPE_2D, VkComponentMapping, VkImageSubresourceRange, \
     VK_IMAGE_ASPECT_COLOR_BIT, VkSwapchainCreateInfoKHR, VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, \
     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_TRUE, \
+    VK_IMAGE_USAGE_TRANSFER_SRC_BIT, \
     VkSwapchainKHR, VkFramebufferCreateInfo, VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, VK_SUCCESS, VkImageView, \
     VkFramebuffer
 
@@ -22,7 +26,7 @@ if TYPE_CHECKING:
     from pyglet.window import Window
     from pyglet.graphics.api.vulkan.renderpass import RenderPass
     from pyglet.graphics.api.vulkan.instance import VulkanGlobal, VulkanSurface
-    from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice, VulkanPhysicalGraphicsDevice
+    from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice, VulkanPhysicalGraphicsDevice, VulkanDevices
 
 
 
@@ -202,6 +206,103 @@ class VulkanSwapchain:
         if self.swapchain:
             DeviceFunc.vkDestroySwapchainKHR(self.logical.vk_device, self.swapchain, None)
             self.swapchain = None
+
+
+class VulkanOffscreenSwapchain:
+    """Swapchain-like offscreen render target for headless Vulkan rendering.
+
+    This mimics the subset of swapchain attributes currently expected by the
+    Vulkan backend (extent, images, views, framebuffers, format), but renders
+    into a single VkImage instead of a presentable surface.
+    """
+
+    image_views: list[VkImageView]
+
+    def __init__(self, logical: VulkanLogicalDevice, devices: VulkanDevices, window: Window):
+        self.swapchain = None
+        self.logical = logical
+        self.devices = devices
+        self.window = window
+        self.width = int(window.width)
+        self.height = int(window.height)
+        self.extent = VkExtent2D(width=self.width, height=self.height)
+        self.surface_format = SimpleNamespace(
+            format=VK_FORMAT_R8G8B8A8_SRGB,
+            colorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        )
+        self.present_mode = VK_PRESENT_MODE_FIFO_KHR
+
+        self.offscreen_image = None
+        self.offscreen_image_view = None
+        self.swapchain_images = []
+        self.image_views = []
+        self.framebuffers = []
+
+        self._create_image_resources()
+
+    def _create_image_resources(self):
+        from pyglet.graphics.api.vulkan.texture import VulkanImage, VulkanImageView  # noqa: PLC0415
+
+        self.offscreen_image = VulkanImage(
+            width=self.width,
+            height=self.height,
+            internal_format=ComponentFormat.RGBA,
+            usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        )
+        self.offscreen_image.create(self.devices)
+
+        self.offscreen_image_view = VulkanImageView(self.devices, self.offscreen_image)
+        self.swapchain_images = [self.offscreen_image.vk_image]
+        self.image_views = [self.offscreen_image_view.vk_imageview]
+
+    def recreate(self, width: int, height: int, renderpass: RenderPass):
+        width = int(width)
+        height = int(height)
+        if width == self.width and height == self.height:
+            return
+
+        self.width = width
+        self.height = height
+        self.extent = VkExtent2D(width=self.width, height=self.height)
+
+        self.delete()
+        self._create_image_resources()
+        self.create_framebuffers(renderpass)
+
+    def create_framebuffers(self, renderpass: RenderPass):
+        assert self.extent is not None
+        for image in self.image_views:
+            imageviews = [image]
+            imageview_array = c_array_list(imageviews, VkImageView)
+            framebuffer_create = VkFramebufferCreateInfo(
+                sType=VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                flags=0,
+                renderPass=renderpass.vk_renderpass,
+                attachmentCount=len(imageviews),
+                pAttachments=imageview_array,
+                width=self.extent.width,
+                height=self.extent.height,
+                layers=1,
+            )
+
+            framebuffer = VkFramebuffer()
+            DeviceFunc.vkCreateFramebuffer(self.logical.vk_device, byref(framebuffer_create), None, byref(framebuffer))
+            self.framebuffers.append(framebuffer)
+
+    def delete(self):
+        for framebuffer in self.framebuffers:
+            DeviceFunc.vkDestroyFramebuffer(self.logical.vk_device, framebuffer, None)
+        self.framebuffers.clear()
+
+        if self.offscreen_image_view is not None:
+            self.offscreen_image_view.delete()
+            self.offscreen_image_view = None
+        self.image_views.clear()
+
+        if self.offscreen_image is not None:
+            self.offscreen_image.delete()
+            self.offscreen_image = None
+        self.swapchain_images.clear()
 
     # def flip(self):
     #     try:

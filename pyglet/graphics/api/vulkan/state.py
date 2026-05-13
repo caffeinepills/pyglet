@@ -1,8 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, TYPE_CHECKING, Sequence
+from typing import Any, Callable, Generator, TYPE_CHECKING
 
-from pyglet.enums import BlendFactor, BlendOp
+from pyglet.enums import BlendFactor, BlendOp, CompareOp
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VkOffset2D, VkRect2D, VkExtent2D
 
@@ -100,6 +100,8 @@ class DepthTestState(State):
 class DepthWriteState(State):
     flag: int
 
+    sets_state: bool = False
+
 @dataclass(frozen=True)
 class StencilFuncState(State):
     func: Callable
@@ -156,25 +158,16 @@ class ShaderUniformState(State):
 
 @dataclass(frozen=True)
 class DepthTestStateEnable(State):
-    sets_state: bool = True
-    unsets_state: bool = True
-
-    def set_state(self, ctx: OpenGLSurfaceContext) -> None:
-        ctx.glEnable(GL_DEPTH_TEST)
-
-    def unset_state(self, ctx: OpenGLSurfaceContext) -> None:
-        ctx.glDisable(GL_DEPTH_TEST)
+    sets_state: bool = False
+    unsets_state: bool = False
 
 
 @dataclass(frozen=True)
 class DepthBufferComparison(State):
     func: CompareOp
 
-    sets_state: bool = True
-    parents: bool = True
+    sets_state: bool = False
+    parents: bool = False
 
     def generate_parent_states(self) -> Generator[State, None, None]:
         yield DepthTestStateEnable()
-
-    def set_state(self, ctx: OpenGLSurfaceContext) -> None:
-        ctx.glDepthFunc(compare_op_map[self.func])

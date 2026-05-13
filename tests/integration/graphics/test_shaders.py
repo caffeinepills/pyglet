@@ -62,6 +62,7 @@ def _render_program_to_pixel(program) -> bytes:
     fb = pyglet.graphics.framebuffer.Framebuffer()
     texture = pyglet.graphics.Texture.create(1, 1)
     fb.attach_texture(texture)
+    fb.finalize()
 
     fb.bind()
     gl.glViewport(0, 0, 1, 1)

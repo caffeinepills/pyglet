@@ -9,27 +9,68 @@ from ctypes import byref, pointer
 
 from pyglet.graphics.api.vulkan import c_array_list, DeviceFunc
 
-from pyglet.graphics.api.vulkan.enums import geometry_map
-from pyglet.enums import GeometryMode
-from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_SAMPLE_COUNT_1_BIT, VK_SAMPLE_COUNT_2_BIT, \
-    VK_SAMPLE_COUNT_4_BIT, \
-    VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_32_BIT, VK_SAMPLE_COUNT_64_BIT, \
-    VkPipelineViewportStateCreateInfo, VkExtent2D, VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, VkViewport, \
-    VkRect2D, VkOffset2D, VkDescriptorBufferInfo, VkWriteDescriptorSet, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, \
-    VK_PIPELINE_BIND_POINT_GRAPHICS, VkDescriptorSet, VkDescriptorSetLayout, VkPipelineVertexInputStateCreateInfo, \
-    VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, VkPipelineLayoutCreateInfo, \
-    VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, VkPipelineLayout, VkGraphicsPipelineCreateInfo, \
-    VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, VkPipeline, VkPipelineColorBlendStateCreateInfo, \
-    VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, VkPipelineColorBlendAttachmentState, \
-    VkPipelineDepthStencilStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, \
-    VkPipelineInputAssemblyStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, \
-    VkPipelineMultisampleStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, \
-    VkPipelineRasterizationStateCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, \
-    VkVertexInputBindingDescription, VkVertexInputAttributeDescription, VkPipelineShaderStageCreateInfo, \
-    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VkPushConstantRange, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, \
-    VkDescriptorImageInfo, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_NULL_HANDLE, VK_SHADER_STAGE_FRAGMENT_BIT, \
-    VkCommandBuffer, VkPipelineDynamicStateCreateInfo, VkDynamicState, VK_DYNAMIC_STATE_SCISSOR, \
-    VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO
+from pyglet.graphics.api.vulkan.enums import geometry_map, compare_op_map, BLEND_FACTOR_MAP, BLEND_OP_MAP
+from pyglet.enums import GeometryMode, BlendFactor, BlendOp
+from pyglet.libs.shared.vulkan_lib.vulkan_core import (
+    VK_SAMPLE_COUNT_1_BIT,
+    VK_SAMPLE_COUNT_2_BIT,
+    VK_SAMPLE_COUNT_4_BIT,
+    VK_SAMPLE_COUNT_8_BIT,
+    VK_SAMPLE_COUNT_16_BIT,
+    VK_SAMPLE_COUNT_32_BIT,
+    VK_SAMPLE_COUNT_64_BIT,
+    VkPipelineViewportStateCreateInfo,
+    VkExtent2D,
+    VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+    VkViewport,
+    VkRect2D,
+    VkOffset2D,
+    VkDescriptorBufferInfo,
+    VkWriteDescriptorSet,
+    VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+    VK_PIPELINE_BIND_POINT_GRAPHICS,
+    VkDescriptorSet,
+    VkDescriptorSetLayout,
+    VkPipelineVertexInputStateCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    VkPipelineLayoutCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    VkPipelineLayout,
+    VkGraphicsPipelineCreateInfo,
+    VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+    VkPipeline,
+    VkPipelineColorBlendStateCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+    VkPipelineColorBlendAttachmentState,
+    VkPipelineDepthStencilStateCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+    VkPipelineInputAssemblyStateCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+    VkPipelineMultisampleStateCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+    VkPipelineRasterizationStateCreateInfo,
+    VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+    VkVertexInputBindingDescription,
+    VkVertexInputAttributeDescription,
+    VkPipelineShaderStageCreateInfo,
+    VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    VkPushConstantRange,
+    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    VkDescriptorImageInfo,
+    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+    VK_NULL_HANDLE,
+    VK_SHADER_STAGE_FRAGMENT_BIT,
+    VkCommandBuffer,
+    VkPipelineDynamicStateCreateInfo,
+    VkDynamicState,
+    VK_DYNAMIC_STATE_SCISSOR,
+    VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+    VK_COMPARE_OP_LESS,
+    VK_COLOR_COMPONENT_R_BIT,
+    VK_COLOR_COMPONENT_G_BIT,
+    VK_COLOR_COMPONENT_B_BIT,
+    VK_COLOR_COMPONENT_A_BIT,
+)
 
 if TYPE_CHECKING:
     from pyglet.graphics import Group
@@ -70,7 +111,7 @@ class PipelineState:
 class DepthStencilState(PipelineState):
     def __init__(self, depth_test_enable: bool,
                  depth_write_enable: bool,
-                 depth_compare_op: VkCompareOp,
+                 depth_compare_op: int,
                  stencil_test_enable: bool = False):
         self.depth_test_enable = depth_test_enable
         self.depth_write_enable = depth_write_enable
@@ -85,7 +126,7 @@ class DepthStencilState(PipelineState):
             sType=VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
             depthTestEnable=self.depth_test_enable,
             depthWriteEnable=self.depth_write_enable,
-            depthCompareOp=self.depth_compare_op.value,
+            depthCompareOp=int(self.depth_compare_op),
             stencilTestEnable=self.stencil_test_enable,
         )
 
@@ -215,77 +256,55 @@ class RasterizationState(PipelineState):
     def __hash__(self) -> int:
         return hash((self.polygon_mode, self.cull_mode, self.front_face, self.depth_clamp_enable, self.line_width))
 
+
+@dataclass(slots=True, frozen=True)
+class BlendStateOptions:
+    enabled: bool = True
+    color_src: BlendFactor = BlendFactor.SRC_ALPHA
+    color_dst: BlendFactor = BlendFactor.ONE_MINUS_SRC_ALPHA
+    color_op: BlendOp = BlendOp.ADD
+    alpha_src: BlendFactor = BlendFactor.ONE
+    alpha_dst: BlendFactor = BlendFactor.ZERO
+    alpha_op: BlendOp = BlendOp.ADD
+    color_write_mask: int = (
+        VK_COLOR_COMPONENT_R_BIT
+        | VK_COLOR_COMPONENT_G_BIT
+        | VK_COLOR_COMPONENT_B_BIT
+        | VK_COLOR_COMPONENT_A_BIT
+    )
+
+    def create_state_info(self) -> VkPipelineColorBlendAttachmentState:
+        return VkPipelineColorBlendAttachmentState(
+            blendEnable=self.enabled,
+            srcColorBlendFactor=BLEND_FACTOR_MAP[self.color_src],
+            dstColorBlendFactor=BLEND_FACTOR_MAP[self.color_dst],  # No blending
+            colorBlendOp=BLEND_OP_MAP[self.color_op],
+            srcAlphaBlendFactor=BLEND_FACTOR_MAP[self.alpha_src],
+            dstAlphaBlendFactor=BLEND_FACTOR_MAP[self.alpha_dst],
+            alphaBlendOp=BLEND_OP_MAP[self.alpha_op],
+            colorWriteMask=self.color_write_mask,
+        )
+
 class ColorBlendState(PipelineState):
-    def __init__(self, attachments: Sequence[ColorAttachment], logic_op_enable: bool = False):
-        self.attachments = attachments
+    def __init__(self, attachments: Sequence[ColorAttachment],
+                 logic_op_enable: bool = False):
+        self.attachment_states = [BlendStateOptions() for _ in attachments]
         self.logic_op_enable = logic_op_enable
         self.info = self.get_info()
 
     def get_info(self) -> VkPipelineColorBlendStateCreateInfo:
-
-        attachments = [attachment.get_vk_blend_state() for attachment in self.attachments]
+        attachments = [attachment.create_state_info() for attachment in self.attachment_states]
         attachment_array = c_array_list(attachments, VkPipelineColorBlendAttachmentState)
         return VkPipelineColorBlendStateCreateInfo(
             sType=VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
             logicOpEnable=self.logic_op_enable,
-            attachmentCount=len(self.attachments),
+            attachmentCount=len(self.attachment_states),
             # Blend states of all attachments
             pAttachments=attachment_array,
         )
 
     def __hash__(self):
-        print("(self.logic_op_enable, *self.attachments)", (self.logic_op_enable, *self.attachments))
-        return hash((self.logic_op_enable, *self.attachments))
-
-
-
-#
-# class AttachmentState:
-#     def __init__(self):
-#         self.blend_color_src = BlendFactor.SRC_COLOR
-#         self.blend_color_dst = BlendFactor.SRC_COLOR
-#         self.blend_color_op = BlendOp.ADD
-#         self.blend_alpha_src = BlendFactor.SRC_COLOR
-#         self.blend_dst_dst = BlendFactor.SRC_COLOR
-#         self.blend_alpha_op = BlendOp.ADD
-#
-#
-#
-# class GraphicsGroup:
-#     attachments: dict[int, AttachmentState]
-#
-#     def __init__(self):
-#         self.states = []
-#         self._set_states = []
-#         self._hash = 0
-#         self.attachments = {}
-#
-#     def set_state(self):
-#         for funcs_to_call in self.states:
-#             funcs_to_call[0](*funcs_to_call[1:])
-#     def set(self):
-#         for state in self._set_states:
-#             if state == "scissor":
-#                 self.states.append(_gl_to_func[state[0]], *state[1:])
-#
-#     def set_scissor(self, x, y, width, height):
-#         self._set_states.append(("scissor", x, y, width, height))
-#
-#     def set_color_blend_state(self, blend_src: BlendFactor, blend_dst: BlendFactor, blend_op: BlendOp, attachment_idx=0):
-#         if attachment_idx not in self.attachments:
-#             self.attachments[attachment_idx] = AttachmentState()
-#
-#         self.attachments[attachment_idx].blend_color_src = blend_src
-#         self.attachments[attachment_idx].blend_color_dst = blend_dst
-#         self.attachments[attachment_idx].blend_color_op = blend_op
-#
-#     def set_alpha_blend_state(self, blend_src: BlendFactor, blend_dst: BlendFactor, blend_op: BlendOp, attachment_idx=0):
-#         if attachment_idx not in self.attachments:
-#             self.attachments[attachment_idx] = AttachmentState()
-#
-#         self.attachments[attachment_idx].blend_alpha_src = blend_src
-#         self.attachments[attachment_idx].blend_dst_dst = blend_dst
-#         self.attachments[attachment_idx].blend_alpha_op = blend_op
+        return hash((self.logic_op_enable, *self.attachment_states))
 
 
 
@@ -370,7 +389,24 @@ class GraphicsPipelineManager:
                                 width: int, height: int,
                                 vertex_domain: VertexDomain) -> GraphicsPipeline | None:
         if program_state := group._state_names.get("ShaderProgramState"):
-            return self.get_pipeline(program_state.program, renderpass, geometry_mode, width, height, vertex_domain)
+            depth_compare = group._state_names.get("DepthBufferComparison")
+            depth_write = group._state_names.get("DepthWriteState")
+
+            depth_test_enable = depth_compare is not None
+            depth_compare_op = compare_op_map[depth_compare.func] if depth_compare else VK_COMPARE_OP_LESS
+            depth_write_enable = bool(depth_write.flag) if depth_write else depth_test_enable
+
+            return self.get_pipeline(
+                program_state.program,
+                renderpass,
+                geometry_mode,
+                width,
+                height,
+                vertex_domain,
+                depth_test_enable,
+                depth_write_enable,
+                depth_compare_op,
+            )
         return None
 
     def get_pipeline(self, shader_program: VulkanShaderProgram,
@@ -379,27 +415,64 @@ class GraphicsPipelineManager:
                      width: int,
                      height: int,
                      domain: VertexDomain,
+                     depth_test_enable: bool = False,
+                     depth_write_enable: bool = False,
+                     depth_compare_op: int = VK_COMPARE_OP_LESS,
                      ):
-        key = (shader_program, renderpass, geometry_mode, width, height, domain._hashable_attributes)
+        key = (
+            shader_program,
+            renderpass,
+            geometry_mode,
+            width,
+            height,
+            domain._hashable_attributes,
+            depth_test_enable,
+            depth_write_enable,
+            int(depth_compare_op),
+        )
         if key in self.pipelines:
             return self.pipelines[key]
 
-        return self.create(shader_program, renderpass, geometry_mode, width, height, domain)
+        return self.create(
+            shader_program,
+            renderpass,
+            geometry_mode,
+            width,
+            height,
+            domain,
+            depth_test_enable,
+            depth_write_enable,
+            depth_compare_op,
+        )
 
     def create(self, shader_program: VulkanShaderProgram,
                renderpass: RenderPass,
                geometry_mode: GeometryMode,
                width: int,
                height: int,
-               domain: VertexDomain):
+               domain: VertexDomain,
+               depth_test_enable: bool = False,
+               depth_write_enable: bool = False,
+               depth_compare_op: int = VK_COMPARE_OP_LESS):
 
-        key = (shader_program, renderpass, geometry_mode, width, height, domain._hashable_attributes)
+        key = (
+            shader_program,
+            renderpass,
+            geometry_mode,
+            width,
+            height,
+            domain._hashable_attributes,
+            depth_test_enable,
+            depth_write_enable,
+            int(depth_compare_op),
+        )
         assert key not in self.pipelines
         #render_pass_key = pipeline_key[1]
         #renderpass = self.renderpass_mgr.get_renderpass(*render_pass_key)
         extent = VkExtent2D(width, height)
         pipeline = GraphicsPipeline(self.devices, self.devices.logical_device, shader_program,
-                                    renderpass, geometry_mode, extent, self.descriptor_mgr, self.layout_cache, domain)
+                                    renderpass, geometry_mode, extent, self.descriptor_mgr, self.layout_cache, domain,
+                                    depth_test_enable, depth_write_enable, depth_compare_op)
         pipeline.create()
         self.pipelines[key] = pipeline
         return pipeline
@@ -407,7 +480,7 @@ class GraphicsPipelineManager:
 class _GraphicsPipelineBase:
     descriptor_set_layouts: list[VkDescriptorSetLayout]
     descriptor_set_layouts_info: DescriptorSetLayouts | None
-    vk_pipeline: None
+    vk_pipeline: VkPipeline | None
     program: VulkanShaderProgram
 
     def __init__(self, devices: VulkanDevices,
@@ -417,7 +490,10 @@ class _GraphicsPipelineBase:
                  geometry_mode: GeometryMode,
                  extent: VkExtent2D,
                  descriptor_mgr: DescriptorManager,
-                 layout_cache: PipelineLayoutCache) -> None:
+                 layout_cache: PipelineLayoutCache,
+                 depth_test_enable: bool = False,
+                 depth_write_enable: bool = False,
+                 depth_compare_op: int = VK_COMPARE_OP_LESS) -> None:
         self.devices = devices
         self.device = device
         self.render_pass = render_pass
@@ -442,10 +518,16 @@ class _GraphicsPipelineBase:
         )
 
         # It's important to keep the same order of color attachments throughout.
-        self.color_blend_state = ColorBlendState(self.render_pass.color_attachments)
+        self.color_blend_state = ColorBlendState(self.render_pass.color_attachments)  # Can be a dynamic state later?
         self.rasterization_state = RasterizationState()
         self.vertex_assembly_state = VertexAssemblyState(self.geometry_mode, False)
         self.multisample_state = MultisampleState()
+        self.depth_stencil_state = DepthStencilState(
+            depth_test_enable=depth_test_enable,
+            depth_write_enable=depth_write_enable,
+            depth_compare_op=depth_compare_op,
+            stencil_test_enable=False,
+        )
 
     def create(self) -> None:
         """Create the pipeline and pipeline layout."""
@@ -458,7 +540,7 @@ class _GraphicsPipelineBase:
     def get_vertex_input_state_info(self) -> VkPipelineVertexInputStateCreateInfo:
         ...
 
-    def _create_pipeline(self):
+    def _create_pipeline(self) -> VkPipeline:
         """Creates a Vulkan graphics pipeline."""
         descriptor_set_layouts_info = self.descriptor_mgr.get_descriptor_set_layouts(self.program)
         self.descriptor_set_layouts_info = descriptor_set_layouts_info
@@ -483,6 +565,7 @@ class _GraphicsPipelineBase:
             pViewportState=pointer(self.viewport_state.info),
             pRasterizationState=pointer(self.rasterization_state.info),
             pMultisampleState=pointer(self.multisample_state.info),
+            pDepthStencilState=pointer(self.depth_stencil_state.info),
             pColorBlendState=pointer(self.color_blend_state.info),
             layout=self.pipeline_layout,
             renderPass=self.render_pass.vk_renderpass,
@@ -547,15 +630,28 @@ class EmptyVertexGraphicsPipeline(_GraphicsPipelineBase):
 class GraphicsPipeline(_GraphicsPipelineBase):
     def __init__(self, devices: VulkanDevices, device: VulkanLogicalDevice, program: VulkanShaderProgram,
                  render_pass: RenderPass, geometry_mode: GeometryMode, extent: VkExtent2D, descriptor_mgr: DescriptorManager,
-                 layout_cache: PipelineLayoutCache, vertex_domain: VertexDomain):
-        super().__init__(devices, device, program, render_pass, geometry_mode, extent, descriptor_mgr, layout_cache)
+                 layout_cache: PipelineLayoutCache, vertex_domain: VertexDomain,
+                 depth_test_enable: bool = False, depth_write_enable: bool = False,
+                 depth_compare_op: int = VK_COMPARE_OP_LESS):
+        super().__init__(
+            devices,
+            device,
+            program,
+            render_pass,
+            geometry_mode,
+            extent,
+            descriptor_mgr,
+            layout_cache,
+            depth_test_enable=depth_test_enable,
+            depth_write_enable=depth_write_enable,
+            depth_compare_op=depth_compare_op,
+        )
         self.vertex_domain = vertex_domain
 
     def get_vertex_input_state_info(self) -> VkPipelineVertexInputStateCreateInfo:
         vertex_binding_descrip = self.vertex_domain.get_binding_descriptions()
         vbd_array = c_array_list(vertex_binding_descrip, VkVertexInputBindingDescription)
 
-        print("BUILDING PIPELINE?", self.program)
         attribute_descrips = self.vertex_domain.get_attribute_descriptions()
         vad_array = c_array_list(attribute_descrips, VkVertexInputAttributeDescription)
 

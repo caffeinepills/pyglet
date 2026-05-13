@@ -22,6 +22,7 @@ def test_framebuffer_creation_and_binding(gl3_context):
         assert framebuffer.id > 0
         assert framebuffer.width == 0
         assert framebuffer.height == 0
+        framebuffer.finalize()
 
         framebuffer.bind()
         assert _get_bound_framebuffer_id() == framebuffer.id
@@ -40,6 +41,7 @@ def test_framebuffer_attach_texture_and_readback(gl3_context):
     texture = pyglet.graphics.Texture.create(2, 2, blank_data=True, context=gl3_context.context)
     try:
         framebuffer.attach_texture(texture)
+        framebuffer.finalize()
         assert framebuffer.width == 2
         assert framebuffer.height == 2
 
@@ -79,6 +81,7 @@ def test_framebuffer_attach_depth_renderbuffer(gl3_context):
     try:
         framebuffer.attach_texture(texture)
         framebuffer.attach_renderbuffer(depth_buffer, attachment=FramebufferAttachment.DEPTH)
+        framebuffer.finalize()
 
         assert framebuffer.width == 4
         assert framebuffer.height == 4

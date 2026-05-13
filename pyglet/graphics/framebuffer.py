@@ -29,5 +29,6 @@ elif pyglet.options.backend == GraphicsAPI.WEBGL:
     from pyglet.graphics.api.webgl.framebuffer import WebGLFramebuffer as Framebuffer, WebGLRenderbuffer as Renderbuffer  # noqa: F401
     from pyglet.graphics.api.webgl.framebuffer import get_screenshot
 
-elif pyglet.options.backend == "vulkan":
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
     from pyglet.graphics.api.vulkan.framebuffer import VulkanFramebuffer as Framebuffer, VulkanRenderbuffer as Renderbuffer
+    from pyglet.graphics.api.vulkan.framebuffer import get_screenshot

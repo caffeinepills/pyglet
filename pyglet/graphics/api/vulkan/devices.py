@@ -81,7 +81,7 @@ class VulkanLogicalDevice:
         self.transfer_queue = None
         self.compute_queue = None
 
-        if not pyglet.options.headless:
+        if not pyglet.options.headless or self.instance.headless_surface_enabled:
             self.device_extensions.append(VK_KHR_SWAPCHAIN_EXTENSION_NAME)
 
         self._configure_optional_features()
@@ -125,12 +125,15 @@ class VulkanLogicalDevice:
     #
     #     return CreateDevice(self.physical.vk_device, device_create)
 
-    def create(self, surface: VulkanSurface) -> None:
+    def create(self, surface: VulkanSurface | None) -> None:
         """Create a logical device.
 
-        Requires a Surface to get a presentation queue.
+        A surface is required only when presentation/swapchain support is enabled.
         """
         assert self.vk_device is None, "The VK Device already exists."
+        if self.supports_presentation() and surface is None:
+            msg = "A Vulkan surface is required when presentation support is enabled."
+            raise RuntimeError(msg)
         graphics_indice, present_indice, transfer_indice, compute_indice = self.find_queue_families(surface)
 
         print(f"Queue Indices chosen {graphics_indice=}, {present_indice=}, {transfer_indice=}, {compute_indice}")
@@ -294,7 +297,7 @@ class VulkanLogicalDevice:
                 elif wants_timeline:
                     print("(Vulkan) Timeline semaphore requested, but timelineSemaphore feature is unavailable.")
 
-    def find_queue_families(self, surface: VulkanSurface):
+    def find_queue_families(self, surface: VulkanSurface | None):
         """Finds the queue families that support graphics, presentation, transfer, and compute operations.
 
         Falls back to general-purpose queues if dedicated ones are not available.
