@@ -1054,6 +1054,12 @@ if not _is_pyglet_doc_run:
             get_max_array_texture_layers,  # noqa: F401
         )
     elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan.framebuffer import (  # noqa: F401
+            VulkanFramebuffer as Framebuffer,
+            VulkanRenderbuffer as Renderbuffer,
+            get_max_color_attachments,
+            get_screenshot,
+        )
         from pyglet.graphics.api.vulkan.texture import (
             VulkanTexture,
             VulkanTexture as Texture,  # noqa: F401
