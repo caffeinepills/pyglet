@@ -150,7 +150,7 @@ label = DistFieldLabel(
 controls_text = (
     "Controls:\n"
     "Left click drag: Camera pan  |  Mouse wheel: Label scale | Right click drag: Camera zoom.\n"
-    "T: toggle SDF/MSDF  |  R: reset view + scale  |  F: Toggle green text\n"
+    "T: Toggle SDF/MSDF  |  R: Reset view + scale  |  F: Toggle green text\n"
 )
 controls_label = pyglet.text.Label(
     controls_text,

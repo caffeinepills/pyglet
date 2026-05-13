@@ -386,6 +386,31 @@ class _GlyphBox(_AbstractBox):
         self.vertex_lists.append(vertex_list)
         context.add_list(vertex_list)
 
+    def _get_layout_vertex_data(
+        self,
+        layout: TextLayout,
+        n_glyphs: int,
+        vertices: list[int],
+        tex_coords: list[float],
+        colors: list[int],
+        t_position: tuple[float, float, float],
+        rotation: float,
+        visible: bool,
+        anchor_x: float,
+        anchor_y: float,
+    ) -> dict[str, tuple[str, Any]]:
+        data: dict[str, tuple[str, Any]] = {
+            "position": ("f", vertices),
+            "translation": ("f", t_position * 4 * n_glyphs),
+            "colors": ("Bn", colors),
+            "view_translation": ("f", (0, 0, 0) * 4 * n_glyphs),
+            "tex_coords": ("f", tex_coords),
+            "rotation": ("f", ((rotation,) * 4) * n_glyphs),
+            "visible": ("f", ((visible,) * 4) * n_glyphs),
+            "anchor": ("f", ((anchor_x, anchor_y) * 4) * n_glyphs),
+        }
+        return data
+
     def place(self, layout: TextLayout, i: int, x: float, y: float, z: float, line_x: float, line_y: float,
               rotation: float, visible: bool, anchor_x: float, anchor_y: float, context: _LayoutContext) -> None:
         # Creates the initial attributes and vertex lists of the glyphs.
@@ -437,17 +462,27 @@ class _GlyphBox(_AbstractBox):
             indices.extend([element + (glyph_idx * 4) for element in [0, 1, 2, 0, 2, 3]])
 
         t_position = (x, y, z)
+        vertex_data = self._get_layout_vertex_data(
+            layout=layout,
+            n_glyphs=n_glyphs,
+            vertices=vertices,
+            tex_coords=tex_coords,
+            colors=colors,
+            t_position=t_position,
+            rotation=rotation,
+            visible=visible,
+            anchor_x=anchor_x,
+            anchor_y=anchor_y,
+        )
 
-        vertex_list = layout.program.vertex_list_indexed(n_glyphs * 4, GeometryMode.TRIANGLES, indices, layout.batch,
-                                                         group,
-                                                         position=("f", vertices),
-                                                         translation=("f", t_position * 4 * n_glyphs),
-                                                         colors=("Bn", colors),
-                                                         view_translation=('f', ((0, 0, 0) * 4 * n_glyphs)),
-                                                         tex_coords=("f", tex_coords),
-                                                         rotation=("f", ((rotation,) * 4) * n_glyphs),
-                                                         visible=("f", ((visible,) * 4) * n_glyphs),
-                                                         anchor=("f", ((anchor_x, anchor_y) * 4) * n_glyphs))
+        vertex_list = layout.program.vertex_list_indexed(
+            n_glyphs * 4,
+            GeometryMode.TRIANGLES,
+            indices,
+            layout.batch,
+            group,
+            **vertex_data,
+        )
         self._add_vertex_list(vertex_list, context)
 
         # Decoration (background color and underline)

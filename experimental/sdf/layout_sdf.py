@@ -5,12 +5,12 @@ from typing import (
     TYPE_CHECKING,
     ClassVar,
     Protocol,
+    Any,
 )
 
 import pyglet
 from pyglet import graphics
-from pyglet.enums import BlendFactor, GeometryMode
-from pyglet.font.base import GlyphPosition
+from pyglet.enums import BlendFactor
 from pyglet.text.layout import base, get_default_decoration_shader
 
 if TYPE_CHECKING:
@@ -22,7 +22,6 @@ if TYPE_CHECKING:
     from pyglet.text.document import AbstractDocument
     from pyglet.text.layout.base import (
         _AbstractBox,
-        _LayoutContext,
     )
 
 _is_pyglet_doc_run = hasattr(sys, "is_pyglet_doc_run") and sys.is_pyglet_doc_run
@@ -248,8 +247,6 @@ layout_fragment_image_source = """#version 330 core
     }
 """
 
-_empty_pos = GlyphPosition(0, 0, 0, 0)
-
 class DistFieldTextLayoutGroup(graphics.Group):
     """Create a text layout rendering group.
 
@@ -329,146 +326,45 @@ def get_sdf_layout_shader() -> ShaderProgram:
                                                     (sdf_layout_fragment_source, "fragment"))
 
 
-class _DistFieldGlyphBox(base._GlyphBox):
+class _DistFieldGlyphBox(base._GlyphBox):  # noqa: SLF001
     owner: Texture
     font: Font
     glyphs: list[tuple[int, Glyph]]
     advance: int
     vertex_lists: list[_LayoutVertexList]
 
-    def place(self, layout: SDFTextLayout, i: int, x: float, y: float, z: float, line_x: float, line_y: float,
-              rotation: float, visible: bool, anchor_x: float, anchor_y: float, context: _LayoutContext) -> None:
-        # Creates the initial attributes and vertex lists of the glyphs.
-        # line_x/line_y are calculated when lines shift. To prevent having to destroy and recalculate the layout
-        # everytime we move this layout, we bake those into the vertices. This way the translate can be moved directly.
-        assert self.glyphs
-        assert not self.vertex_lists
-        try:
-            group = layout.group_cache[self.owner]
-        except KeyError:
-            group = layout.group_class(self.owner, layout.program, order=1, parent=layout.group)
-            layout.group_cache[self.owner] = group
-
-        n_glyphs = self.length
-        vertices = []
-        tex_coords = []
-        baseline = 0
-        x1 = line_x
-        for start, end, baseline_ in context.baseline_iter.ranges(i, i + n_glyphs):
-            baseline = layout._parse_distance(baseline_)  # noqa: SLF001
-            assert len(self.glyphs[start - i:end - i]) == end - start
-            for (kern, glyph, glyph_pos) in self.glyphs[start - i:end - i]:
-                x1 += kern
-                v0, v1, v2, v3 = glyph.vertices
-                v0 += x1 + glyph_pos.x_offset
-                v2 += x1 + glyph_pos.x_offset
-                v1 += line_y + baseline + glyph_pos.y_offset
-                v3 += line_y + baseline + glyph_pos.y_offset
-                vertices.extend(map(round, [v0, v1, 0, v2, v1, 0, v2, v3, 0, v0, v3, 0]))
-                t = glyph.tex_coords
-                tex_coords.extend(t)
-                x1 += glyph.advance + glyph_pos.x_advance
-                v1 += glyph_pos.y_advance
-                v3 += glyph_pos.y_advance
-
-        # Text color
-        colors = []
-        for start, end, color in context.colors_iter.ranges(i, i + n_glyphs):
-            if color is None:
-                color = (0, 0, 0, 255)  # noqa: PLW2901
-            if len(color) != 4:
-                msg = f"Color requires 4 values (R, G, B, A). Value received: {color}"
-                raise ValueError(msg)
-            colors.extend(color * ((end - start) * 4))
-
-        indices = []
-        # Create indices for each glyph quad:
-        for glyph_idx in range(n_glyphs):
-            indices.extend([element + (glyph_idx * 4) for element in [0, 1, 2, 0, 2, 3]])
-
-        t_position = (x, y, z)
+    def _get_layout_vertex_data(
+        self,
+        layout: SDFTextLayout,
+        n_glyphs: int,
+        vertices: list[int],
+        tex_coords: list[float],
+        colors: list[int],
+        t_position: tuple[float, float, float],
+        rotation: float,
+        visible: bool,
+        anchor_x: float,
+        anchor_y: float,
+    ) -> dict[str, tuple[str, Any]]:
         scale = layout.scale
-
-        vertex_list = layout.program.vertex_list_indexed(n_glyphs * 4, GeometryMode.TRIANGLES, indices, layout.batch, group,
-                                                         position=("f", vertices),
-                                                         translation=("f", t_position * 4 * n_glyphs),
-                                                         colors=("Bn", colors),
-                                                         scale=("f", ((scale, scale) * 4) * n_glyphs),
-                                                         tex_coords=("f", tex_coords),
-                                                         rotation=("f", ((rotation,) * 4) * n_glyphs),
-                                                         visible=("f", ((visible,) * 4) * n_glyphs),
-                                                         anchor=("f", ((anchor_x, anchor_y) * 4) * n_glyphs))
-        self._add_vertex_list(vertex_list, context)
-
-        # Decoration (background color and underline)
-        # -------------------------------------------
-        # Should iterate over baseline too, but in practice any sensible
-        # change in baseline will correspond with a change in font size,
-        # and thus glyph run as well.  So we cheat and just use whatever
-        # baseline was seen last.
-        background_vertices = []
-        background_colors = []
-        underline_vertices = []
-        underline_colors = []
-        y1 = line_y + self.descent + baseline
-        y2 = line_y + self.ascent + baseline
-        x1 = line_x
-
-        for start, end, decoration in context.decoration_iter.ranges(i, i + n_glyphs):
-            bg, underline = decoration
-            x2 = x1
-            for (kern, glyph, glyph_pos) in self.glyphs[start - i:end - i]:
-                x2 += glyph.advance + kern + glyph_pos.x_advance
-
-            if bg is not None:
-                if len(bg) != 4:
-                    msg = f"Background color requires 4 values (R, G, B, A). Value received: {bg}"
-                    raise ValueError(msg)
-
-                background_vertices.extend([x1, y1, 0, x2, y1, 0, x2, y2, 0, x1, y2, 0])
-                background_colors.extend(bg * 4)
-
-            if underline is not None:
-                if len(underline) != 4:
-                    msg = f"Underline color requires 4 values (R, G, B, A). Value received: {underline}"
-                    raise ValueError(msg)
-
-                underline_vertices.extend([x1, line_y + baseline - 2, 0, x2, line_y + baseline - 2, 0])
-                underline_colors.extend(underline * 2)
-
-            x1 = x2
-
-        if background_vertices:
-            bg_count = len(background_vertices) // 3
-            background_indices = [(0, 1, 2, 0, 2, 3)[i % 6] for i in range(bg_count * 3)]
-            decoration_program = get_default_decoration_shader()
-            background_list = decoration_program.vertex_list_indexed(bg_count, GeometryMode.TRIANGLES, background_indices,
-                                                                     layout.batch, layout.background_decoration_group,
-                                                                     position=("f", background_vertices),
-                                                                     translation=("f", t_position * bg_count),
-                                                                     colors=("Bn", background_colors),
-                                                                     rotation=("f", (rotation,) * bg_count),
-                                                                     visible=("f", (visible,) * bg_count),
-                                                                     anchor=("f", (anchor_x, anchor_y) * bg_count))
-            self._add_vertex_list(background_list, context)
-
-        if underline_vertices:
-            ul_count = len(underline_vertices) // 3
-            decoration_program = get_default_decoration_shader()
-            underline_list = decoration_program.vertex_list(ul_count, GeometryMode.LINES,
-                                                            layout.batch, layout.foreground_decoration_group,
-                                                            position=("f", underline_vertices),
-                                                            translation=("f", t_position * ul_count),
-                                                            colors=("Bn", underline_colors),
-                                                            rotation=("f", (rotation,) * ul_count),
-                                                            visible=("f", (visible,) * ul_count),
-                                                            anchor=("f", (anchor_x, anchor_y) * ul_count))
-            self._add_vertex_list(underline_list, context)
+        data: dict[str, tuple[str, Any]] = {
+            "position": ("f", vertices),
+            "translation": ("f", t_position * 4 * n_glyphs),
+            "colors": ("Bn", colors),
+            "view_translation": ("f", (0, 0, 0) * 4 * n_glyphs),
+            "tex_coords": ("f", tex_coords),
+            "rotation": ("f", ((rotation,) * 4) * n_glyphs),
+            "visible": ("f", ((visible,) * 4) * n_glyphs),
+            "anchor": ("f", ((anchor_x, anchor_y) * 4) * n_glyphs),
+            "scale": ("f", ((scale, scale) * 4) * n_glyphs),
+        }
+        return data
 
     def update_scale(self, scale: float) -> None:
         scale_tuple = (scale, scale)
         for _vertex_list in self.vertex_lists:
-            _vertex_list.scale[:] = scale_tuple * _vertex_list.count
+            if hasattr(_vertex_list, "scale"):
+                _vertex_list.scale[:] = scale_tuple * _vertex_list.count
 
     def __repr__(self) -> str:
         return f"_SDFGlyphBox({self.glyphs})"
