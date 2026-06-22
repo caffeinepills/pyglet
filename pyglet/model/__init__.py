@@ -1,20 +1,30 @@
 """Loading of 3D scenes and models.
 
-The :py:mod:`~pyglet.model` module provides an interface for loading 3D "scenes"
-and models. A :py:class:`~pyglet.model.Scene` is a logical container that can
-contain the data of one or more models, and is closely based on the design
-of the glTF format.
+The :py:mod:`~pyglet.model` module provides an interface for loading 3D "scenes".
+A :py:class:`~pyglet.model.Scene` is a logical container that can contain the data
+of one or more models, and is closely based on the design of the glTF format.
+
+After loading a Scene, it is uploaded to the GPU (VertexLists created).
+From there, you can make an instance (or many instances) of the model.
+Instancing is used internally, with each instance able to be positioned independently.
 
 The following example loads a ``"teapot.obj"`` file. The wavefront format
-only contains a single model (mesh)::
+only contains a single model in the scene::
 
     import pyglet
 
     window = pyglet.window.Window()
     batch = pyglet.graphics.Batch()
 
+    # Load and parse the Scene (CPU operation):
     scene = pyglet.model.load('teapot.obj')
+    # Generate Models from the scene (upload to GPU):
     models = scene.create_models(batch=batch)
+    # Create visable Instances of each model (only one in this case):
+    instances = []
+    for model in models:
+        instance = model.create_instance(translation=Vec3(2.0, 0.0, 5.0))
+        instances.append(instance)
 
     @window.event
     def on_draw():
@@ -32,9 +42,10 @@ from math import pi, sin, cos
 from typing import TYPE_CHECKING
 
 import pyglet
-import pyglet.enums
+
 from pyglet import graphics
-from pyglet.math import Mat4
+from pyglet.math import Vec3, Vec4, Quaternion
+from pyglet.enums import GeometryMode, CompareOp
 
 from .codecs import add_default_codecs as _add_default_codecs
 from .codecs import registry as _codec_registry
@@ -45,7 +56,7 @@ if TYPE_CHECKING:
     from pyglet.graphics import Texture
     from pyglet.graphics import Batch, Group
     from pyglet.graphics import ShaderProgram
-    from pyglet.graphics.vertexdomain import VertexList, VertexInstance
+    from pyglet.graphics.vertexdomain import VertexInstance, InstanceVertexList, InstanceIndexedVertexList
     from pyglet.model.codecs import ModelDecoder
 
 
@@ -84,12 +95,13 @@ def get_default_textured_shader() -> ShaderProgram:
 
 
 class Model:
-    """Instance of a 3D object.
+    """Base instance of a 3D object.
 
     See the module documentation for usage.
     """
 
-    def __init__(self, vertex_lists: list[VertexList], groups: list[Group], batch: Batch | None = None) -> None:
+    def __init__(self, vertex_lists: list[InstanceVertexList | InstanceIndexedVertexList],
+                 groups: list[Group], batch: Batch | None = None) -> None:
         """Create a model instance.
 
         Args:
@@ -107,7 +119,6 @@ class Model:
         self.vertex_lists = vertex_lists
         self.groups = groups
         self._batch = batch or graphics.Batch()
-        self._modelview_matrix = Mat4()
 
     @property
     def batch(self) -> Batch:
@@ -129,9 +140,16 @@ class Model:
             batch = graphics.Batch()
 
         for group, vlist in zip(self.groups, self.vertex_lists):
-            self._batch.migrate(vlist, pyglet.enums.GeometryMode.TRIANGLES, group, batch)
+            self._batch.migrate(vlist, GeometryMode.TRIANGLES, group, batch)
 
         self._batch = batch
+
+    def create_instance(self, translation: Vec3 = Vec3(),
+                        rotation: Quaternion = Quaternion(),
+                        scale: Vec3 = Vec3(1.0, 1.0, 1.0)):
+        instances = [vlist.create_instance(TRANSLATION=translation, ROTATION=rotation, SCALE=scale)
+                     for vlist in self.vertex_lists]
+        return ModelInstance(*instances)
 
 
 class ModelInstance:
@@ -141,12 +159,30 @@ class ModelInstance:
 
     @property
     def translation(self):
-        return self._instances[0].TRANSLATE[:]
+        return self._instances[0].TRANSLATION[:]
 
     @translation.setter
-    def translation(self, values):
+    def translation(self, vector: Vec3):
         for instance in self._instances:
-            instance.TRANSLATE[:] = values
+            instance.TRANSLATION = vector
+
+    @property
+    def rotation(self):
+        return self._instances[0].ROTATION[:]
+
+    @rotation.setter
+    def rotation(self, quaternion: Quaternion):
+        for instance in self._instances:
+            instance.ROTATION = quaternion
+
+    @property
+    def scale(self):
+        return self._instances[0].ROTATION[:]
+
+    @scale.setter
+    def scale(self, vector: Vec3):
+        for instance in self._instances:
+            instance.SCALE = vector
 
 
 class BaseMaterialGroup(graphics.ShaderGroup):
@@ -156,6 +192,7 @@ class BaseMaterialGroup(graphics.ShaderGroup):
     def __init__(self, material: SimpleMaterial, program: ShaderProgram, order: int = 0, parent: Group | None = None) -> None:
         super().__init__(program, order, parent)
         self.material = material        # TODO: use
+        self.set_depth_test(func=CompareOp.LESS)
 
 
 class TexturedMaterialGroup(BaseMaterialGroup):
@@ -164,7 +201,9 @@ class TexturedMaterialGroup(BaseMaterialGroup):
     in vec3 NORMAL;
     in vec2 TEXCOORD_0;
     in vec4 COLOR_0;
-    in vec3 TRANSLATE;
+    in vec3 TRANSLATION;
+    in vec4 ROTATION;
+    in vec3 SCALE;
 
     out vec3 position;
     out vec3 normal;
@@ -177,14 +216,51 @@ class TexturedMaterialGroup(BaseMaterialGroup):
         mat4 view;
     } window;
 
+    mat4 quat_to_mat4(vec4 q)
+    {
+        // q is in pyglet order: (w, x, y, z)
+        float w = q.x;
+        float x = q.y;
+        float y = q.z;
+        float z = q.w;
+    
+        float x2 = x + x;
+        float y2 = y + y;
+        float z2 = z + z;
+    
+        float xx = x * x2;
+        float xy = x * y2;
+        float xz = x * z2;
+        float yy = y * y2;
+        float yz = y * z2;
+        float zz = z * z2;
+        float wx = w * x2;
+        float wy = w * y2;
+        float wz = w * z2;
+    
+        return mat4(
+            1.0 - (yy + zz),  xy + wz,         xz - wy,         0.0,
+            xy - wz,          1.0 - (xx + zz), yz + wx,         0.0,
+            xz + wy,          yz - wx,         1.0 - (xx + yy), 0.0,
+            0.0,              0.0,             0.0,             1.0
+        );
+    }
+
     void main()
     {
-        mat4 m_translate = mat4(1.0);
-        m_translate[3][0] = TRANSLATE.x;
-        m_translate[3][1] = TRANSLATE.y;
-        m_translate[3][2] = TRANSLATE.z;
-        
-        mat4 mv = window.view * m_translate;
+        mat4 m_translation = mat4(1.0);
+        m_translation[3][0] = TRANSLATION.x;
+        m_translation[3][1] = TRANSLATION.y;
+        m_translation[3][2] = TRANSLATION.z;
+
+        mat4 m_rotation = quat_to_mat4(ROTATION);
+
+        mat4 m_scale = mat4(1.0);
+        m_scale[0][0] = SCALE.x;
+        m_scale[1][1] = SCALE.y;
+        m_scale[2][2] = SCALE.z;
+
+        mat4 mv = window.view * m_translation * m_rotation * m_scale;
         vec4 pos = mv * vec4(POSITION, 1.0);
         gl_Position = window.projection * pos;
         mat3 normal_matrix = transpose(inverse(mat3(mv)));
@@ -225,7 +301,9 @@ class MaterialGroup(BaseMaterialGroup):
     in vec3 POSITION;
     in vec3 NORMAL;
     in vec4 COLOR_0;
-    in vec3 TRANSLATE;
+    in vec3 TRANSLATION;
+    in vec4 ROTATION;
+    in vec3 SCALE;
 
     out vec4 color_0;
     out vec3 normal;
@@ -237,14 +315,52 @@ class MaterialGroup(BaseMaterialGroup):
         mat4 view;
     } window;
 
+    mat4 quat_to_mat4(vec4 q)
+    {
+        // q is in pyglet order: (w, x, y, z)
+        float w = q.x;
+        float x = q.y;
+        float y = q.z;
+        float z = q.w;
+    
+        float x2 = x + x;
+        float y2 = y + y;
+        float z2 = z + z;
+    
+        float xx = x * x2;
+        float xy = x * y2;
+        float xz = x * z2;
+        float yy = y * y2;
+        float yz = y * z2;
+        float zz = z * z2;
+        float wx = w * x2;
+        float wy = w * y2;
+        float wz = w * z2;
+    
+        return mat4(
+            1.0 - (yy + zz),  xy + wz,         xz - wy,         0.0,
+            xy - wz,          1.0 - (xx + zz), yz + wx,         0.0,
+            xz + wy,          yz - wx,         1.0 - (xx + yy), 0.0,
+            0.0,              0.0,             0.0,             1.0
+        );
+    }
+
+
     void main()
     {
-        mat4 m_translate = mat4(1.0);
-        m_translate[3][0] = TRANSLATE.x;
-        m_translate[3][1] = TRANSLATE.y;
-        m_translate[3][2] = TRANSLATE.z;
+        mat4 m_translation = mat4(1.0);
+        m_translation[3][0] = TRANSLATION.x;
+        m_translation[3][1] = TRANSLATION.y;
+        m_translation[3][2] = TRANSLATION.z;
+
+        mat4 m_rotation = quat_to_mat4(ROTATION);
+
+        mat4 m_scale = mat4(1.0);
+        m_scale[0][0] = SCALE.x;
+        m_scale[1][1] = SCALE.y;
+        m_scale[2][2] = SCALE.z;
         
-        mat4 mv = window.view * m_translate;
+        mat4 mv = window.view * m_translation * m_rotation * m_scale;
         vec4 pos = mv * vec4(POSITION, 1.0);
         gl_Position = window.projection * pos;
         mat3 normal_matrix = transpose(inverse(mat3(mv)));
@@ -278,7 +394,7 @@ class MaterialGroup(BaseMaterialGroup):
 
 class Cube(Model):
 
-    def __init__(self, width=1.0, height=1.0, depth=1.0, color=(1.0, 1.0, 1.0, 1.0), translation=(0.0, 0.0, 0.0),
+    def __init__(self, width=1.0, height=1.0, depth=1.0, color=(1.0, 1.0, 1.0, 1.0),
                  material=None, batch=None, group=None, program=None):
         self._width = width
         self._height = height
@@ -293,12 +409,7 @@ class Cube(Model):
         self._group = pyglet.model.MaterialGroup(material=self._material, program=self._program, parent=group)
 
         self._base_vlist = self._create_base_vertexlist()
-        self._instances = [self._base_vlist.create_instance(TRANSLATE=translation)]
-
-        super().__init__(self._instances, [self._group], self._batch)
-
-    def create_instance(self, translation=(0.0, 0.0, 0.0)):
-        return ModelInstance(self._base_vlist.create_instance(TRANSLATE=translation))
+        super().__init__([self._base_vlist], [self._group], self._batch)
 
     def _create_base_vertexlist(self):
         w = self._width / 2
@@ -352,19 +463,21 @@ class Cube(Model):
                    3, 2, 0, 2, 1, 0]        # front
 
         return self._program.vertex_list_instanced_indexed(len(vertices) // 3,
-                                                           mode=pyglet.enums.GeometryMode.TRIANGLES,
+                                                           mode=GeometryMode.TRIANGLES,
                                                            indices=indices,
                                                            batch=self._batch, group=self._group,
-                                                           instance_attributes={'TRANSLATE': 1},
+                                                           instance_attributes={'TRANSLATION': 1, 'ROTATION': 1, 'SCALE': 1},
                                                            POSITION=('f', vertices),
                                                            NORMAL=('f', normals),
-                                                           TRANSLATE=('f', (0.0, 0.0, 0.0)),
-                                                           COLOR_0=('f', self._color * (len(vertices) // 3)))
+                                                           COLOR_0=('f', self._color * (len(vertices) // 3)),
+                                                           TRANSLATION=('f', (0.0, 0.0, 0.0)),
+                                                           ROTATION=('f', (1.0, 0.0, 0.0, 0.0)),
+                                                           SCALE=('f', (1.0, 1.0, 1.0)))
 
 
 class Sphere(Model):
 
-    def __init__(self, radius=1.0, stacks=30, sectors=30, color=(1.0, 1.0, 1.0, 1.0), translation=(0.0, 0.0, 0.0),
+    def __init__(self, radius=1.0, stacks=30, sectors=30, color=(1.0, 1.0, 1.0, 1.0),
                  material=None, batch=None, group=None, program=None):
         self._radius = radius
         self._stacks = stacks
@@ -379,12 +492,7 @@ class Sphere(Model):
         self._group = pyglet.model.MaterialGroup(material=self._material, program=self._program, parent=group)
 
         self._base_vlist = self._create_base_vertexlist()
-        self._instances = [self._base_vlist.create_instance(TRANSLATE=translation)]
-
-        super().__init__(self._instances, [self._group], self._batch)
-
-    def create_instance(self, translation=(0.0, 0.0, 0.0)):
-        return ModelInstance(self._base_vlist.create_instance(TRANSLATE=translation))
+        super().__init__([self._base_vlist], [self._group], self._batch)
 
     def _create_base_vertexlist(self):
         radius = self._radius / 2
@@ -418,20 +526,22 @@ class Sphere(Model):
                 indices.extend([first, second + 1, first + 1])
 
         return self._program.vertex_list_instanced_indexed(len(vertices) // 3,
-                                                           mode=pyglet.enums.GeometryMode.TRIANGLES,
+                                                           mode=GeometryMode.TRIANGLES,
                                                            indices=indices,
-                                                           instance_attributes={'TRANSLATE': 1},
+                                                           instance_attributes={'TRANSLATION': 1, 'ROTATION': 1, 'SCALE': 1},
                                                            batch=self._batch, group=self._group,
                                                            POSITION=('f', vertices),
                                                            NORMAL=('f', normals),
-                                                           TRANSLATE=('f', (0, 0, 0)),
-                                                           COLOR_0=('f', self._color * (len(vertices) // 3)))
+                                                           COLOR_0=('f', self._color * (len(vertices) // 3)),
+                                                           TRANSLATION=('f', (0, 0, 0)),
+                                                           ROTATION=('f', (1.0, 0.0, 0.0, 0.0)),
+                                                           SCALE=('f', (1.0, 1.0, 1.0)))
 
 
-class Capsule(Model, ModelInstance):
+class Capsule(Model):
 
     def __init__(self, radius=1.0, height=2.0, sectors=30, stacks=16, color=(1.0, 1.0, 1.0, 1.0),
-                 translation=(0.0, 0.0, 0.0), material=None, batch=None, group=None, program=None):
+                 material=None, batch=None, group=None, program=None):
         self._radius = radius
         self._height = height
         self._sectors = sectors
@@ -445,11 +555,7 @@ class Capsule(Model, ModelInstance):
         self._group = pyglet.model.MaterialGroup(material=self._material, program=self._program, parent=group)
 
         self._base_vlist = self._create_base_vlist()
-        self._instances = [self._base_vlist.create_instance(TRANSLATE=translation)]
-        super().__init__(self._instances, [self._group], self._batch)
-
-    def create_instance(self, translation=(0.0, 0.0, 0.0)):
-        return ModelInstance(self._base_vlist.create_instance(TRANSLATE=translation))
+        super().__init__([self._base_vlist], [self._group], self._batch)
 
     def _create_base_vlist(self):
         radius = self._radius / 2
@@ -543,15 +649,17 @@ class Capsule(Model, ModelInstance):
                 indices.extend([first, second + 1, first + 1])
 
         return self._program.vertex_list_instanced_indexed(len(vertices) // 3,
-                                                           mode=pyglet.enums.GeometryMode.TRIANGLES,
+                                                           mode=GeometryMode.TRIANGLES,
                                                            indices=indices,
-                                                           instance_attributes={'TRANSLATE': 1},
+                                                           instance_attributes={'TRANSLATION': 1, 'ROTATION': 1, 'SCALE': 1},
                                                            batch=self._batch,
                                                            group=self._group,
                                                            POSITION=('f', vertices),
-                                                           TRANSLATE=('f', (0, 0, 0)),
                                                            NORMAL=('f', normals),
-                                                           COLOR_0=('f', self._color * (len(vertices) // 3)))
+                                                           COLOR_0=('f', self._color * (len(vertices) // 3)),
+                                                           TRANSLATION=('f', (0, 0, 0)),
+                                                           ROTATION=('f', (1.0, 0.0, 0.0, 0.0)),
+                                                           SCALE=('f', (1.0, 1.0, 1.0)))
 
 
 _add_default_codecs()
