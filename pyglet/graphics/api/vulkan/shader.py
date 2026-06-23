@@ -67,13 +67,13 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkShaderModuleCreateInfo, VkShaderModule, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
     VkPushConstantRange)
 from pyglet.graphics.shader import Shader, ShaderProgram, ShaderType, UniformBlockDesc, UniformBlock, \
-    Attribute, ShaderException, Sampler, PushConstants, ShaderSource, \
+    Attribute, ShaderException, SampledTextureBinding, PushConstants, ShaderSource, \
     GraphicsAttribute, AttributeView
 
 if TYPE_CHECKING:
+    from pyglet.graphics.vertexdomain import InstanceIndexedVertexList, InstanceVertexList, VertexList, IndexedVertexList
     from pyglet.enums import GeometryMode
     from pyglet.customtypes import DataTypes, CTypesPointer
-    from pyglet.graphics.api.vulkan.vertexdomain import VertexList, IndexedVertexList
     from pyglet.graphics import Batch, Group
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
 
@@ -199,6 +199,8 @@ class VulkanShader(Shader):
         super().__init__(source, shader_type)
         self.device = None
         self.entry_point = entry_point
+        self._shader_module = None
+        self.info = None
 
         # If it's a file like object, let's get the data.
         if hasattr(source, 'read'):
@@ -228,10 +230,6 @@ class VulkanShader(Shader):
             codeSize=len(self.compiled_data),
             pCode=ctypes.cast(uint32_array, ctypes.POINTER(ctypes.c_uint32)),
         )
-
-        # To look into: VK_EXT_descriptor_indexing - bindless resources
-        self._shader_module = None
-        self.info = None
 
     def get_source(self) -> str | None:
         if self.compiled_data and INSPECTION_AVAILABLE:
@@ -276,10 +274,19 @@ class VulkanAttribute(Attribute):
     vk_format: int
 
     def __init__(self, attribute: Attribute) -> None:
-        super().__init__(attribute.name, attribute.location, attribute.count, attribute.data_type, attribute.normalize,
-                         attribute.instance)
-        vk_format = get_vulkan_format(self.count, self.data_type, self.normalize)
-        assert vk_format is not None, f"The attribute information was invalid. ({self.count}, {self.data_type}, {self.normalize})"
+        super().__init__(
+            attribute.fmt.name,
+            attribute.location,
+            attribute.fmt.components,
+            attribute.fmt.data_type,
+            attribute.fmt.normalized,
+            attribute.fmt.divisor,
+        )
+        vk_format = get_vulkan_format(self.fmt.components, self.fmt.data_type, self.fmt.normalized)
+        assert vk_format is not None, (
+            "The attribute information was invalid. "
+            f"({self.fmt.components}, {self.fmt.data_type}, {self.fmt.normalized})"
+        )
         self.vk_format = vk_format
 
 _reflection_to_type = {
@@ -324,7 +331,7 @@ class VulkanShaderProgram(ShaderProgram):
     def load_spirv_reflection(self, reflection_data: dict, shader_type: str) -> None:
         print(f"Loading SPIR-V reflection for {shader_type.upper()}", reflection_data)
         attributes = []
-        samplers = []
+        sampled_textures = []
         ubos = []
         push_constants = []
 
@@ -365,9 +372,9 @@ class VulkanShaderProgram(ShaderProgram):
             })
             ubos.append(ubo_class)
 
-        # Extract samplers
+        # Extract combined sampled textures
         for sampler_data in reflection_data.get('textures', []):
-            samplers.append(Sampler(
+            sampled_textures.append(SampledTextureBinding(
                 name=sampler_data['name'],
                 desc_set=sampler_data['set'],
                 binding=sampler_data['binding'],
@@ -385,36 +392,36 @@ class VulkanShaderProgram(ShaderProgram):
                 pc_class = PushConstants((shader_type,), tuple(pc_uniforms))
                 push_constants.append(pc_class)
 
-        # Apply attributes, UBOs, PCs, and samplers
+        # Apply attributes, UBOs, PCs, and sampled textures
         self.set_attributes(*attributes)
         self.set_uniform_blocks(*ubos)
-        self.set_samplers(*samplers)
+        self.set_sampled_textures(*sampled_textures)
         self.set_push_constants(*push_constants)
 
     def set_shader_uniforms(self, push_constants: PushConstants):
         self.set_push_constants(push_constants)
 
-    def set_samplers(self, *samplers: Sampler) -> None:
-        """Register samplers via base storage, with Vulkan stage merge on duplicates."""
-        for sampler in samplers:
-            existing = self._samplers.get(sampler.name)
+    def set_sampled_textures(self, *sampled_textures: SampledTextureBinding) -> None:
+        """Register sampled textures via base storage, with Vulkan stage merge on duplicates."""
+        for sampled_texture in sampled_textures:
+            existing = self._sampled_textures.get(sampled_texture.name)
             if existing is None:
-                super().set_samplers(sampler)
+                super().set_sampled_textures(sampled_texture)
                 continue
 
             if (
-                existing.desc_set != sampler.desc_set
-                or existing.binding != sampler.binding
-                or existing.count != sampler.count
+                existing.desc_set != sampled_texture.desc_set
+                or existing.binding != sampled_texture.binding
+                or existing.count != sampled_texture.count
             ):
                 msg = (
-                    f"Sampler '{sampler.name}' was declared with incompatible binding metadata. "
+                    f"Sampled texture '{sampled_texture.name}' was declared with incompatible binding metadata. "
                     "Ensure descriptor set, binding, and count match across shader stages."
                 )
                 raise ShaderException(msg)
 
-            merged_stages = tuple(dict.fromkeys((*existing.stages, *sampler.stages)))
-            self._samplers[sampler.name] = Sampler(
+            merged_stages = tuple(dict.fromkeys((*existing.stages, *sampled_texture.stages)))
+            self._sampled_textures[sampled_texture.name] = SampledTextureBinding(
                 name=existing.name,
                 desc_set=existing.desc_set,
                 binding=existing.binding,
@@ -453,8 +460,7 @@ class VulkanShaderProgram(ShaderProgram):
 
     def set_attribute_format(self, name: str, data_type: DataTypes, normalize: bool):
         """Must be called before any Attribute Buffers are created."""
-        self._attributes[name].data_type = data_type
-        self._attributes[name].normalize = normalize
+        self._attributes[name].set_data_type(data_type, normalize)
 
     def set_uniform_blocks(self, *ubos: UniformBlockDesc):
         """Generate a UniformBlock based on the UBODesc.
@@ -500,7 +506,7 @@ class VulkanShaderProgram(ShaderProgram):
                     stageFlags=stages_to_bits(sampler.stages),
                 ),
             )
-            for name, sampler in self.samplers.items()
+            for name, sampler in self.sampled_textures.items()
         }
 
     def _get_ubo_layout_bindings(self) -> dict[str, tuple[int, VkDescriptorSetLayoutBinding]]:
@@ -842,7 +848,13 @@ class VulkanUniformBlock(UniformBlock):
         self.size = size
         return structure
 
-    def create_ubo(self) -> VulkanUniformBufferObject:
+    def create_ubo(
+        self,
+        *,
+        copies_per_resource: int = 3,
+        alignment: int | None = None,
+        strict: bool = False,
+    ) -> VulkanUniformBufferObject:
         """Create a new UniformBufferObject from this uniform block."""
         context = pyglet.graphics.api.core.resolve_context()
         return VulkanUniformBufferObject(
@@ -850,6 +862,9 @@ class VulkanUniformBlock(UniformBlock):
             view_class=self.view_cls,
             buffer_size=self.size,
             binding=self.binding,
+            alignment=alignment,
+            copies_per_resource=copies_per_resource,
+            strict=strict,
             layout_binding=self.layout_binding,
         )
 

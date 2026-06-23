@@ -556,6 +556,7 @@ class VulkanTextureRegion(_TextureRegionShared, Texture):
 
 class VulkanTexture(Texture, UniqueIDHandler):
     _all_textures: ClassVar[weakref.WeakSet[VulkanTexture]] = weakref.WeakSet()
+    _next_descriptor_generation: ClassVar[int] = 1
 
     tex_coords = (0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0)
     tex_coords_order: tuple[int, int, int, int] = (0, 1, 2, 3)
@@ -575,6 +576,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
                          filters, address_mode, anisotropic_level)
         self._depth = max(1, int(depth))
         self._layer_count = max(1, int(layer_count))
+        self.descriptor_generation_id = self._claim_descriptor_generation()
         if self.tex_type == TextureType.TYPE_3D:
             self.images = self._depth
         elif self.tex_type == TextureType.TYPE_2D_ARRAY:
@@ -614,6 +616,15 @@ class VulkanTexture(Texture, UniqueIDHandler):
 
         self._ensure_shadow_level(0)
         self._all_textures.add(self)
+
+    @classmethod
+    def _claim_descriptor_generation(cls) -> int:
+        generation = cls._next_descriptor_generation
+        cls._next_descriptor_generation += 1
+        return generation
+
+    def _bump_descriptor_generation(self) -> None:
+        self.descriptor_generation_id = self._claim_descriptor_generation()
 
     @classmethod
     def create_from_image(cls,
@@ -795,6 +806,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
 
     def delete(self) -> None:
         type(self)._all_textures.discard(self)
+        self._bump_descriptor_generation()
         if self.image:
             self.image.delete()
 

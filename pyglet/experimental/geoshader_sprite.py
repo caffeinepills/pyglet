@@ -771,6 +771,7 @@ class Sprite(event.EventDispatcher):
         draw_ctx = pyglet.graphics.draw.DrawContext(
             surface_ctx=ctx,
             backend_ctx=None,
+            frame_context=ctx.frame_context,
             draw_pass=pyglet.graphics.draw.BatchDrawOptions().resolve(ctx),
             renderer=ctx.renderer,
         )

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, Generic, Sequence, Ty
 
 import pyglet
 from pyglet.enums import BlendFactor, BlendOp, CompareOp, GeometryMode, GraphicsAPI
-from pyglet.graphics.api.base import BackendRenderer, SurfaceContext
+from pyglet.graphics.api.base import BackendRenderer, FrameContext, SurfaceContext
 from pyglet.graphics.state import (
     BlendState,
     CameraScissorProviderProtocol,
@@ -166,13 +166,15 @@ class Group:
             # shader declares samplers on non-zero descriptor bindings.
             program_state = self._state_names.get("ShaderProgramState")
             program = getattr(program_state, "program", None) if program_state else None
-            samplers = getattr(program, "samplers", None)
+            sampled_textures = getattr(program, "sampled_textures", None)
+            if sampled_textures is None:
+                sampled_textures = getattr(program, "samplers", None)
 
             sampler_list = []
-            if isinstance(samplers, dict):
-                sampler_list = list(samplers.values())
-            elif samplers is not None:
-                sampler_list = list(samplers)
+            if isinstance(sampled_textures, dict):
+                sampler_list = list(sampled_textures.values())
+            elif sampled_textures is not None:
+                sampler_list = list(sampled_textures)
 
             # Only infer automatically when a single sampler exists.
             if len(sampler_list) == 1:
@@ -362,7 +364,7 @@ class DrawPass:
     scissor: CameraScissor
     clear_color: tuple[float, float, float, float]
 
-SurfaceContextT = TypeVar("SurfaceContextT", bound=SurfaceContext)
+SurfaceContextT = TypeVar("SurfaceContextT", bound=SurfaceContext[Any])
 BackendContextT = TypeVar("BackendContextT")
 
 @dataclass
@@ -374,6 +376,7 @@ class DrawContext(Generic[SurfaceContextT, BackendContextT]):
     # The active backend surface during draw.
     surface_ctx: SurfaceContextT
     backend_ctx: BackendContextT
+    frame_context: FrameContext[Any]
 
     # The draw pass used in this.
     draw_pass: DrawPass
@@ -753,6 +756,7 @@ class Batch:
         return DrawContext(
             surface_ctx=self._context,
             backend_ctx=self._create_backend_draw_context(),
+            frame_context=self._context.frame_context,
             draw_pass=draw_pass.resolve(self._context),
             renderer=self._context.renderer,
         )
@@ -1144,6 +1148,14 @@ if not _is_pyglet_doc_run:
             WebGLBatch as Batch,
         )
         from pyglet.graphics.api.webgl.draw import (
+            get_default_batch as _backend_get_default_batch,
+        )
+        get_default_batch = _backend_get_default_batch
+    elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan.draw import (
+            VulkanBatch as Batch,
+        )
+        from pyglet.graphics.api.vulkan.draw import (
             get_default_batch as _backend_get_default_batch,
         )
         get_default_batch = _backend_get_default_batch

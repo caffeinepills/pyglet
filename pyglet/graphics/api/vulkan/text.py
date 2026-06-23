@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 from pyglet.enums import BlendFactor
 from pyglet.graphics.api.vulkan.instance import WindowBlock
 from pyglet.graphics.draw import Group
-from pyglet.graphics.shader import Attribute, Sampler, PushConstants
+from pyglet.graphics.shader import Attribute, SampledTextureBinding, PushConstants
 
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
@@ -130,7 +130,7 @@ def get_default_layout_shader() -> VulkanShaderProgram:
             )
             program.set_uniform_blocks(WindowBlock)
             program.set_push_constants(PushConstants(stages=('fragment', ), constants=[("scissor", "bool"), ("scissor_area", "vec4")]))
-            program.set_samplers(Sampler("text", desc_set=0, binding=2))
+            program.set_sampled_textures(SampledTextureBinding("text", desc_set=0, binding=2))
 
         program.set_attribute_format("colors", data_type="B", normalize=True)
         return program
@@ -160,7 +160,7 @@ def get_default_image_layout_shader() -> VulkanShaderProgram:
             )
             program.set_uniform_blocks(WindowBlock)
             program.set_push_constants(PushConstants(stages=('fragment', ), constants=[("scissor", "bool"), ("scissor_area", "vec4")]))
-            program.set_samplers(Sampler("layout_image", desc_set=0, binding=2))
+            program.set_sampled_textures(SampledTextureBinding("layout_image", desc_set=0, binding=2))
 
         program.set_attribute_format("colors", data_type="B", normalize=True)
         return program

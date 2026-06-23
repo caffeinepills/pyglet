@@ -451,6 +451,7 @@ class ShapeBase(ABC):
         draw_ctx = DrawContext(
             surface_ctx=ctx,
             backend_ctx=None,
+            frame_context=ctx.frame_context,
             draw_pass=BatchDrawOptions().resolve(ctx),
             renderer=ctx.renderer,
         )

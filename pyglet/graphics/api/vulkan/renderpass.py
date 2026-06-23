@@ -69,7 +69,7 @@ class Attachment:
     def ref(self, index: int) -> AttachmentRef:
         return AttachmentRef(
             attachment=index,
-            layout=self.final_layout,
+            layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         )
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +88,21 @@ class ColorAttachment(Attachment):
     final_layout: int = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 
     @classmethod
-    def get_default(cls, fmt: int, *, offscreen: bool) -> ColorAttachment:
+    def get_default(cls, fmt: int, *, offscreen: bool, clear_on_load: bool = True) -> ColorAttachment:
         """Defines Attachment specs for the color attachments."""
+        final_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL if offscreen else VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        if clear_on_load:
+            initial_layout = VK_IMAGE_LAYOUT_UNDEFINED
+            load_op = VK_ATTACHMENT_LOAD_OP_CLEAR
+        else:
+            initial_layout = VK_IMAGE_LAYOUT_UNDEFINED
+            load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE
+
         return ColorAttachment(
             fmt=fmt,
-            initial_layout=VK_IMAGE_LAYOUT_UNDEFINED,
-            final_layout=(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL if offscreen else VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),
+            load_op=load_op,
+            initial_layout=initial_layout,
+            final_layout=final_layout,
         )
 
 
@@ -110,6 +119,12 @@ class DepthAttachment(Attachment):
             fmt=fmt,
             initial_layout=VK_IMAGE_LAYOUT_UNDEFINED,
             final_layout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        )
+
+    def ref(self, index: int) -> AttachmentRef:
+        return AttachmentRef(
+            attachment=index,
+            layout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         )
 
 
@@ -172,10 +187,14 @@ class RenderPass:
                  color_formats: Sequence[int],
                  depth_format: int | None=None,
                  sync: bool=False,
-                 offscreen: bool=False):
+                 offscreen: bool=False,
+                 clear_on_load: bool = True):
         self.device = logical_device
 
-        color_attachments = tuple([ColorAttachment.get_default(fmt, offscreen=offscreen) for fmt in color_formats])
+        color_attachments = tuple([
+            ColorAttachment.get_default(fmt, offscreen=offscreen, clear_on_load=clear_on_load)
+            for fmt in color_formats
+        ])
         depth_attachment = DepthAttachment.get_default(fmt=depth_format) if depth_format else None
         self._key = RenderPassSpec(
             color_attachments=color_attachments,

@@ -4,7 +4,6 @@ import ctypes
 from typing import TYPE_CHECKING, Any, Sequence
 
 import pyglet
-from pyglet.graphics.api.base import SurfaceContext
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.graphics.api.vulkan.buffer import AttributeBufferObject, IndexBufferObject
 from pyglet.graphics.api.vulkan.shader import get_vulkan_format
@@ -32,6 +31,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
 )
 
 if TYPE_CHECKING:
+    from pyglet.graphics.api.base import SurfaceContext
     from pyglet.customtypes import DataTypes
     from pyglet.enums import GeometryMode
     from pyglet.graphics.shader import Attribute

@@ -26,10 +26,13 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_KHR_SWAPCHAIN_EXTENSION
 
 import pyglet
 from typing import TYPE_CHECKING
+
+from pyglet.util import debug_print
+
 if TYPE_CHECKING:
     from pyglet.graphics.api import VulkanGlobal
 
-_debug_api = pyglet.options.debug_api
+_debug_api_assert = debug_print('debug_api')
 
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.instance import VulkanSurface, VulkanInstance
@@ -90,40 +93,10 @@ class VulkanLogicalDevice:
             assert self.physical.have_extensions(*self.device_extensions) is True, \
                 f"Your device does not support these extensions: {self.device_extensions}."
 
-        #self.vk_device = self._create_device()
         self.vk_device = None
 
     def supports_presentation(self):
         return VK_KHR_SWAPCHAIN_EXTENSION_NAME in self.device_extensions
-
-    # def _create_device(self) -> VkDevice:
-    #     """Create a logical device."""
-    #     # Find queue families, excluding presentation if surface is not provided
-    #     graphics_indice, present_indice, transfer_indice, compute_indice = self.find_queue_families()
-    #
-    #     print(f"Queue Indices chosen {graphics_indice=}, {present_indice=}, {transfer_indice=}, {compute_indice=}")
-    #
-    #     unique_queue_families = {graphics_indice, transfer_indice, compute_indice}
-    #     if present_indice is not None:
-    #         unique_queue_families.add(present_indice)
-    #
-    #     queues_create = [VkDeviceQueueCreateInfo(
-    #         sType=VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-    #         queueFamilyIndex=queue_family,
-    #         queueCount=1,
-    #         pQueuePriorities=c_array_list([1.0], c_float),  # High priority for all queues
-    #     ) for queue_family in unique_queue_families]
-    #
-    #     device_create = VkDeviceCreateInfo(
-    #         sType=VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-    #         pQueueCreateInfos=c_array_list(queues_create, VkDeviceQueueCreateInfo),
-    #         queueCreateInfoCount=len(queues_create),
-    #         pEnabledFeatures=pointer(self.physical.features),
-    #         enabledExtensionCount=len(self.device_extensions),
-    #         ppEnabledExtensionNames=c_str_array_list(self.device_extensions),
-    #     )
-    #
-    #     return CreateDevice(self.physical.vk_device, device_create)
 
     def create(self, surface: VulkanSurface | None) -> None:
         """Create a logical device.
@@ -136,7 +109,7 @@ class VulkanLogicalDevice:
             raise RuntimeError(msg)
         graphics_indice, present_indice, transfer_indice, compute_indice = self.find_queue_families(surface)
 
-        print(f"Queue Indices chosen {graphics_indice=}, {present_indice=}, {transfer_indice=}, {compute_indice}")
+        assert _debug_api_assert(f"Queue Indices chosen {graphics_indice=}, {present_indice=}, {transfer_indice=}, {compute_indice}")
 
         unique_queue_families = {graphics_indice, present_indice, transfer_indice, compute_indice}
 
@@ -218,14 +191,12 @@ class VulkanLogicalDevice:
         wants_descriptor_indexing = api_is_1_2_or_higher or has_descriptor_indexing_ext
         wants_timeline = api_is_1_2_or_higher or has_timeline_semaphore_ext
         if not wants_descriptor_indexing and not wants_timeline:
-            if _debug_api:
-                print("(Vulkan) Descriptor indexing and timeline semaphore are unavailable for this API/driver.")
+            assert _debug_api_assert("(Vulkan) Descriptor indexing and timeline semaphore are unavailable for this API/driver.")
             return
 
         get_features2 = self._get_features2_getter()
         if get_features2 is None:
-            if _debug_api:
-                print("(Vulkan) vkGetPhysicalDeviceFeatures2* unavailable; optional descriptor/timeline features disabled.")
+            assert _debug_api_assert("(Vulkan) vkGetPhysicalDeviceFeatures2* unavailable; optional descriptor/timeline features disabled.")
             return
 
         features2 = VkPhysicalDeviceFeatures2(
@@ -271,31 +242,29 @@ class VulkanLogicalDevice:
             if self.descriptor_indexing_enabled and not api_is_1_2_or_higher and has_descriptor_indexing_ext:
                 self.device_extensions.append(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
 
-            if _debug_api:
-                if self.descriptor_indexing_enabled:
-                    mode = "core Vulkan 1.2+" if api_is_1_2_or_higher else "VK_EXT_descriptor_indexing"
-                    print(
-                        "(Vulkan) Descriptor indexing enabled "
-                        f"({mode}); partially_bound={self.descriptor_binding_partially_bound}, "
-                        "update_after_bind_ubo="
-                        f"{self.descriptor_binding_uniform_buffer_update_after_bind}, "
-                        "update_after_bind_sampler="
-                        f"{self.descriptor_binding_sampled_image_update_after_bind}."
-                    )
-                elif wants_descriptor_indexing:
-                    print("(Vulkan) Descriptor indexing requested, but required device features are unavailable.")
+            if self.descriptor_indexing_enabled:
+                mode = "core Vulkan 1.2+" if api_is_1_2_or_higher else "VK_EXT_descriptor_indexing"
+                assert _debug_api_assert(
+                    "(Vulkan) Descriptor indexing enabled "
+                    f"({mode}); partially_bound={self.descriptor_binding_partially_bound}, "
+                    "update_after_bind_ubo="
+                    f"{self.descriptor_binding_uniform_buffer_update_after_bind}, "
+                    "update_after_bind_sampler="
+                    f"{self.descriptor_binding_sampled_image_update_after_bind}."
+                )
+            elif wants_descriptor_indexing:
+                assert _debug_api_assert("(Vulkan) Descriptor indexing requested, but required device features are unavailable.")
 
         if timeline_features is not None:
             self.timeline_semaphore_enabled = bool(timeline_features.timelineSemaphore)
             if self.timeline_semaphore_enabled and not api_is_1_2_or_higher and has_timeline_semaphore_ext:
                 self.device_extensions.append(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)
 
-            if _debug_api:
-                if self.timeline_semaphore_enabled:
-                    mode = "core Vulkan 1.2+" if api_is_1_2_or_higher else "VK_KHR_timeline_semaphore"
-                    print(f"(Vulkan) Timeline semaphore enabled ({mode}).")
-                elif wants_timeline:
-                    print("(Vulkan) Timeline semaphore requested, but timelineSemaphore feature is unavailable.")
+            if self.timeline_semaphore_enabled:
+                mode = "core Vulkan 1.2+" if api_is_1_2_or_higher else "VK_KHR_timeline_semaphore"
+                assert _debug_api_assert(f"(Vulkan) Timeline semaphore enabled ({mode}).")
+            elif wants_timeline:
+                assert _debug_api_assert("(Vulkan) Timeline semaphore requested, but timelineSemaphore feature is unavailable.")
 
     def find_queue_families(self, surface: VulkanSurface | None):
         """Finds the queue families that support graphics, presentation, transfer, and compute operations.
@@ -373,7 +342,7 @@ class VulkanLogicalDevice:
     def __del__(self) -> None:
         self.delete()
 
-    def delete(self):
+    def delete(self) -> None:
         """Clean up the Vulkan device and release resources.
 
         The logical device represents the physical device, and deleting it releases

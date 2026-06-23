@@ -9,6 +9,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VkOffset2D, VkRect2D, VkEx
 from pyglet.graphics.state import State
 
 if TYPE_CHECKING:
+    from pyglet.graphics.draw import DrawContext
     from pyglet.graphics import Group, Texture
     from pyglet.customtypes import ScissorProtocol
     from pyglet.image.base import TextureBase
@@ -22,7 +23,7 @@ class DescriptorResourceState(State):
     """Vulkan-only state that writes resources into descriptor sets."""
     group_hash: bool = True
 
-    def write_descriptor(self, current_desc: DescriptorSetObject) -> None:
+    def write_descriptor(self, current_desc: DescriptorSetObject, frame_idx: int) -> None:
         raise NotImplementedError
 
 
@@ -38,8 +39,8 @@ class TextureState(DescriptorResourceState):  # noqa: D101
                    binding=binding,
                    set_id=set_id)
 
-    def write_descriptor(self, current_desc: DescriptorSetObject) -> None:
-        current_desc.bind_texture(self.texture, self.binding, self.set_id)
+    def write_descriptor(self, current_desc: DescriptorSetObject, frame_idx: int) -> None:
+        current_desc.update_sampled_texture_binding(self.texture, self.binding, self.set_id, frame_idx=frame_idx)
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,26 @@ class ShaderProgramState(State):
     sets_state: bool = False
     unsets_state: bool = False
 
+
+@dataclass(frozen=True)
+class MultiTextureSamplerState(State):
+    """Static per-program sampler bindings for multi-texture draws."""
+    program: VulkanShaderProgram
+    uniforms: tuple[tuple[str, int], ...]
+
+    sets_state: bool = True
+
+    @classmethod
+    def from_textures(
+            cls,
+            program: VulkanShaderProgram,
+            textures: dict[str, Texture],
+            first_texture_unit: int = 0) -> MultiTextureSamplerState:
+        return cls(program, tuple((name, idx) for idx, name in enumerate(textures, first_texture_unit)))
+
+    def set_state(self, ctx: DrawContext) -> None:
+        for uniform_name, texture_unit in self.uniforms:
+            self.program[uniform_name] = texture_unit
 
 @dataclass(frozen=True)
 class RenderPassState(State):
@@ -67,8 +88,17 @@ class ScissorState(State):
 
     sets_state: bool = True
 
-    def set_state(self, ctx: VulkanSurfaceContext) -> None:
-        cb = ctx.frame_sync.get_current_command_buffer(ctx.default_cb_id).command_buffer
+    def set_state(self, ctx: DrawContext) -> None:
+        cb = getattr(getattr(ctx, "backend_ctx", None), "command_buffer", None)
+        if cb is None:
+            frame_ctx = getattr(ctx, "frame_context", None)
+            cb = getattr(getattr(frame_ctx, "backend_ctx", None), "command_buffer", None)
+        if cb is None:
+            surface_ctx = getattr(ctx, "surface_ctx", ctx)
+            cb = getattr(surface_ctx, "_active_command_buffer", None)
+        if cb is None:
+            surface_ctx = getattr(ctx, "surface_ctx", ctx)
+            cb = surface_ctx.frame_sync.get_current_command_buffer(surface_ctx.default_cb_id).command_buffer
         rect = VkRect2D(
             offset=VkOffset2D(x=int(self.spo.x), y=int(self.spo.y)),
             extent=VkExtent2D(max(0, int(self.spo.width)), max(0, int(self.spo.height))),
@@ -142,7 +172,7 @@ class ShaderUniformState(State):
 
     sets_state: bool = True
 
-    def set_state(self, ctx) -> None:
+    def set_state(self, ctx: DrawContext) -> None:
         pc = self.program.push_constants[0]
         for name, value in self.data.items():
             #self.program[name] = value

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ctypes
+import weakref
 from dataclasses import dataclass
 from ctypes import POINTER, byref
 from typing import TYPE_CHECKING, Any, Sequence
 
 import pyglet
 from pyglet.graphics.api.vulkan import c_array_list
+from pyglet.graphics.api.vulkan.frame_local import FrameLocalResource
 from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
     VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -122,13 +124,44 @@ class DescriptorSetLayouts:
 
 
 @dataclass(frozen=True, slots=True)
+class DescriptorResourceKey:
+    set_index: int
+    binding: int
+    descriptor_type: int
+    descriptor_generation_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class UniformBindingKey(DescriptorResourceKey):
+    buffer_id: int
+    offset: int
+    range_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class SamplerKey(DescriptorResourceKey):
+    texture_id: int
+    sampler_id: int
+    image_view_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class DescriptorSetCacheKey:
     layout_key: DescriptorSetLayoutsKey
-    resource_states: tuple[DescriptorResourceState, ...]
+    resources: tuple[DescriptorResourceKey, ...]
+    frame_index: int
     owner_key: int | None
 
 
 class DescriptorPool:
+    """Owns the Vulkan descriptor pool used by cached descriptor sets.
+
+    The pool itself is device/global Vulkan state, not a frame-lifetime object.
+    It is sized by ``frames_in_flight`` because ``DescriptorSetObject`` allocates
+    one compatible descriptor-set tuple per frame slot. Individual descriptor
+    sets are selected by frame index when commands are recorded.
+    """
+
     flags: VkDescriptorPoolCreateFlags
     def __init__(self, device: VulkanLogicalDevice):
         self.device = device
@@ -275,13 +308,26 @@ class DescriptorSetLayoutCache:
 
 
 class DescriptorManager:
-    """Manages allocation and caching of the descriptors across pipelines and windows."""
+    """Manages Vulkan descriptor layouts, allocation, and descriptor-set caching.
+
+    This manager is frame-aware but does not own frame synchronization. It uses
+    the active frame index to select or update the descriptor sets that are safe
+    for that frame slot. Completion and CPU-side reuse are handled by Vulkan
+    ``FrameSync`` and the shared ``FrameResourceManager``.
+
+    Descriptor layouts and pools are long-lived device resources. Descriptor
+    set objects are cached structurally by layout, bound resources, owner, and
+    frame index so UBO slice changes or texture changes get distinct descriptor
+    writes without forcing the pool itself to be recreated per frame.
+    """
     def __init__(self, device: VulkanLogicalDevice):
         self.device = device
         self.layout_cache = DescriptorSetLayoutCache(self.device)
         self.descriptor_pool = DescriptorPool(self.device)
         self.frames_in_flight = 0
         self.descriptor_set_cache: dict[DescriptorSetCacheKey, DescriptorSetObject] = {}
+        self._ubo_generation_ids: weakref.WeakKeyDictionary[VulkanUniformBufferObject, int] = weakref.WeakKeyDictionary()
+        self._ubo_generation_tokens: weakref.WeakKeyDictionary[VulkanUniformBufferObject, tuple[int, int]] = weakref.WeakKeyDictionary()
 
         if self._supports_update_after_bind():
             print("(Vulkan) Descriptor pool using UPDATE_AFTER_BIND (descriptor indexing path).")
@@ -347,12 +393,15 @@ class DescriptorManager:
         )
 
     def _supports_descriptor_indexing(self) -> bool:
+        return False
         return self.device.descriptor_indexing_enabled
 
     def _supports_partially_bound(self) -> bool:
+        return False
         return self.device.descriptor_binding_partially_bound
 
     def _supports_update_after_bind(self) -> bool:
+        return False
         return bool(
             self._supports_descriptor_indexing()
             and self.device.descriptor_binding_uniform_buffer_update_after_bind
@@ -392,15 +441,37 @@ class DescriptorManager:
     def get_descriptor_sets(self,
                             set_layouts: DescriptorSetLayouts,
                             resource_states: Sequence[DescriptorResourceState],
+                            uniform_bindings: Sequence[tuple[VulkanUniformBufferObject, int, int]] | None = None,
+                            resources: Sequence[DescriptorResourceKey] | None = None,
+                            frame_index: int = 0,
                             owner: object | None = None) -> DescriptorSetObject:
         """Allocate the descriptor sets.
 
         Will return a descriptor set for each frame in flight.
         """
+        active_frame = int(frame_index) % max(1, self.frames_in_flight)
+        normalized_uniform_bindings = tuple(uniform_bindings or ())
+        normalized_resources = tuple(resources or self.build_resource_keys(
+            resource_states,
+            normalized_uniform_bindings,
+            active_frame,
+        ))
         owner_key = id(owner) if owner is not None else None
-        key = DescriptorSetCacheKey(set_layouts.key, tuple(resource_states), owner_key)
+        key = DescriptorSetCacheKey(
+            set_layouts.key,
+            normalized_resources,
+            active_frame,
+            owner_key,
+        )
         if key in self.descriptor_set_cache:
-            return self.descriptor_set_cache[key]
+            dset = self.descriptor_set_cache[key]
+            dset.update_bound_resources(
+                resource_states=resource_states,
+                uniform_bindings=normalized_uniform_bindings,
+                frame_idx=active_frame,
+            )
+            dset.validate_resources(normalized_resources)
+            return dset
 
         if not set_layouts.layouts:
             msg = "Cannot allocate descriptor sets for an empty descriptor set layout list."
@@ -409,8 +480,97 @@ class DescriptorManager:
         self.descriptor_set_cache[key] = dset = DescriptorSetObject(
             self.device,
             self.descriptor_pool.allocate_descriptor_sets(list(set_layouts.layouts)),
+            set_layouts_key=set_layouts.key,
         )
+        dset.update_bound_resources(
+            resource_states=resource_states,
+            uniform_bindings=normalized_uniform_bindings,
+            frame_idx=active_frame,
+        )
+        dset.validate_resources(normalized_resources)
         return dset
+
+    def build_resource_keys(
+        self,
+        resource_states: Sequence[DescriptorResourceState],
+        uniform_bindings: Sequence[tuple[VulkanUniformBufferObject, int, int]],
+        frame_index: int,
+    ) -> tuple[DescriptorResourceKey, ...]:
+        keys: list[DescriptorResourceKey] = []
+        keys.extend(
+            self._get_uniform_binding_key(ubo, binding, set_index, frame_index)
+            for ubo, binding, set_index in uniform_bindings
+        )
+        keys.extend(self._get_state_resource_key(state) for state in resource_states)
+        return tuple(sorted(keys, key=self._resource_sort_key))
+
+    @staticmethod
+    def _resource_sort_key(resource: DescriptorResourceKey) -> tuple[int, int, int]:
+        return resource.set_index, resource.binding, resource.descriptor_type
+
+    @staticmethod
+    def _ubo_descriptor_token(ubo: VulkanUniformBufferObject, buffer_id: int) -> tuple[int, int]:
+        buffer_wrapper = getattr(ubo, "buffer", None)
+        resource = getattr(buffer_wrapper, "buffer", None) if buffer_wrapper is not None else None
+        return id(resource), int(buffer_id)
+
+    def _get_ubo_generation_id(self, ubo: VulkanUniformBufferObject, buffer_id: int) -> int:
+        token = self._ubo_descriptor_token(ubo, buffer_id)
+        generation = self._ubo_generation_ids.get(ubo)
+        if generation is None:
+            generation = 1
+        elif self._ubo_generation_tokens.get(ubo) != token:
+            generation += 1
+        self._ubo_generation_ids[ubo] = generation
+        self._ubo_generation_tokens[ubo] = token
+        return generation
+
+    def _get_uniform_binding_key(
+        self,
+        ubo: VulkanUniformBufferObject,
+        binding: int,
+        set_index: int,
+        frame_index: int,
+    ) -> UniformBindingKey:
+        buffer_id = int(ubo.id)
+        frame_slice = ubo.get_frame_slice(frame_index)
+        generation_id = self._get_ubo_generation_id(ubo, buffer_id)
+        return UniformBindingKey(
+            set_index=int(set_index),
+            binding=int(binding),
+            descriptor_type=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            descriptor_generation_id=int(generation_id),
+            buffer_id=buffer_id,
+            offset=int(frame_slice.offset),
+            range_size=int(frame_slice.size),
+        )
+
+    @staticmethod
+    def _get_state_resource_key(state: DescriptorResourceState) -> DescriptorResourceKey:
+        texture = getattr(state, "texture", None)
+        binding = getattr(state, "binding", None)
+        set_id = getattr(state, "set_id", None)
+        if texture is None or binding is None or set_id is None:
+            msg = f"Unsupported descriptor resource state for caching: {type(state).__name__}"
+            raise RuntimeError(msg)
+        return DescriptorManager._get_sampler_key(texture, binding, set_id)
+
+    @staticmethod
+    def _get_sampler_key(texture: VulkanTexture, binding: int, set_index: int) -> SamplerKey:
+        owner = getattr(texture, "owner", texture)
+        sampler = getattr(texture, "sampler", None) or getattr(owner, "sampler", None)
+        image_view = getattr(texture, "image_view", None) or getattr(owner, "image_view", None)
+        vk_sampler = getattr(sampler, "vk_sampler", None)
+        vk_image_view = getattr(image_view, "vk_imageview", None)
+        return SamplerKey(
+            set_index=int(set_index),
+            binding=int(binding),
+            descriptor_type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            descriptor_generation_id=int(getattr(owner, "descriptor_generation_id", 0) or 0),
+            texture_id=int(getattr(owner, "id", 0) or 0),
+            sampler_id=int(getattr(vk_sampler, "value", 0) or 0),
+            image_view_id=int(getattr(vk_image_view, "value", 0) or 0),
+        )
 
     def get_shared_descriptor_sets(self, set_layouts: DescriptorSetLayouts) -> DescriptorSetObject:
         """Allocate a shared descriptor set.
@@ -425,6 +585,7 @@ class DescriptorManager:
         return DescriptorSetObject(
             self.device,
             self.descriptor_pool.allocate_descriptor_sets(list(set_layouts.layouts)),
+            set_layouts_key=set_layouts.key,
         )
 
     def delete(self) -> None:
@@ -434,38 +595,92 @@ class DescriptorManager:
         self.descriptor_set_cache.clear()
 
 
-class DescriptorSetObject:
-    """Container object for managing multiple descriptor sets.
+@dataclass(slots=True)
+class DescriptorFrameState:
+    descriptor_sets: tuple[VkDescriptorSet, ...]
+    descriptor_array: Any
+    uploaded_version: int = -1
 
-    Also manages the frames in flight as well.
-    """
-    set_count: int
 
-    def __init__(self, device: VulkanLogicalDevice, descriptor_sets_frames: list[list[VkDescriptorSet]]):
-        self.device = device
-        # set[desc_set_num][frame_in_flight]
-        self.descriptor_sets_frames = descriptor_sets_frames
-        self.current_frame = 0
+@dataclass(slots=True)
+class DescriptorSetBindingGroup:
+    """Used to group descriptor sets together."""
+    device: VulkanLogicalDevice
+    descriptor_set_count: int
+    descriptor_set_array: Any
+    first_set: int = 0
 
-        self.set_count = len(descriptor_sets_frames[0])
+    @classmethod
+    def from_descriptor_sets(
+        cls,
+        device: VulkanLogicalDevice,
+        descriptor_sets: Sequence[VkDescriptorSet],
+        first_set: int = 0,
+    ) -> DescriptorSetBindingGroup:
+        return cls(
+            device=device,
+            descriptor_set_count=len(descriptor_sets),
+            descriptor_set_array=c_array_list(list(descriptor_sets), VkDescriptorSet),
+            first_set=first_set,
+        )
 
-        self.desc_arrays = [c_array_list(descriptor_sets, VkDescriptorSet)
-                           for descriptor_sets in descriptor_sets_frames]
-        self.bindings = []
-        #self.name_to_binding = {}  # Mapping of resource name to (binding, type)
-
-    def bind_to_pipeline(self, command_buffer: VkCommandBuffer, pipeline_layout: VkPipelineLayout, frame_idx: int) -> None:
-        self.current_frame = frame_idx
-
+    def bind(self, command_buffer: VkCommandBuffer, pipeline_layout: VkPipelineLayout) -> None:
         self.device.vkCmdBindDescriptorSets(
             command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS,
             pipeline_layout,
-            0,  # Starting set index
-            self.set_count,  # Number of descriptor sets
-            self.desc_arrays[frame_idx],  # Array of descriptor sets
-            0, None,
+            self.first_set,
+            self.descriptor_set_count,
+            self.descriptor_set_array,
+            0,
+            None,
         )
+
+
+class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
+    """Frame-local wrapper around one logical descriptor-set binding group.
+
+    A ``DescriptorSetObject`` contains one tuple of ``VkDescriptorSet`` handles
+    per frame in flight. Callers treat it as one logical binding group and ask
+    for the frame-specific tuple during command recording.
+
+    This class uses ``FrameLocalResource`` for per-frame upload/version state.
+    It does not determine when a submitted frame is complete; that remains the
+    responsibility of Vulkan ``FrameSync`` and ``FrameResourceManager``.
+    """
+    set_count: int
+
+    def __init__(
+        self,
+        device: VulkanLogicalDevice,
+        descriptor_sets_frames: list[list[VkDescriptorSet]],
+        set_layouts_key: DescriptorSetLayoutsKey | None = None,
+    ):
+        self.descriptor_sets_frames = descriptor_sets_frames
+        FrameLocalResource.__init__(self, len(descriptor_sets_frames))
+        self.device = device
+        self.set_layouts_key = set_layouts_key
+        self.set_count = len(self.frame_states[0].descriptor_sets)
+        self.bindings: list[Any] = []
+        self._resource_states: tuple[DescriptorResourceState, ...] = ()
+        self._uniform_bindings: tuple[tuple[VulkanUniformBufferObject, int, int], ...] = ()
+        #self.name_to_binding = {}  # Mapping of resource name to (binding, type)
+
+    def _create_frame_states(self) -> list[DescriptorFrameState]:
+        return [
+            DescriptorFrameState(
+                descriptor_sets=tuple(descriptor_sets),
+                descriptor_array=c_array_list(descriptor_sets, VkDescriptorSet),
+                uploaded_version=-1,
+            )
+            for descriptor_sets in self.descriptor_sets_frames
+        ]
+
+    def get_frame_descriptor_sets(self, frame_idx: int) -> tuple[VkDescriptorSet, ...]:
+        resolved_frame = self.set_current_frame(frame_idx)
+        self.upload_if_needed(resolved_frame)
+        frame_state = self.get_frame_state(resolved_frame)
+        return frame_state.descriptor_sets
 
     # def add_binding(self, name, binding, descriptor_type, descriptor_count, stage_flags):
     #     self.bindings.append(VkDescriptorSetLayoutBinding(
@@ -491,7 +706,87 @@ class DescriptorSetObject:
     #     elif descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
     #         self._update_image_sampler(binding, resource_info)
 
-    def bind_texture(self, texture: VulkanTexture, binding: int, desc_set: int=0):
+    def _resolve_frame_idx(self, frame_idx: int) -> int:
+        return self._normalize_frame_index(frame_idx)
+
+    def update_bound_resources(
+        self,
+        resource_states: Sequence[DescriptorResourceState],
+        uniform_bindings: Sequence[tuple[VulkanUniformBufferObject, int, int]],
+        frame_idx: int,
+    ) -> None:
+        resolved_frame = self._resolve_frame_idx(frame_idx)
+        normalized_resource_states = tuple(resource_states)
+        normalized_uniform_bindings = tuple(uniform_bindings)
+
+        if (
+            normalized_resource_states != self._resource_states
+            or normalized_uniform_bindings != self._uniform_bindings
+        ):
+            self._resource_states = normalized_resource_states
+            self._uniform_bindings = normalized_uniform_bindings
+            self.mark_data_updated()
+
+        self.upload_if_needed(resolved_frame)
+
+    def _upload_frame(self, frame_index: int) -> bool:
+        for ubo, binding, set_index in self._uniform_bindings:
+            self.update_ubo_binding(ubo, binding=binding, desc_set=set_index, frame_idx=frame_index)
+
+        for state in self._resource_states:
+            state.write_descriptor(self, frame_idx=frame_index)
+
+        return True
+
+    def validate_resources(self, resources: Sequence[DescriptorResourceKey]) -> None:
+        if self.set_layouts_key is None:
+            return
+
+        bound_lookup = {(res.set_index, res.binding): res for res in resources}
+        for set_entry in self.set_layouts_key.set_layouts:
+            set_index = int(set_entry.set_index)
+            for layout_binding in set_entry.layout_key.bindings:
+                binding_index = int(layout_binding.binding)
+                resource = bound_lookup.get((set_index, binding_index))
+                if resource is None:
+                    msg = (
+                        "Descriptor validation failed: missing resource for "
+                        f"set={set_index}, binding={binding_index}."
+                    )
+                    raise RuntimeError(msg)
+
+                if int(resource.descriptor_type) != int(layout_binding.descriptor_type):
+                    msg = (
+                        "Descriptor validation failed: descriptor type mismatch for "
+                        f"set={set_index}, binding={binding_index}; "
+                        f"expected={int(layout_binding.descriptor_type)} "
+                        f"actual={int(resource.descriptor_type)}."
+                    )
+                    raise RuntimeError(msg)
+
+                if isinstance(resource, UniformBindingKey):
+                    if resource.buffer_id == 0 or resource.range_size <= 0:
+                        msg = (
+                            "Descriptor validation failed: invalid uniform buffer resource for "
+                            f"set={set_index}, binding={binding_index}."
+                        )
+                        raise RuntimeError(msg)
+                elif isinstance(resource, SamplerKey):
+                    if resource.texture_id == 0 or resource.sampler_id == 0 or resource.image_view_id == 0:
+                        msg = (
+                            "Descriptor validation failed: invalid sampled texture resource for "
+                            f"set={set_index}, binding={binding_index}."
+                        )
+                        raise RuntimeError(msg)
+
+    def update_sampled_texture_binding(
+        self,
+        texture: VulkanTexture,
+        binding: int,
+        desc_set: int = 0,
+        frame_idx: int = 0,
+    ) -> None:
+        resolved_frame = self._resolve_frame_idx(frame_idx)
         image_info = VkDescriptorImageInfo(
             sampler=texture.sampler.vk_sampler,
             imageView=texture.image_view.vk_imageview,
@@ -501,7 +796,7 @@ class DescriptorSetObject:
 
         write = VkWriteDescriptorSet(
             sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet=self.descriptor_sets_frames[self.current_frame][desc_set],
+            dstSet=self.get_frame_state(resolved_frame).descriptor_sets[desc_set],
             dstBinding=binding,
             dstArrayElement=0,
             descriptorCount=1,
@@ -513,17 +808,30 @@ class DescriptorSetObject:
         self.device.vkUpdateDescriptorSets(self.device.vk_device, 1, write_array, 0, None)
 
     # Bind a uniform buffer to the descriptor set
-    def bind_ubo(self, ubo: VulkanUniformBufferObject, binding=0, desc_set=0):
+    def update_ubo_binding(
+        self,
+        ubo: VulkanUniformBufferObject,
+        binding: int = 0,
+        desc_set: int = 0,
+        frame_idx: int = 0,
+    ) -> None:
+        resolved_frame = self._resolve_frame_idx(frame_idx)
+        ubo.upload_if_needed(resolved_frame)
+        ubo._ensure_buffer_created()  # noqa: SLF001
+        assert ubo.buffer is not None
+        assert ubo.buffer.buffer is not None
+        frame_slice = ubo.get_frame_slice(resolved_frame)
+        dst_set = self.get_frame_state(resolved_frame).descriptor_sets[desc_set]
         buffer_info = VkDescriptorBufferInfo(
             buffer=ubo.buffer.buffer.vk_buffer,
-            offset=0,
-            range=ubo.buffer.size,
+            offset=frame_slice.offset,
+            range=frame_slice.size,
         )
         buff_info_array = (VkDescriptorBufferInfo * 1)(buffer_info)
 
         write = VkWriteDescriptorSet(
             sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet=self.descriptor_sets_frames[self.current_frame][desc_set],
+            dstSet=dst_set,
             dstBinding=binding,
             dstArrayElement=0,
             descriptorCount=1,
@@ -533,3 +841,4 @@ class DescriptorSetObject:
 
         write_array = (VkWriteDescriptorSet * 1)(write)
         self.device.vkUpdateDescriptorSets(self.device.vk_device, 1, write_array, 0, None)
+        ubo.set_frame_descriptor_set(dst_set, resolved_frame)

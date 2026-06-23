@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import ctypes
 import weakref
+from abc import abstractmethod
 from ctypes import byref, c_byte, c_void_p
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Sequence, ClassVar
+from typing import TYPE_CHECKING, Any, Sequence, TypeVar, ClassVar
 
 import pyglet
 from pyglet.graphics.api.vulkan import DeviceFunc, c_array_list
+from pyglet.graphics.api.vulkan.frame_local import FrameLocalResource
 from pyglet.graphics.buffer import (
     AbstractBuffer,
+    BufferBindingSlice,
+    BufferRange,
     MappedBufferObject as BaseMappedBufferObject,
     UniformBufferObject,
 )
@@ -25,7 +30,6 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_SHARING_MODE_EXCLUSIVE,
     VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-    VK_SUCCESS,
     VkBuffer,
     VkBufferCopy,
     VkBufferCreateInfo,
@@ -42,6 +46,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkVertexInputBindingDescription,
     VK_VERTEX_INPUT_RATE_INSTANCE,
     VK_VERTEX_INPUT_RATE_VERTEX,
+    VkDescriptorSet,
 )
 
 if TYPE_CHECKING:
@@ -99,13 +104,10 @@ def _ctype_from_data_type(data_type: DataTypes) -> type[CType]:
     return c_type
 
 
-def _devices_ready(devices: Any) -> bool:
-    logical = getattr(devices, "logical_device", None)
-    return bool(
-        logical
-        and getattr(logical, "vk_device", None) is not None
-        and hasattr(logical, "vkCreateBuffer")
-    )
+def _align_up(value: int, alignment: int) -> int:
+    if alignment <= 1:
+        return value
+    return ((value + alignment - 1) // alignment) * alignment
 
 
 class VulkanBufferResource:
@@ -132,6 +134,68 @@ class VulkanBufferResource:
         vk_hex = hex(self.vk_buffer.value) if self.vk_buffer and self.vk_buffer.value else "0x0"
         return f"VulkanBufferResource(vk={vk_hex})"
 
+@dataclass
+class BufferSlice:
+    """A view into a VkBuffer.
+
+    This does not own the buffer. It only describes a safe byte range
+    inside that buffer.
+    """
+    buffer: VulkanBufferObject
+    offset: int
+    size: int
+
+    def write(self, data: bytes, relative_offset: int = 0) -> None:
+        if relative_offset < 0:
+            raise ValueError("relative_offset must be >= 0")
+
+        if relative_offset + len(data) > self.size:
+            raise ValueError(
+                f"Write of {len(data)} bytes at offset {relative_offset} "
+                f"exceeds slice size {self.size}"
+            )
+
+        self.buffer.set_bytes_region(self.offset + relative_offset, data)
+
+@dataclass
+class BufferFrameState:
+    slice: BufferSlice
+    uploaded_version: int = -1
+
+
+@dataclass
+class UniformFrameState(BufferFrameState):
+    descriptor_set: VkDescriptorSet | None = None
+
+
+BufferFrameStateT = TypeVar("BufferFrameStateT", bound=BufferFrameState)
+
+
+class FrameLocalBuffer(FrameLocalResource[BufferFrameStateT]):
+    _base_buffer_size: int
+    frame_stride: int
+
+    def _create_frame_states(self) -> list[BufferFrameStateT]:
+        return [
+            self._make_frame_state(
+                BufferSlice(
+                    buffer=self.buffer,
+                    offset=i * self.frame_stride,
+                    size=self._base_buffer_size,
+                )
+            )
+            for i in range(self.frames_in_flight)
+        ]
+
+    @abstractmethod
+    def _make_frame_state(self, frame_slice: BufferSlice) -> BufferFrameStateT:
+        raise NotImplementedError
+
+    def get_frame_slice(self, frame_index: int) -> BufferSlice:
+        return self.get_frame_state(frame_index).slice
+
+    def slice_for_frame(self, frame_index: int) -> BufferSlice:
+        return self.get_frame_slice(frame_index)
 
 class VulkanBufferObject(AbstractBuffer):
     devices: VulkanDevices | None
@@ -167,11 +231,6 @@ class VulkanBufferObject(AbstractBuffer):
         vk_buffer, vk_device_memory = self.create_buffer(devices, info, self.memory_properties)
         self.buffer = VulkanBufferResource(devices.logical_device.vk_device, vk_buffer, vk_device_memory)
         self.buffer.bind()
-
-    def _resolve_devices(self) -> VulkanDevices | None:
-        if self.devices is not None:
-            return self.devices
-        return None
 
     def _ensure_created(self) -> None:
         return
@@ -311,34 +370,8 @@ class VulkanBufferObject(AbstractBuffer):
         frame_sync = getattr(current_window, "frame_sync", None) if current_window else None
 
         if removal and frame_sync:
-            fences = getattr(frame_sync, "fences", None) or []
-            if fences:
-                logical_device = getattr(frame_sync, "device", None)
-                vk_device = getattr(logical_device, "vk_device", None) if logical_device else None
-                get_fence_status = getattr(logical_device, "vkGetFenceStatus", None) if logical_device else None
-                pending_fences = []
-                for fence in fences:
-                    if not fence:
-                        continue
-                    try:
-                        status = get_fence_status(vk_device, fence)
-                    except Exception:
-                        pending_fences.append(fence)
-                        continue
-                    if status != VK_SUCCESS:
-                        pending_fences.append(fence)
-
-                if pending_fences:
-                    removal.queue_fences(old_resource, tuple(pending_fences), False)
-                    return
-
-            # Timeline fallback: host-wait until the last submitted value is complete.
-            if getattr(frame_sync, "timeline_enabled", False):
-                timeline_value = getattr(frame_sync, "timeline_value", 0)
-                if timeline_value:
-                    frame_sync._wait_timeline(timeline_value)
-                    old_resource.delete()
-                    return
+            removal.queue_frame_sync(old_resource, frame_sync, False)
+            return
 
         old_resource.delete()
 
@@ -448,7 +481,32 @@ class MappedBufferObject(VulkanBufferObject, BaseMappedBufferObject):
     def set_data(self, data: Sequence[int | float] | ctypes.Array[Any], start: int = 0) -> None:
         self.set_data_region(start, data)
 
-    def set_data_region(self, start: int, data: Sequence[int | float] | ctypes.Array[Any]) -> None:
+    def set_data_region(
+        self,
+        start: int | Sequence[int | float] | ctypes.Array[Any] | CTypesPointer,
+        data: Sequence[int | float] | ctypes.Array[Any] | int,
+        length: int | None = None,
+    ) -> None:
+        if length is not None:
+            raw_data = start
+            byte_offset = int(data)
+            if hasattr(raw_data, "contents"):
+                self.set_bytes_region(byte_offset, ctypes.string_at(raw_data, length))
+                cache_clear = getattr(self.get_region, "cache_clear", None)
+                if cache_clear:
+                    cache_clear()
+                return
+
+            raw = bytes(raw_data)
+            assert len(raw) >= length, f"Insufficient data length. Expected at least {length} bytes, got {len(raw)}."
+            self.set_bytes_region(byte_offset, raw[:length])
+            cache_clear = getattr(self.get_region, "cache_clear", None)
+            if cache_clear:
+                cache_clear()
+            return
+
+        assert isinstance(start, int)
+        assert not isinstance(data, int)
         elements = len(data)
         if elements == 0:
             return
@@ -666,65 +724,99 @@ class VulkanUniformBufferObject(UniformBufferObject):
     binding: int
     layout_binding: VkDescriptorSetLayoutBinding | None
     _live_ubos: ClassVar[weakref.WeakSet] = weakref.WeakSet()
-    __slots__ = ("_context", "_pending_upload", "layout_binding")
+    __slots__ = (
+        "_context",
+        "_current_binding",
+        "frame_states",
+        "frame_stride",
+        "frames_in_flight",
+        "layout_binding",
+        "minimum_alignment",
+    )
 
     def __init__(
         self,
-        context: Any,
+        context: VulkanSurfaceContext,
         view_class: type[Structure],
         buffer_size: int,
         binding: int,
+        *,
+        alignment: int | None = None,
+        copies_per_resource: int = 3,
+        strict: bool = False,
         layout_binding: VkDescriptorSetLayoutBinding | None = None,
     ) -> None:
         self._context = context
-        self._pending_upload = False
-        super().__init__(context, view_class, buffer_size, binding)
+        self._require_context_devices(getattr(self._context, "devices", None))
+        self.minimum_alignment = max(1, self._context.info.MAX_UNIFORM_BUFFER_OFFSET_ALIGNMENT)
+        requested_alignment = (
+            self.minimum_alignment if alignment is None else max(int(alignment), self.minimum_alignment)
+        )
+        self.frames_in_flight = self._context.frames_in_flight
+        self.frame_stride = _align_up(buffer_size, requested_alignment)
+        super().__init__(
+            context,
+            view_class,
+            buffer_size,
+            binding,
+            alignment=requested_alignment,
+            copies_per_resource=copies_per_resource,
+            strict=strict,
+        )
+        self._current_binding = BufferBindingSlice(offset=0, size=self.range_size)
+        self.frame_states = [
+            UniformFrameState(
+                slice=BufferSlice(self.buffer, frame_index * self.frame_stride, self.range_size),
+                descriptor_set=None,
+                uploaded_version=-1,
+            )
+            for frame_index in range(self.frames_in_flight)
+        ]
         self.layout_binding = layout_binding
         self._live_ubos.add(self)
 
-    def _resolve_devices(self):
-        for candidate in (
-            getattr(self._context, "devices", None),
-            getattr(getattr(pyglet.graphics.api, "core", None), "devices", None),
-        ):
-            if candidate is not None and _devices_ready(candidate):
-                return candidate
-
-        core = getattr(pyglet.graphics.api, "core", None)
-        if core is not None:
-            try:
-                current_ctx = core.current_context
-            except Exception:
-                current_ctx = None
-            devices = getattr(current_ctx, "devices", None)
-            if _devices_ready(devices):
-                return devices
-        return None
+    @staticmethod
+    def _require_context_devices(devices: VulkanDevices | None) -> VulkanDevices:
+        assert devices is not None, "Vulkan context must have devices."
+        logical_device = getattr(devices, "logical_device", None)
+        assert logical_device is not None, "Vulkan devices must have a logical_device."
+        assert getattr(logical_device, "vk_device", None) is not None, "Vulkan logical_device must have vk_device."
+        assert hasattr(logical_device, "vkCreateBuffer"), "Vulkan logical_device must expose vkCreateBuffer."
+        return devices
 
     def _ensure_buffer_created(self) -> None:
         if self.buffer is None:
-            print("No Bfer")
             return
         if self.buffer.buffer is not None and self.buffer.devices is not None:
-            self._flush_pending_upload()
             return
-        devices = self._resolve_devices()
-        if devices is not None and self.buffer.buffer is None:
+        devices = self._require_context_devices(getattr(self._context, "devices", None))
+        if self.buffer.buffer is None:
             self.buffer.create(devices)
-            self._flush_pending_upload()
 
-    def _flush_pending_upload(self) -> None:
-        if not self._pending_upload:
-            return
-        if self.buffer is None or self.buffer.buffer is None:
-            return
-        self.buffer.set_data_ptr(0, ctypes.sizeof(self.view), self._view_ptr)
-        self._pending_upload = False
-
-    def _create_buffer(self, context: VulkanGlobal, buffer_size: int) -> UniformBuffer:
-        buffer = UniformBuffer("b", buffer_size)
+    def _create_buffer(self, context: VulkanSurfaceContext | VulkanGlobal, buffer_size: int) -> UniformBuffer:
+        initial_size = max(buffer_size, self.frame_stride * self.frames_in_flight)
+        buffer = UniformBuffer("b", initial_size)
         buffer.create(context.devices)
         return buffer
+
+    def _bind_range(self, binding: int, offset: int, size: int) -> None:
+        self._current_binding = BufferBindingSlice(offset=offset, size=size)
+
+    def get_descriptor_binding_slice(self, _frame_index: int = 0) -> BufferBindingSlice:
+        return self._current_binding
+
+    def get_frame_slice(self, frame_index: int) -> BufferSlice:
+        binding = self.get_descriptor_binding_slice(frame_index)
+        return BufferSlice(self.buffer, binding.offset, binding.size)
+
+    def upload_if_needed(self, _frame_index: int = 0) -> bool:
+        return True
+
+    def set_frame_descriptor_set(self, _descriptor_set: VkDescriptorSet, _frame_index: int) -> None:
+        return
+
+    def use_range(self, _range: BufferRange) -> None:
+        return
 
     def delete(self) -> None:
         type(self)._live_ubos.discard(self)
@@ -762,10 +854,8 @@ class VulkanUniformBufferObject(UniformBufferObject):
         self._ensure_buffer_created()
         return self.buffer.get_bytes()
 
-    def __exit__(self, _exc_type, _exc_val, _exc_tb) -> None:  # noqa: ANN001
-        self._pending_upload = True
-        self._ensure_buffer_created()
-        self._flush_pending_upload()
-
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(id={self.id}, binding={self.binding})"
+        return (
+            f"{self.__class__.__name__}(id={self.id}, binding={self.binding}, size={self.size}, "
+            f"range_size={self.range_size}, range_stride={self.range_stride})"
+        )

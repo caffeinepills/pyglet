@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import pyglet
 from pyglet.graphics import Group
 from pyglet.graphics.api.vulkan.instance import WindowBlock
-from pyglet.graphics.shader import Attribute, Sampler
+from pyglet.graphics.shader import Attribute, SampledTextureBinding
 
 _is_pyglet_doc_run = hasattr(sys, 'is_pyglet_doc_run') and sys.is_pyglet_doc_run
 
@@ -41,7 +41,7 @@ def get_default_shader() -> VulkanShaderProgram:
                 Attribute("rotation", location=5, components=1, data_type="f"),
             )
             program.set_uniform_blocks(WindowBlock)
-            program.set_samplers(Sampler("sprite_texture", desc_set=0, binding=2))
+            program.set_sampled_textures(SampledTextureBinding("sprite_texture", desc_set=0, binding=2))
 
         program.set_attribute_format("colors", data_type="B", normalize=True)
         return program

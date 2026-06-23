@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 
 import pyglet
-from pyglet.enums import GeometryMode
+from pyglet.enums import GeometryMode, GraphicsAPI
 
 window = pyglet.window.Window(width=540, height=540, resizable=True)
 
@@ -19,7 +19,6 @@ _vertex_source: str = """#version 330 core
     in vec3 position;
     in vec3 translate;
     in vec4 colors;
-    in vec3 tex_coords;
     out vec4 vertex_colors;
 
     uniform WindowBlock
@@ -41,6 +40,31 @@ _vertex_source: str = """#version 330 core
     }
 """
 
+_vulkan_vertex_source: str = """#version 450 core
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 translate;
+layout(location = 2) in vec4 colors;
+
+layout(location = 0) out vec4 vertex_colors;
+
+layout(set = 0, binding = 0) uniform WindowBlock
+{
+    mat4 projection;
+    mat4 view;
+} window;
+
+void main()
+{
+    mat4 m_translate = mat4(1.0);
+    m_translate[3][0] = translate.x;
+    m_translate[3][1] = translate.y;
+    m_translate[3][2] = translate.z;
+
+    gl_Position = window.projection * window.view * m_translate * vec4(position, 1.0);
+    vertex_colors = colors;
+}
+"""
+
 _fragment_source: str = """#version 330 core
     in vec4 vertex_colors;
     out vec4 final_colors;
@@ -51,8 +75,25 @@ _fragment_source: str = """#version 330 core
     }
 """
 
-program = pyglet.graphics.ShaderProgram(pyglet.graphics.Shader(_vertex_source, "vertex"),
-                                        pyglet.graphics.Shader(_fragment_source, "fragment"))
+_vulkan_fragment_source: str = """#version 450 core
+layout(location = 0) in vec4 vertex_colors;
+layout(location = 0) out vec4 final_colors;
+
+void main()
+{
+    final_colors = vertex_colors;
+}
+"""
+
+if pyglet.options.backend == GraphicsAPI.VULKAN:
+    vertex_source = _vulkan_vertex_source
+    fragment_source = _vulkan_fragment_source
+else:
+    vertex_source = _vertex_source
+    fragment_source = _fragment_source
+
+program = pyglet.graphics.ShaderProgram(pyglet.graphics.Shader(vertex_source, "vertex"),
+                                        pyglet.graphics.Shader(fragment_source, "fragment"))
 
 
 def _get_quad_vertices(size: int) -> list[int]:

@@ -75,5 +75,6 @@ class VulkanInfo(SurfaceInfo):
         self.MAX_UNIFORM_BUFFER_BINDINGS = int(limits.maxPerStageDescriptorUniformBuffers)
         self.MAX_UNIFORM_BLOCK_SIZE = int(limits.maxUniformBufferRange)
         self.MAX_VERTEX_ATTRIBS = int(limits.maxVertexInputAttributes)
+        self.MAX_UNIFORM_BUFFER_OFFSET_ALIGNMENT = int(limits.minUniformBufferOffsetAlignment)
 
         self.was_queried = True

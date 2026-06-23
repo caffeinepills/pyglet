@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import ctypes
+import os
+import weakref
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import pyglet
 from pyglet.config import VulkanUserConfig
 from pyglet.graphics.api.base import (
     BackendGlobalObject,
+    FrameContext,
+    FrameResourceManager,
     SurfaceContext,
-    UBOMatrixTransformations,
     NullContext,
 )
 from pyglet.graphics.api.vulkan import DeviceFunc
@@ -18,9 +22,10 @@ from pyglet.graphics.api.vulkan.devices import VulkanDevices
 from pyglet.graphics.api.vulkan.vk_info import VulkanInfo
 from pyglet.graphics.api.vulkan.pipeline import GraphicsPipelineManager
 from pyglet.graphics.api.vulkan.renderpass import RenderPass, RenderPassManager
+from pyglet.graphics.api.vulkan.renderer import VulkanRenderer
 from pyglet.graphics.shader import Shader, ShaderProgram
 from pyglet.graphics.api.vulkan.swapchain import VulkanOffscreenSwapchain, VulkanSwapchain
-from pyglet.graphics.api.vulkan.sync import DeferredResourceRemoval, FrameSync
+from pyglet.graphics.api.vulkan.sync import DeferredResourceRemoval, create_frame_sync, FrameSync
 from pyglet.libs.shared.vulkan_lib import InstanceFunc, c_array_list, set_instance_functions, vulkan_core
 from pyglet.libs.shared.vulkan_lib.func_helpers import (
     CreateInstance,
@@ -70,68 +75,6 @@ if TYPE_CHECKING:
 
 _debug_api = pyglet.options.debug_api
 
-
-class VulkanMatrices(UBOMatrixTransformations):
-    # Create a default ShaderProgram, so the Window instance can
-    # update the `WindowBlock` UBO shared by all default shaders.
-
-    def __init__(self, window: Window, backend: VulkanGlobal):
-
-        self._default_program = pyglet.graphics.get_default_shader()
-        if "WindowBlock" not in self._default_program.uniform_blocks:
-            self._default_program.set_uniform_blocks(WindowBlock)
-        self.ubo = self._default_program.uniform_blocks["WindowBlock"].create_ubo()
-
-        # Change to work with this:
-        #self.ubo = self._default_program.uniform_blocks['WindowBlock'].create_ubo()
-
-        self._viewport = (0, 0, *window.get_framebuffer_size())
-
-        width, height = window.get_size()
-
-        super().__init__(window, Mat4.orthogonal_projection(0, width, 0, height, -255, 255), Mat4(), Mat4())
-
-        with self.ubo as ubo_data:
-            ubo_data.projection = tuple(self._projection)
-            ubo_data.view = tuple(self._view)
-
-        # with self.ubo as window_block:
-        #     window_block.view[:] = self._view
-        #     window_block.projection[:] = self._projection
-        #     #window_block.model[:] = self._model
-
-    @property
-    def projection(self) -> Mat4:
-        return self._projection
-
-    @projection.setter
-    def projection(self, projection: Mat4):
-        #with self.ubo as window_block:
-        #    window_block.projection[:] = projection
-
-        self._projection = projection
-
-    @property
-    def view(self) -> Mat4:
-        return self._view
-
-    @view.setter
-    def view(self, view: Mat4):
-        #with self.ubo as window_block:
-        #    window_block.view[:] = view
-
-        self._view = view
-
-    @property
-    def model(self) -> Mat4:
-        return self._model
-
-    @model.setter
-    def model(self, model: Mat4):
-        #with self.ubo as window_block:
-        #    window_block.model[:] = model
-
-        self._model = model
 
 
 class VulkanSurface:
@@ -260,14 +203,68 @@ class WindowBlock(UniformBlockDesc):
     )
 
 
-class VulkanSurfaceContext(SurfaceContext):
-    frame_sync: FrameSync | None
+@dataclass
+class VulkanFrameContext:
+    """Vulkan data scoped to one reusable frame slot."""
+
+    context: VulkanSurfaceContext
+    command_buffer_id: int | None = None
+    command_buffer: Any | None = None
+    recording: bool = False
+    clear_claimed: bool = False
+
+    def reset_for_frame(self) -> None:
+        self.command_buffer = None
+        self.recording = False
+        self.clear_claimed = False
+
+    def begin_primary_command_buffer(self) -> tuple[CommandBuffer, bool]:
+        context = self.context
+        frame_sync = context.frame_sync
+        if frame_sync is None:
+            msg = "Frame synchronization is not available while recording Vulkan frame commands."
+            raise RuntimeError(msg)
+
+        if self.command_buffer_id is None:
+            self.command_buffer_id = context.default_cb_id
+
+        frame_sync.queue_command_buffer_for_submit(self.command_buffer_id)
+        should_clear = not self.clear_claimed
+        self.clear_claimed = True
+
+        command_buffer = frame_sync.get_current_command_buffer(self.command_buffer_id)
+        if not self.recording:
+            command_buffer.reset()
+            command_buffer.begin()
+            self.recording = True
+
+        self.command_buffer = command_buffer.command_buffer
+        return command_buffer, should_clear
+
+    def end_primary_command_buffer(self) -> None:
+        if not self.recording:
+            return
+
+        context = self.context
+        assert self.command_buffer_id is not None
+        command_buffer = context.frame_sync.get_current_command_buffer(self.command_buffer_id)
+        command_buffer.end()
+        self.command_buffer = None
+        self.recording = False
+
+
+
+class VulkanSurfaceContext(SurfaceContext[VulkanFrameContext]):
+    frame_sync: FrameSync
     core: VulkanGlobal
     swapchain: VulkanSwapchain | VulkanOffscreenSwapchain | None
+    frame_resources: FrameResourceManager[VulkanFrameContext]
+
     def __init__(self, global_ctx: VulkanGlobal, window: Window, config: VulkanSurfaceConfig, devices: VulkanDevices) -> None:
         self.devices = devices
         self.instance = global_ctx.instance
-        super().__init__(global_ctx, window, config)
+        super().__init__(global_ctx, window, config, frames_in_flight=NUM_FRAMES_IN_FLIGHT)
+        self.renderer = VulkanRenderer(self)
         self._info = VulkanInfo()
 
         self.surface = None
@@ -276,7 +273,6 @@ class VulkanSurfaceContext(SurfaceContext):
         self.descriptor_pool = None
         self.pipeline = None
         self.command_buffers = None
-        self.frame_sync = None
         self.vkAcquireNextImageKHR = None
         self.vkQueuePresentKHR = None
 
@@ -293,6 +289,8 @@ class VulkanSurfaceContext(SurfaceContext):
         self.logical_device = self.devices.logical_device
         self.core.command_pool.create()
         self._info.query(self)
+
+        assert self.logical_device is not None
 
         if self.logical_device.supports_presentation():
             # Swapchain and image views.
@@ -318,21 +316,30 @@ class VulkanSurfaceContext(SurfaceContext):
             self.logical_device,
             (self.swapchain.surface_format.format,),
             offscreen=not self.logical_device.supports_presentation(),
+            clear_on_load=False,
         )
 
         # Framebuffers
         self.swapchain.create_framebuffers(self.renderpass)
 
         # Frame Syncing
-        self.frame_sync = FrameSync(
+        self.core.descriptor_mgr.create_pool(NUM_FRAMES_IN_FLIGHT, max_sets=20)
+        self.frame_sync = create_frame_sync(
             self.logical_device,
             self.swapchain,
-            self.core.descriptor_mgr,
             CommandPool(self.logical_device),
             NUM_FRAMES_IN_FLIGHT,
         )
 
         self.default_cb_id = 0
+
+    def create_backend_frame_context(self, _slot_index: int) -> VulkanFrameContext:
+        return VulkanFrameContext(self)
+
+    @property
+    def frame_context(self) -> FrameContext[VulkanFrameContext]:
+        """Active Vulkan frame-local data for this context."""
+        return self.frame_resources.active_slot
 
     def set_clear_color(self, r: float, g: float, b: float, a: float) -> None:
         self.clear_color = (r, g, b, a)
@@ -369,45 +376,54 @@ class VulkanSurfaceContext(SurfaceContext):
         # Process deferred resource removal.
         self.core.resource_removal.process()
 
-    def _record_command_buffer(self, command_buffer: CommandBuffer, image_index: int):
-        with command_buffer as vk_command_buffer:
-            render_area = VkRect2D(offset=VkOffset2D(x=0, y=0),
-                                   extent=self.swapchain.extent)
-            color = VkClearColorValue(float32=(ctypes.c_float * 4)(*self.clear_color))
-            clear_value = VkClearValue(color=color)
-
-            cb_array = c_array_list([clear_value], VkClearValue)
-
-            render_pass_begin_create = VkRenderPassBeginInfo(
-                sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                renderPass=self.renderpass.vk_renderpass,
-                framebuffer=self.swapchain.framebuffers[image_index],
-                renderArea=render_area,
-                clearValueCount=1,
-                pClearValues=cb_array)
-
-            self.logical_device.vkCmdBeginRenderPass(vk_command_buffer, render_pass_begin_create, VK_SUBPASS_CONTENTS_INLINE)
-            self.logical_device.vkCmdEndRenderPass(vk_command_buffer)
-
-    def before_draw(self):
+    def frame_begin(self):
         self.set_current()
-        if not self.frame_sync:
+        super().frame_begin()
+        ready = self.frame_sync.frame_begin(self.frame_index)
+        if not ready:
+            self._frame_active = False
             return False
-        return self.frame_sync.before_draw()
 
-    def flip(self):
-        if self.frame_sync:
-            self.frame_sync.flip()
+        if ready:
+            frame_backend_ctx = self.frame_context.backend_ctx
+            frame_backend_ctx.reset_for_frame()
+        return ready
+
+    def frame_submit(self) -> None:
+        self.frame_context.backend_ctx.end_primary_command_buffer()
+        super().frame_submit()
+
+    def create_frame_fence(self):
+        """Return a borrowed Vulkan frame completion token for the active frame slot."""
+        return self.frame_sync.get_current_frame_completion()
+
+    def poll_frame_fence(self, fence) -> bool:
+        """Return whether a borrowed Vulkan frame completion token has completed."""
+        return self.frame_sync.is_frame_complete(fence)
+
+    def wait_frame_fence(self, fence) -> None:
+        """Wait for a borrowed Vulkan frame completion token to complete."""
+        self.frame_sync.wait_for_frame_completion(fence)
+
+    def delete_frame_fence(self, fence) -> None:
+        """Release a borrowed Vulkan frame completion token.
+
+        The token does not own the underlying Vulkan fence or semaphore; those
+        are reused and destroyed by ``FrameSync``.
+        """
+        self.frame_sync.release_frame_completion(fence)
+
+    def present(self):
+        if self.frame_active:
+            self.frame_submit()
+        self.frame_sync.present()
 
     def delete(self):
         if self.logical_device and self.logical_device.vk_device:
             self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
             self.core.resource_removal.process()
 
-        matrices = getattr(self.window, "_matrices", None)
-        if matrices and getattr(matrices, "ubo", None):
-            matrices.ubo.delete()
-            matrices.ubo = None
+        self.frame_resources.delete()
 
         if self.swapchain:
             self.swapchain.delete()
@@ -695,8 +711,24 @@ class VulkanGlobal(BackendGlobalObject):
     def post_init(self) -> None:
         pass
 
-    def initialize_matrices(self, window: Window) -> VulkanMatrices:
-        return VulkanMatrices(window, self)
+    @staticmethod
+    def load_package_shader(package, resource_name):
+        """Reads a binary resource from the given package or subpackage without external dependencies.
+
+        Args:
+            package: The full package path (e.g., 'pyglet.graphics.api.vulkan.shaders').
+            resource_name: The resource filename (e.g., 'primitives.vert.spv').
+
+        Returns:
+            The binary contents of the resource.
+        """
+        # Dynamically resolve the package's directory
+        package_path = os.path.dirname(__import__(package, fromlist=['']).__file__)
+        resource_path = os.path.join(package_path, resource_name)
+
+        # Read the file in binary mode
+        with open(resource_path, 'rb') as file:
+            return file.read()
 
     def set_viewport(self, window, x: int, y: int, width: int, height: int) -> None:
         pass

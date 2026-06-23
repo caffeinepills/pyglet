@@ -96,6 +96,7 @@ class VertexList:
         draw_ctx = DrawContext(
             surface_ctx=self.domain._context,
             backend_ctx=None,
+            frame_context=self.domain._context.frame_context,
             draw_pass=BatchDrawOptions().resolve(self.domain._context),
             renderer=self.domain._context.renderer,
         )

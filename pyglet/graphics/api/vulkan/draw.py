@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 
+import contextlib
 import weakref
-from typing import Callable, Sequence, Any, TYPE_CHECKING, ClassVar
+from dataclasses import dataclass
+from typing import Callable, Generator, Sequence, Any, TYPE_CHECKING, ClassVar
 from ctypes import byref, c_float
 import pyglet
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VkRenderPassBeginInfo, \
     VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VkOffset2D, VkRect2D, VkClearColorValue, VkClearValue, \
-    VK_SUBPASS_CONTENTS_INLINE
+    VkClearAttachment, VkClearRect, VK_SUBPASS_CONTENTS_INLINE, VK_IMAGE_ASPECT_COLOR_BIT
 
-from pyglet.graphics.draw import _DomainKey, Batch, Group
+from pyglet.graphics.draw import _DomainKey, Batch, BatchDrawOptions, DrawContext, Group
 from pyglet.graphics.shader import Attribute
 from pyglet.graphics.api.vulkan.state import DescriptorResourceState
 from pyglet.graphics.api.vulkan import vertexdomain, c_array_list, DeviceFunc
@@ -17,11 +19,18 @@ from pyglet.graphics.api.vulkan import vertexdomain, c_array_list, DeviceFunc
 _debug_graphics_batch = pyglet.options.debug_graphics_batch
 
 if TYPE_CHECKING:
+    from pyglet.graphics.api.vulkan.buffer import VulkanUniformBufferObject
     from pyglet.graphics.api.vulkan.vertexdomain import VertexList, IndexedVertexList
     from pyglet.graphics.api.vulkan.pipeline import GraphicsPipeline
-    from pyglet.graphics.api.vulkan.descriptor import DescriptorSetObject, DescriptorSetLayoutsKey
+    from pyglet.graphics.api.vulkan.descriptor import (
+        DescriptorSetObject,
+        DescriptorSetLayoutsKey,
+        DescriptorResourceKey,
+        DescriptorSetBindingGroup,
+    )
     from pyglet.graphics import GeometryMode
     from pyglet.graphics.api.gl2.shader import ShaderProgram
+    from pyglet.graphics.api.vulkan.instance import VulkanSurfaceContext, VulkanFrameContext
 
 
 
@@ -142,7 +151,31 @@ _callable_states = {
 
 
 def get_group_resource_states(group: Group):
-    return [state for state in group._states if isinstance(state, DescriptorResourceState)]
+    states = getattr(group, "states", getattr(group, "_states", ()))
+    return [state for state in states if isinstance(state, DescriptorResourceState)]
+
+
+def get_window_camera_ubo(window) -> VulkanUniformBufferObject | None:
+    matrices = getattr(window, "_matrices", None)
+    window_ubo = getattr(matrices, "ubo", None)
+    if window_ubo is not None:
+        return window_ubo
+
+    camera = getattr(window, "default_camera", None)
+    storage = getattr(camera, "view_storage", None)
+    return getattr(storage, "_ubo", None)
+
+
+@dataclass
+class VulkanBackendDrawContext:
+    """Temporary Vulkan draw data."""
+
+    frame_ctx: VulkanFrameContext
+
+    @property
+    def command_buffer(self):
+        return self.frame_ctx.command_buffer
+
 
 class VulkanBatch(Batch):
     """Manage a collection of drawables for batched rendering.
@@ -171,26 +204,42 @@ class VulkanBatch(Batch):
     a custom drawable, get your vertex domains from the given batch instead of
     setting them up yourself.
     """
+    _context: VulkanSurfaceContext
     _draw_list: list[Callable]
+    _context: VulkanSurfaceContext
     top_groups: list[Group]
     group_children: dict[Group, list[Group]]
     group_map: dict[Group, dict[_DomainKey, vertexdomain.VertexDomain]]
     _live_batches: ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
-    def __init__(self) -> None:
+    def __init__(self, context: VulkanSurfaceContext | None = None, initial_count: int = 32) -> None:
         """Create a graphics batch."""
         # Mapping to find domain.
         # group -> (attributes, mode, indexed) -> domain
-        super().__init__()
+        resolved_context = context or pyglet.graphics.api.core.current_window
+        super().__init__(resolved_context, initial_count)
         self.pipelines = []
 
-        # Context this batch was created in.
-        self._window_ctx = pyglet.graphics.api.core.current_window
         self._devices = pyglet.graphics.api.core.devices
         self.pipeline_mgr = pyglet.graphics.api.core.pipeline_mgr
         self.descriptor_mgr = pyglet.graphics.api.core.descriptor_mgr
         self._instance_count = 0
         self._live_batches.add(self)
+
+    def _create_backend_draw_context(self) -> VulkanBackendDrawContext:
+        return VulkanBackendDrawContext(self._context.frame_context.backend_ctx)
+
+    def _create_draw_context(
+        self,
+        draw_pass: BatchDrawOptions,
+    ) -> DrawContext[VulkanSurfaceContext, VulkanBackendDrawContext]:
+        return DrawContext(
+            surface_ctx=self._context,
+            backend_ctx=self._create_backend_draw_context(),
+            frame_context=self._context.frame_context,
+            draw_pass=draw_pass.resolve(self._context),
+            renderer=self._context.renderer,
+        )
 
     def delete(self) -> None:
         type(self)._live_batches.discard(self)
@@ -314,7 +363,7 @@ class VulkanBatch(Batch):
             domain = domain_map[key]
         except KeyError:
             # Create domain
-            domain = _domain_class_map[(indexed, instanced)](self._window_ctx, self.initial_count, attributes)
+            domain = _domain_class_map[(indexed, instanced)](self._context, self.initial_count, attributes)
             domain_map[key] = domain
             self._draw_list_dirty = True
 
@@ -334,65 +383,120 @@ class VulkanBatch(Batch):
         group._assigned_batches.add(self)  # noqa: SLF001
         self._draw_list_dirty = True
 
-    def _bind_program_uniform_blocks(self, descriptor_set: DescriptorSetObject, pipeline: GraphicsPipeline) -> None:
+    def _get_program_uniform_bindings(
+        self,
+        pipeline: GraphicsPipeline,
+    ) -> list[tuple[VulkanUniformBufferObject, int, int]]:
         program = pipeline.program
-        matrices = getattr(self._window_ctx.window, "_matrices", None)
-        window_ubo = getattr(matrices, "ubo", None)
+        window_ubo = get_window_camera_ubo(self._context.window)
+        uniform_bindings: list[tuple[VulkanUniformBufferObject, int, int]] = []
 
         for block_name, uniform_block in program.uniform_blocks.items():
             if block_name == "WindowBlock":
                 if window_ubo is not None:
-                    descriptor_set.bind_ubo(window_ubo, uniform_block.binding, uniform_block.index)
+                    uniform_bindings.append((window_ubo, uniform_block.binding, uniform_block.index))
                 continue
 
             ubo = program.ubo.get(block_name)
             if ubo is not None:
-                descriptor_set.bind_ubo(ubo, uniform_block.binding, uniform_block.index)
+                uniform_bindings.append((ubo, uniform_block.binding, uniform_block.index))
 
-    def _update_draw_list(self) -> None:
+        return uniform_bindings
+
+    @staticmethod
+    def _upload_uniform_bindings_if_needed(
+        uniform_bindings: Sequence[tuple[VulkanUniformBufferObject, int, int]],
+        frame_index: int,
+    ) -> None:
+        for ubo, _, _ in uniform_bindings:
+            ubo.upload_if_needed(frame_index)
+
+    @staticmethod
+    def _build_descriptor_binding_group(
+        descriptor_sets: Sequence[DescriptorSetObject],
+        frame_index: int,
+    ) -> DescriptorSetBindingGroup | None:
+        from pyglet.graphics.api.vulkan.descriptor import DescriptorSetBindingGroup
+
+        merged_sets: list[Any] = []
+        device = None
+        for descriptor_set in descriptor_sets:
+            device = descriptor_set.device
+            merged_sets.extend(descriptor_set.get_frame_descriptor_sets(frame_index))
+
+        if not merged_sets or device is None:
+            return None
+
+        return DescriptorSetBindingGroup.from_descriptor_sets(device, merged_sets)
+
+    @staticmethod
+    def _clear_color_attachment(
+        command_buffer,
+        render_area: VkRect2D,
+        clear_value: VkClearValue,
+    ) -> None:
+        clear_attachment = VkClearAttachment(
+            aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
+            colorAttachment=0,
+            clearValue=clear_value,
+        )
+        clear_rect = VkClearRect(
+            rect=render_area,
+            baseArrayLayer=0,
+            layerCount=1,
+        )
+        clear_attachments = c_array_list([clear_attachment], VkClearAttachment)
+        clear_rects = c_array_list([clear_rect], VkClearRect)
+        DeviceFunc.vkCmdClearAttachments(command_buffer, 1, clear_attachments, 1, clear_rects)
+
+    def _update_draw_list(self, draw_ctx: DrawContext) -> None:
         """Visit group tree in preorder and create a list of bound methods to call."""
         current_pipeline: GraphicsPipeline | None = None
-        current_desc_set: DescriptorSetObject | None = None
-        current_descriptor_key: tuple[DescriptorSetLayoutsKey, tuple[DescriptorResourceState, ...]] | None = None
+        current_desc_sets: tuple[DescriptorSetObject, ...] = ()
+        current_desc_binding: DescriptorSetBindingGroup | None = None
+        current_descriptor_key: tuple[
+            DescriptorSetLayoutsKey,
+            tuple[DescriptorResourceKey, ...],
+            int,
+        ] | None = None
 
-        frame_sync = self._window_ctx.frame_sync
-
-        current_cb = frame_sync.get_current_command_buffer(self._window_ctx.default_cb_id)
-        current_cb.reset()
+        frame_sync = self._context.frame_sync
+        current_cb, should_clear = self._context.frame_context.backend_ctx.begin_primary_command_buffer()
 
         vk_command_buffer = current_cb.command_buffer
 
         render_area = VkRect2D(offset=VkOffset2D(x=0, y=0),
-                               extent=self._window_ctx.swapchain.extent)
-        color = VkClearColorValue(float32=(c_float * 4)(*self._window_ctx.clear_color))
+                               extent=self._context.swapchain.extent)
+        color = VkClearColorValue(float32=(c_float * 4)(*draw_ctx.draw_pass.clear_color))
         clear_value = VkClearValue(color=color)
-
-        cb_array = c_array_list([clear_value], VkClearValue)
 
         render_pass_begin_create = VkRenderPassBeginInfo(
             sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            renderPass=self._window_ctx.renderpass.vk_renderpass,
-            framebuffer=self._window_ctx.swapchain.framebuffers[frame_sync.current_image_index()],
+            renderPass=self._context.renderpass.vk_renderpass,
+            framebuffer=self._context.swapchain.framebuffers[frame_sync.current_image_index()],
             renderArea=render_area,
-            clearValueCount=1,
-            pClearValues=cb_array,
+            clearValueCount=0,
+            pClearValues=None,
         )
 
-        current_cb.begin()
-
         DeviceFunc.vkCmdBeginRenderPass(vk_command_buffer, byref(render_pass_begin_create), VK_SUBPASS_CONTENTS_INLINE)
+        if should_clear:
+            self._clear_color_attachment(vk_command_buffer, render_area, clear_value)
+
+        draw_ctx.begin()
 
         def set_default_scissor() -> None:
             rect = VkRect2D(
                 offset=VkOffset2D(x=0, y=0),
-                extent=self._window_ctx.swapchain.extent,
+                extent=self._context.swapchain.extent,
             )
             rects = c_array_list([rect], VkRect2D)
             DeviceFunc.vkCmdSetScissor(vk_command_buffer, 0, 1, rects)
 
         def visit(group: Group) -> list:
             nonlocal current_pipeline
-            nonlocal current_desc_set
+            nonlocal current_desc_sets
+            nonlocal current_desc_binding
             nonlocal current_descriptor_key
 
             draw_list = []
@@ -412,10 +516,10 @@ class VulkanBatch(Batch):
                 set_default_scissor()
 
                 pipeline = self.pipeline_mgr.get_pipeline_from_group(group,
-                                                                     self._window_ctx.renderpass,
+                                                                     self._context.renderpass,
                                                                      mode,
-                                                                     self._window_ctx.window.width,
-                                                                     self._window_ctx.window.height,
+                                                                     self._context.window.width,
+                                                                     self._context.window.height,
                                                                      domain)
                 pipeline_changed = current_pipeline is not pipeline
                 if pipeline_changed:
@@ -425,39 +529,51 @@ class VulkanBatch(Batch):
                     current_pipeline = pipeline
 
                 group_resources = tuple(get_group_resource_states(group))
+                uniform_bindings = self._get_program_uniform_bindings(pipeline)
                 descriptor_set_layouts_info = pipeline.descriptor_set_layouts_info
                 assert descriptor_set_layouts_info is not None
-                descriptor_key = (descriptor_set_layouts_info.key, group_resources)
+                frame_index = self._context.active_frame
+                self._upload_uniform_bindings_if_needed(uniform_bindings, frame_index)
+                descriptor_resources = self.descriptor_mgr.build_resource_keys(
+                    group_resources,
+                    uniform_bindings,
+                    frame_index,
+                )
+                descriptor_key = (
+                    descriptor_set_layouts_info.key,
+                    descriptor_resources,
+                    frame_index,
+                )
                 descriptor_changed = current_descriptor_key != descriptor_key
 
                 if descriptor_changed:
                     if descriptor_set_layouts_info.layouts:
                         # Get or create the descriptor set
-                        current_desc_set = self.descriptor_mgr.get_descriptor_sets(
+                        descriptor_set = self.descriptor_mgr.get_descriptor_sets(
                             descriptor_set_layouts_info,
                             list(group_resources),
-                            owner=self._window_ctx,
+                            uniform_bindings=uniform_bindings,
+                            resources=descriptor_resources,
+                            frame_index=frame_index,
+                            owner=self._context,
                         )
+                        current_desc_sets = (descriptor_set,)
                     else:
-                        current_desc_set = None
+                        current_desc_sets = ()
+                        current_desc_binding = None
                     current_descriptor_key = descriptor_key
 
-                if current_desc_set and (descriptor_changed or pipeline_changed):
-                    # Bind first so DescriptorSetObject.current_frame matches the frame being recorded.
-                    current_desc_set.bind_to_pipeline(
-                        vk_command_buffer,
-                        current_pipeline.pipeline_layout,
-                        frame_sync.current_frame,
+                if current_desc_sets and (descriptor_changed or pipeline_changed):
+                    current_desc_binding = self._build_descriptor_binding_group(
+                        current_desc_sets,
+                        frame_index,
                     )
-                    self._bind_program_uniform_blocks(current_desc_set, pipeline)
+                    if current_desc_binding is not None:
+                        current_desc_binding.bind(vk_command_buffer, current_pipeline.pipeline_layout)
 
-                if current_desc_set and descriptor_changed:
-                    for state in group_resources:
-                        state.write_descriptor(current_desc_set)
-
-                for state in group._states:
+                for state in getattr(group, "states", getattr(group, "_states", ())):
                     if state.sets_state:
-                        state.set_state(self._window_ctx)
+                        state.set_state(draw_ctx)
 
                 pipeline.push_constants(vk_command_buffer, 0)
 
@@ -511,8 +627,6 @@ class VulkanBatch(Batch):
 
         DeviceFunc.vkCmdEndRenderPass(vk_command_buffer)
 
-        current_cb.end()
-
     def _dump_draw_list(self) -> None:
         def dump(group: Group, indent: str = '') -> None:
             print(indent, 'Begin group', group)
@@ -539,12 +653,23 @@ class VulkanBatch(Batch):
 
     def draw(self) -> None:
         """Draw the batch."""
+        draw_ctx = self._create_draw_context(BatchDrawOptions())
         if self._draw_list_dirty:
-            self._update_draw_list()
+            self._update_draw_list(draw_ctx)
 
         #for func in self._draw_list:
             #print("FUNC!", func)
             #func()
+
+    @contextlib.contextmanager
+    def draw_with_options(self) -> Generator[BatchDrawOptions, Any, None]:
+        draw_options = BatchDrawOptions()
+        try:
+            yield draw_options
+        finally:
+            draw_ctx = self._create_draw_context(draw_options)
+            if self._draw_list_dirty:
+                self._update_draw_list(draw_ctx)
 
     def draw_subset(self, vertex_lists: Sequence[VertexList | IndexedVertexList]) -> None:
         """Draw only some vertex lists in the batch.
@@ -565,48 +690,55 @@ class VulkanBatch(Batch):
         if not vertex_lists:
             return
 
+        draw_ctx = self._create_draw_context(BatchDrawOptions())
+
         selected_by_domain: dict[Any, list[VertexList | IndexedVertexList]] = {}
         for vertex_list in vertex_lists:
             selected_by_domain.setdefault(vertex_list.domain, []).append(vertex_list)
 
         current_pipeline: GraphicsPipeline | None = None
-        current_desc_set: DescriptorSetObject | None = None
-        current_descriptor_key: tuple[DescriptorSetLayoutsKey, tuple[DescriptorResourceState, ...]] | None = None
+        current_desc_sets: tuple[DescriptorSetObject, ...] = ()
+        current_desc_binding: DescriptorSetBindingGroup | None = None
+        current_descriptor_key: tuple[
+            DescriptorSetLayoutsKey,
+            tuple[DescriptorResourceKey, ...],
+            int,
+        ] | None = None
 
-        frame_sync = self._window_ctx.frame_sync
-
-        current_cb = frame_sync.get_current_command_buffer(self._window_ctx.default_cb_id)
-        current_cb.reset()
+        frame_sync = self._context.frame_sync
+        current_cb, should_clear = self._context.frame_context.backend_ctx.begin_primary_command_buffer()
         vk_command_buffer = current_cb.command_buffer
 
-        render_area = VkRect2D(offset=VkOffset2D(x=0, y=0), extent=self._window_ctx.swapchain.extent)
-        color = VkClearColorValue(float32=(c_float * 4)(*self._window_ctx.clear_color))
+        render_area = VkRect2D(offset=VkOffset2D(x=0, y=0), extent=self._context.swapchain.extent)
+        color = VkClearColorValue(float32=(c_float * 4)(*draw_ctx.draw_pass.clear_color))
         clear_value = VkClearValue(color=color)
-        cb_array = c_array_list([clear_value], VkClearValue)
-
         render_pass_begin_create = VkRenderPassBeginInfo(
             sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            renderPass=self._window_ctx.renderpass.vk_renderpass,
-            framebuffer=self._window_ctx.swapchain.framebuffers[frame_sync.current_image_index()],
+            renderPass=self._context.renderpass.vk_renderpass,
+            framebuffer=self._context.swapchain.framebuffers[frame_sync.current_image_index()],
             renderArea=render_area,
-            clearValueCount=1,
-            pClearValues=cb_array,
+            clearValueCount=0,
+            pClearValues=None,
         )
 
-        current_cb.begin()
         DeviceFunc.vkCmdBeginRenderPass(vk_command_buffer, byref(render_pass_begin_create), VK_SUBPASS_CONTENTS_INLINE)
+        if should_clear:
+            self._clear_color_attachment(vk_command_buffer, render_area, clear_value)
+
+        draw_ctx.begin()
 
         def set_default_scissor() -> None:
             rect = VkRect2D(
                 offset=VkOffset2D(x=0, y=0),
-                extent=self._window_ctx.swapchain.extent,
+                extent=self._context.swapchain.extent,
             )
             rects = c_array_list([rect], VkRect2D)
             DeviceFunc.vkCmdSetScissor(vk_command_buffer, 0, 1, rects)
 
         def visit(group: Group) -> None:
             nonlocal current_pipeline
-            nonlocal current_desc_set
+            nonlocal current_desc_sets
+            nonlocal current_desc_binding
             nonlocal current_descriptor_key
 
             domain_map = self.group_map[group]
@@ -624,10 +756,10 @@ class VulkanBatch(Batch):
 
                 pipeline = self.pipeline_mgr.get_pipeline_from_group(
                     group,
-                    self._window_ctx.renderpass,
+                    self._context.renderpass,
                     mode,
-                    self._window_ctx.window.width,
-                    self._window_ctx.window.height,
+                    self._context.window.width,
+                    self._context.window.height,
                     domain,
                 )
                 pipeline_changed = current_pipeline is not pipeline
@@ -636,37 +768,50 @@ class VulkanBatch(Batch):
                     current_pipeline = pipeline
 
                 group_resources = tuple(get_group_resource_states(group))
+                uniform_bindings = self._get_program_uniform_bindings(pipeline)
                 descriptor_set_layouts_info = pipeline.descriptor_set_layouts_info
                 assert descriptor_set_layouts_info is not None
-                descriptor_key = (descriptor_set_layouts_info.key, group_resources)
+                frame_index = self._context.active_frame
+                self._upload_uniform_bindings_if_needed(uniform_bindings, frame_index)
+                descriptor_resources = self.descriptor_mgr.build_resource_keys(
+                    group_resources,
+                    uniform_bindings,
+                    frame_index,
+                )
+                descriptor_key = (
+                    descriptor_set_layouts_info.key,
+                    descriptor_resources,
+                    frame_index,
+                )
                 descriptor_changed = current_descriptor_key != descriptor_key
 
                 if descriptor_changed:
                     if descriptor_set_layouts_info.layouts:
-                        current_desc_set = self.descriptor_mgr.get_descriptor_sets(
+                        descriptor_set = self.descriptor_mgr.get_descriptor_sets(
                             descriptor_set_layouts_info,
                             list(group_resources),
-                            owner=self._window_ctx,
+                            uniform_bindings=uniform_bindings,
+                            resources=descriptor_resources,
+                            frame_index=frame_index,
+                            owner=self._context,
                         )
+                        current_desc_sets = (descriptor_set,)
                     else:
-                        current_desc_set = None
+                        current_desc_sets = ()
+                        current_desc_binding = None
                     current_descriptor_key = descriptor_key
 
-                if current_desc_set and (descriptor_changed or pipeline_changed):
-                    current_desc_set.bind_to_pipeline(
-                        vk_command_buffer,
-                        current_pipeline.pipeline_layout,
-                        frame_sync.current_frame,
+                if current_desc_sets and (descriptor_changed or pipeline_changed):
+                    current_desc_binding = self._build_descriptor_binding_group(
+                        current_desc_sets,
+                        frame_index,
                     )
-                    self._bind_program_uniform_blocks(current_desc_set, pipeline)
+                    if current_desc_binding is not None:
+                        current_desc_binding.bind(vk_command_buffer, current_pipeline.pipeline_layout)
 
-                if current_desc_set and descriptor_changed:
-                    for state in group_resources:
-                        state.write_descriptor(current_desc_set)
-
-                for state in group._states:
+                for state in getattr(group, "states", getattr(group, "_states", ())):
                     if state.sets_state:
-                        state.set_state(self._window_ctx)
+                        state.set_state(draw_ctx)
 
                 pipeline.push_constants(vk_command_buffer, 0)
 
@@ -686,6 +831,5 @@ class VulkanBatch(Batch):
                 visit(top_group)
 
         DeviceFunc.vkCmdEndRenderPass(vk_command_buffer)
-        current_cb.end()
 
 

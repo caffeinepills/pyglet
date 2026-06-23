@@ -1,6 +1,7 @@
 """This is a simple example that visually confirms """
 
 import pyglet
+pyglet.options.backend = "opengl"
 from pyglet.enums import GeometryMode
 
 window = pyglet.window.Window(width=540, height=540, resizable=True)
@@ -47,15 +48,15 @@ sprites = [pyglet.sprite.Sprite(img=img, x=60, y=80, batch=batch),
            pyglet.sprite.Sprite(img=img, x=110, y=90, batch=batch),
            pyglet.sprite.Sprite(img=img, x=160, y=100, batch=batch),
            pyglet.sprite.Sprite(img=img, x=210, y=110, batch=batch)]
-for sprite in sprites:
-    sprite.opacity = 220
-
-# sprite2 = pyglet.sprite.Sprite(img=red, x=200, y=400, batch=batch)
-# sprite3 = pyglet.sprite.Sprite(img=green, x=300, y=300, batch=batch)
-# sprite4 = pyglet.sprite.Sprite(img=blue, x=400, y=200, batch=batch)
-# sprite5 = pyglet.sprite.Sprite(img=white, x=500, y=100, batch=batch)
-
-standalone_sprite = pyglet.sprite.Sprite(img=white, x=400, y=0)
+# for sprite in sprites:
+#     sprite.opacity = 220
+#
+# # sprite2 = pyglet.sprite.Sprite(img=red, x=200, y=400, batch=batch)
+# # sprite3 = pyglet.sprite.Sprite(img=green, x=300, y=300, batch=batch)
+# # sprite4 = pyglet.sprite.Sprite(img=blue, x=400, y=200, batch=batch)
+# # sprite5 = pyglet.sprite.Sprite(img=white, x=500, y=100, batch=batch)
+#
+# standalone_sprite = pyglet.sprite.Sprite(img=white, x=400, y=0)
 
 
 ##########################################################
@@ -76,9 +77,9 @@ def on_draw():
     window.clear()
     #vertex_list.draw(GeometryMode.TRIANGLES)
     batch.draw()
-    standalone_sprite.draw()
+    #standalone_sprite.draw()
 
-
+#
 def update(dt):
     for spr in sprites:
         spr.rotation += 100 * dt % 360
