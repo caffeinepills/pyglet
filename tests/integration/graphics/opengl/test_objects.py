@@ -5,7 +5,10 @@ import pytest
 import pyglet
 from pyglet.graphics.shader import MissingAttributeException
 
-from tests.annotations import GraphicsAPIGroups
+from tests.annotations import GraphicsAPIGroups, require_graphics_api
+
+
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3 + GraphicsAPIGroups.GL2)
 
 
 _SPRITE_LAYOUT_A = {
