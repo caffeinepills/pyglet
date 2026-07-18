@@ -111,12 +111,24 @@ def _align_up(value: int, alignment: int) -> int:
 
 
 class VulkanBufferResource:
-    __slots__ = ("vk_buffer", "vk_device", "vk_device_memory")
+    __slots__ = ("__weakref__", "vk_buffer", "vk_device", "vk_device_memory")
 
-    def __init__(self, vk_device: VkDevice, vk_buffer: VkBuffer, vk_device_memory: VkDeviceMemory) -> None:
+    _live_resources: ClassVar[weakref.WeakSet[VulkanBufferResource]] = weakref.WeakSet()
+
+    def __init__(
+        self,
+        vk_device: VkDevice,
+        vk_buffer: VkBuffer,
+        vk_device_memory: VkDeviceMemory,
+    ) -> None:
         self.vk_device = vk_device
         self.vk_buffer = vk_buffer
         self.vk_device_memory = vk_device_memory
+        type(self)._live_resources.add(self)
+
+    @classmethod
+    def _untrack_resource(cls, resource: VulkanBufferResource) -> None:
+        cls._live_resources.discard(resource)
 
     def bind(self) -> None:
         DeviceFunc.vkBindBufferMemory(self.vk_device, self.vk_buffer, self.vk_device_memory, 0)
@@ -129,6 +141,12 @@ class VulkanBufferResource:
         self.vk_buffer = None
         self.vk_device_memory = None
         self.vk_device = None
+        type(self)._untrack_resource(self)
+
+    @classmethod
+    def delete_live_resources(cls) -> None:
+        for resource in tuple(cls._live_resources):
+            resource.delete()
 
     def __repr__(self) -> str:
         vk_hex = hex(self.vk_buffer.value) if self.vk_buffer and self.vk_buffer.value else "0x0"
@@ -229,7 +247,11 @@ class VulkanBufferObject(AbstractBuffer):
         self.devices = devices
         info = self.get_info(self.size, self.usage, self.sharing_mode)
         vk_buffer, vk_device_memory = self.create_buffer(devices, info, self.memory_properties)
-        self.buffer = VulkanBufferResource(devices.logical_device.vk_device, vk_buffer, vk_device_memory)
+        self.buffer = VulkanBufferResource(
+            devices.logical_device.vk_device,
+            vk_buffer,
+            vk_device_memory,
+        )
         self.buffer.bind()
 
     def _ensure_created(self) -> None:
@@ -540,7 +562,13 @@ class UniformBuffer(MappedBufferObject):
         ),
         sharing_mode: VkSharingMode = VK_SHARING_MODE_EXCLUSIVE,
     ) -> None:
-        super().__init__(data_type, size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, memory_properties, sharing_mode)
+        super().__init__(
+            data_type,
+            size,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            memory_properties,
+            sharing_mode,
+        )
 
 
 class BackedBufferObject(MappedBufferObject):

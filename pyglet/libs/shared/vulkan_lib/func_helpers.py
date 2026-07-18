@@ -89,7 +89,6 @@ def GetPhysicalDeviceQueueFamilyProperties(physicalDevice: VkPhysicalDevice) -> 
     pQueueFamilyProperties = (VkQueueFamilyProperties * pQueueFamilyPropertyCount.value)()
     InstanceFunc.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, byref(pQueueFamilyPropertyCount), pQueueFamilyProperties)
 
-    print(list(pQueueFamilyProperties))
     return list(pQueueFamilyProperties)
 
 def GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR) -> VkSurfaceCapabilitiesKHR:

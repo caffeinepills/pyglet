@@ -16,7 +16,10 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_PIPELINE_STAGE_COLOR_AT
     VkSubmitInfo, VK_STRUCTURE_TYPE_SUBMIT_INFO, VkSwapchainKHR, VkPresentInfoKHR, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, \
     UINT64_MAX, VK_SUCCESS, VkSemaphoreTypeCreateInfo, VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, \
     VK_SEMAPHORE_TYPE_TIMELINE, VkTimelineSemaphoreSubmitInfo, VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, \
-    VkSemaphoreWaitInfo, VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, VK_NULL_HANDLE
+    VkSemaphoreWaitInfo, VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, VK_NULL_HANDLE, \
+    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, \
+    VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, \
+    VK_QUEUE_FAMILY_IGNORED, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VkImageMemoryBarrier, VkImageSubresourceRange
 
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.swapchain import VulkanOffscreenSwapchain, VulkanSwapchain
@@ -95,17 +98,46 @@ class DeferredResourceRemoval:
 
     def delete(self):
         """Clear all pending on API cleanup."""
-        while self.pending_fences:
-            resource, fences, destroy = self.pending_fences.pop()
+        self.drain(wait=False)
+
+    @staticmethod
+    def _resource_owned_by(resource, owner) -> bool:
+        if owner is None:
+            return True
+        return getattr(resource, "owner_context", None) is owner
+
+    def _wait_for_fences(self, fences: tuple[VkFence, ...]) -> None:
+        if not fences:
+            return
+        fence_array = c_array_list(list(fences), VkFence)
+        self.device.vkWaitForFences(self.device.vk_device, len(fences), fence_array, VK_TRUE, UINT64_MAX)
+
+    def drain(self, wait: bool = False, owner=None) -> None:
+        """Destroy pending resources, optionally limiting to one owner context."""
+        for resource, fences, destroy in list(self.pending_fences):
+            if not self._resource_owned_by(resource, owner):
+                continue
+            if wait:
+                self._wait_for_fences(fences)
             if destroy:
                 for fence in fences:
                     self.device.vkDestroyFence(self.device.vk_device, fence, None)
             resource.delete()
-        while self.pending_timeline:
-            resource, semaphore, _value, destroy, _wait_fallback = self.pending_timeline.pop()
+            self.pending_fences.remove((resource, fences, destroy))
+
+        for resource, semaphore, target_value, destroy, wait_fallback in list(self.pending_timeline):
+            if not self._resource_owned_by(resource, owner):
+                continue
+            if wait and callable(wait_fallback):
+                wait_fallback()
             if destroy and semaphore:
                 self.device.vkDestroySemaphore(self.device.vk_device, semaphore, None)
             resource.delete()
+            self.pending_timeline.remove((resource, semaphore, target_value, destroy, wait_fallback))
+
+    def drain_context(self, context, wait: bool = False) -> None:
+        """Destroy pending resources owned by one surface context."""
+        self.drain(wait=wait, owner=context)
 
     def process(self):
         for resource, fences, destroy in list(self.pending_fences):
@@ -459,6 +491,10 @@ class _FrameSyncBase:
         submit_ids = self.submit_command_buffer_ids[self.current_frame]
         frame_commands = self.command_buffers[self.current_frame]
         command_wrappers = [frame_commands[cmd_id] for cmd_id in submit_ids if cmd_id in frame_commands]
+        if not command_wrappers and not self.offscreen:
+            command_wrapper = self._prepare_present_layout_transition(image_idx)
+            if command_wrapper is not None:
+                command_wrappers.append(command_wrapper)
         command_count = len(command_wrappers)
         cmd_buffers = c_array_list([cb.command_buffer for cb in command_wrappers], VkCommandBuffer) if command_count else None
 
@@ -483,6 +519,10 @@ class _FrameSyncBase:
                   1, submit_array, queue_fence)
 
         self._on_submit_complete(image_idx, timeline_signal_value)
+        if not self.offscreen:
+            image_layouts = getattr(self.swapchain, "image_layouts", None)
+            if image_layouts is not None and image_idx < len(image_layouts):
+                image_layouts[image_idx] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
 
         if self.offscreen:
             self.last_presented_image_index = image_idx
@@ -511,25 +551,82 @@ class _FrameSyncBase:
         self._has_acquired_image = False
         return True
 
-    def __del__(self) -> None:
-        self.delete()
+    def _prepare_present_layout_transition(self, image_idx: int) -> CommandBuffer | None:
+        """Record a present-layout transition for an acquired image when no render pass ran."""
+        image_layouts = self.swapchain.image_layouts
+        old_layout = VK_IMAGE_LAYOUT_UNDEFINED
+        if image_layouts is not None and image_idx < len(image_layouts):
+            old_layout = image_layouts[image_idx]
+
+        if old_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            return None
+
+        command_wrapper = self.command_buffers[self.current_frame].get(0)
+        if command_wrapper is None:
+            self.get_command_buffer()
+            command_wrapper = self.command_buffers[self.current_frame][self.counter - 1]
+
+        command_wrapper.reset()
+        command_wrapper.begin()
+        barrier = VkImageMemoryBarrier(
+            sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT if old_layout != VK_IMAGE_LAYOUT_UNDEFINED else 0,
+            dstAccessMask=0,
+            oldLayout=old_layout,
+            newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+            image=self.swapchain.swapchain_images[image_idx],
+            subresourceRange=VkImageSubresourceRange(
+                aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel=0,
+                levelCount=1,
+                baseArrayLayer=0,
+                layerCount=1,
+            ),
+        )
+        barrier_array = c_array_list([barrier], VkImageMemoryBarrier)
+        DeviceFunc.vkCmdPipelineBarrier(
+            command_wrapper.command_buffer,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            0,
+            0,
+            None,
+            0,
+            None,
+            1,
+            barrier_array,
+        )
+        command_wrapper.end()
+        return command_wrapper
 
     def delete(self) -> None:
-        for semaphore in self.image_available_semaphores:
-            self.device.vkDestroySemaphore(self.device.vk_device, semaphore, None)
+        device = self.device
+        vk_device = device.vk_device
+
+        if vk_device:
+            for semaphore in self.image_available_semaphores:
+                device.vkDestroySemaphore(vk_device, semaphore, None)
         self.image_available_semaphores.clear()
 
-        for semaphore in self.render_finished_semaphores:
-            self.device.vkDestroySemaphore(self.device.vk_device, semaphore, None)
+        if vk_device:
+            for semaphore in self.render_finished_semaphores:
+                device.vkDestroySemaphore(vk_device, semaphore, None)
         self.render_finished_semaphores.clear()
 
-        self._destroy_sync_primitives()
+        if vk_device:
+            self._destroy_sync_primitives()
+        else:
+            self.fences.clear()
+            self.timeline_semaphore = None
 
         if self.command_pool:
             self.command_pool.delete()
             self.command_pool = None
             self.command_buffers.clear()
             self.submit_command_buffer_ids.clear()
+        self.device = None
 
 
 class FrameSyncBinary(_FrameSyncBase):

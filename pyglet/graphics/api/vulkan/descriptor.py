@@ -344,19 +344,24 @@ class DescriptorPool:
         return pool
 
     def __del__(self) -> None:
-        self.delete()
+        try:
+            self.delete()
+        except Exception:
+            pass
 
     def delete(self) -> None:
         """Destroy the descriptor pool, and all descriptor sets it has created."""
-        for pool in self._pools:
-            self.device.vkDestroyDescriptorPool(self.device.vk_device, pool.vk_descriptor_pool, None)
+        vk_device = getattr(self.device, "vk_device", None) if self.device is not None else None
+        if vk_device:
+            for pool in self._pools:
+                self.device.vkDestroyDescriptorPool(vk_device, pool.vk_descriptor_pool, None)
         self._pools.clear()
         self.vk_descriptor_pool = None
         self.frames_in_flight = 0
         self.max_sets = 0
         self.flags = 0
         self.pool_sizes.clear()
-        print("Destroyed Descriptor Pool")
+        self.device = None
 
 
 class DescriptorSetLayoutCache:
@@ -736,10 +741,14 @@ class DescriptorManager:
         )
 
     def delete(self) -> None:
-        self.layout_cache.delete()
-        self.descriptor_pool.delete()
+        if self.layout_cache:
+            self.layout_cache.delete()
+        if self.descriptor_pool:
+            self.descriptor_pool.delete()
         self.frames_in_flight = 0
         self.descriptor_set_cache.clear()
+        self.layout_cache = None
+        self.descriptor_pool = None
 
 
 @dataclass(slots=True)

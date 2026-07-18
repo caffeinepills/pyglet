@@ -339,9 +339,6 @@ class VulkanLogicalDevice:
         return (queue_family_graphics_index, queue_family_present_index, queue_family_transfer_index,
                 queue_family_compute_index)
 
-    def __del__(self) -> None:
-        self.delete()
-
     def delete(self) -> None:
         """Clean up the Vulkan device and release resources.
 

@@ -420,25 +420,21 @@ class VulkanSurfaceContext(SurfaceContext[VulkanFrameContext]):
             self.frame_submit()
         self.frame_sync.present()
 
-    def delete(self):
-        print("-------DELETING CONTEXT")
-        self._deleting = True
+    def _wait_idle(self) -> None:
         if self.logical_device and self.logical_device.vk_device:
             self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
-            self.core.resource_removal.drain(wait=False)
+
+    def delete(self):
+        self.core.set_current_context(self)
+        self._wait_idle()
+        self.core.resource_removal.process()
 
         from pyglet.graphics.api.vulkan.draw import VulkanBatch  # noqa: PLC0415
 
         VulkanBatch._delete_context_instances(self)  # noqa: SLF001
-        if self.logical_device and self.logical_device.vk_device:
-            self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
-            self.core.resource_removal.drain(wait=False)
-
-        self.core.resource_removal.drain(wait=True)
+        self._wait_idle()
 
         self.frame_resources.delete()
-
-        print("END")
 
         if self.swapchain:
             self.swapchain.delete()
@@ -849,7 +845,7 @@ class VulkanGlobal(BackendGlobalObject):
     def _delete_tracked_resources() -> None:
         """Delete internally tracked Vulkan resources prior to manager teardown."""
         # To prevent any possible circular imports.
-        from pyglet.graphics.api.vulkan.buffer import VulkanBufferResource, VulkanUniformBufferObject  # noqa: PLC0415
+        from pyglet.graphics.api.vulkan.buffer import VulkanUniformBufferObject  # noqa: PLC0415
         from pyglet.graphics.api.vulkan.draw import VulkanBatch  # noqa: PLC0415
         from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram  # noqa: PLC0415
         from pyglet.graphics.api.vulkan.texture import VulkanTexture, VulkanSampler  # noqa: PLC0415
@@ -859,38 +855,46 @@ class VulkanGlobal(BackendGlobalObject):
         VulkanShaderProgram._delete_tracked_instances()  # noqa: SLF001
         VulkanTexture._delete_tracked_instances()  # noqa: SLF001
         VulkanSampler._delete_tracked_shared_samplers()  # noqa: SLF001
-        VulkanBufferResource.delete_live_resources()  # noqa: SLF001
-        print("DELETED IT")
-
-    def __del__(self):
-        self.delete()
 
     def delete(self):
-        self._deleting = True
-        self.wait_idle()
-        print("SAY WHAT")
-        self._delete_tracked_resources()
+        logical_device = getattr(self.devices, "logical_device", None)
+        vk_device = getattr(logical_device, "vk_device", None) if logical_device is not None else None
 
-        """Initialize a full cleanup."""
+        if vk_device:
+            self.wait_idle()
+
         for window in self.windows.values():
             window.delete()
         self.windows.clear()
 
+        if vk_device:
+            self._delete_tracked_resources()
 
         # Shader programs are deleted by _delete_tracked_resources().
         self.cached_programs.clear()
 
-        self.resource_removal.drain(wait=True)
+        if self.resource_removal and vk_device:
+            self.resource_removal.drain(wait=False)
 
-        self.pipeline_mgr.delete()
-        self.descriptor_mgr.delete()
-        self.command_pool.delete()
+        if self.pipeline_mgr and vk_device:
+            self.pipeline_mgr.delete()
+        self.pipeline_mgr = None
+
+        if self.descriptor_mgr and vk_device:
+            self.descriptor_mgr.delete()
+        self.descriptor_mgr = None
+
+        if self.command_pool and vk_device:
+            self.command_pool.delete()
+        self.command_pool = None
+        self.resource_removal = None
 
         # Finally destroy the logical device after everything is cleaned up.
-        if self.devices.logical_device:
-            self.devices.logical_device.delete()
+        if logical_device:
+            logical_device.delete()
             self.devices.logical_device = None
 
-        self.instance.delete()
-
+        if self.instance:
+            self.instance.delete()
+            self.instance = None
 

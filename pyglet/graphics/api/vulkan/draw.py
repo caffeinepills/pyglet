@@ -269,7 +269,6 @@ class VulkanBatch(Batch):
         for batch in tuple(cls._live_batches):
             if batch._context is context:
                 batch.delete()
-                print("DELETING BATCH", batch)
 
     def invalidate(self) -> None:
         """Force the batch to update the draw list.
@@ -672,8 +671,9 @@ class VulkanBatch(Batch):
     def draw(self) -> None:
         """Draw the batch."""
         draw_ctx = self._create_draw_context(BatchDrawOptions())
-        if self._draw_list_dirty:
-            self._update_draw_list(draw_ctx)
+        # Vulkan command buffers capture the current swapchain framebuffer.
+        # Re-record each draw so the commands target the image acquired for this frame.
+        self._update_draw_list(draw_ctx)
 
         #for func in self._draw_list:
             #print("FUNC!", func)
@@ -686,8 +686,9 @@ class VulkanBatch(Batch):
             yield draw_options
         finally:
             draw_ctx = self._create_draw_context(draw_options)
-            if self._draw_list_dirty:
-                self._update_draw_list(draw_ctx)
+            # Vulkan command buffers capture the current swapchain framebuffer.
+            # Re-record each draw so the commands target the image acquired for this frame.
+            self._update_draw_list(draw_ctx)
 
     def draw_subset(self, vertex_lists: Sequence[VertexList | IndexedVertexList]) -> None:
         """Draw only some vertex lists in the batch.

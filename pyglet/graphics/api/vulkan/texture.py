@@ -215,74 +215,83 @@ class VulkanImage(Texture):
             data_size = image_data.width * image_data.height * len(image_data.format)
             data = image_data.get_bytes(None, pitch)
 
+
+        owns_staging_buffer = staging_buffer is None
         # TODO: Change to support others.
-        if not staging_buffer:
+        if owns_staging_buffer:
             staging_buffer = StagingBufferObject(data_size)
             staging_buffer.create(self.devices)
 
-        staging_buffer.set_data_as_type(data, ctypes.c_ubyte)
+        command_buffers = None
+        try:
+            staging_buffer.set_data_as_type(data, ctypes.c_ubyte)
 
-        # TODO: Make command pools more accessible somewhere?
-        pool = pyglet.graphics.api.core.command_pool
+            # TODO: Make command pools more accessible somewhere?
+            pool = pyglet.graphics.api.core.command_pool
 
-        command_buffers = pool.get_single_use(1)
+            command_buffers = pool.get_single_use(1)
 
-        DeviceFunc.vkDeviceWaitIdle(self.devices.logical_device.vk_device)
+            DeviceFunc.vkDeviceWaitIdle(self.devices.logical_device.vk_device)
 
-        with command_buffers[0] as vk_command_buffer:
-            # Ensure image is done being read from pipeline/shader before transitioning.
-            self.transition_layout(vk_command_buffer,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                   VK_ACCESS_SHADER_READ_BIT if self._current_layout != VK_IMAGE_LAYOUT_UNDEFINED else 0,
-                                   VK_ACCESS_TRANSFER_WRITE_BIT,
-                                   VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                   VK_PIPELINE_STAGE_TRANSFER_BIT,
-            )
+            with command_buffers[0] as vk_command_buffer:
+                # Ensure image is done being read from pipeline/shader before transitioning.
+                self.transition_layout(vk_command_buffer,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       VK_ACCESS_SHADER_READ_BIT if self._current_layout != VK_IMAGE_LAYOUT_UNDEFINED else 0,
+                                       VK_ACCESS_TRANSFER_WRITE_BIT,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
+                )
 
-            if self.tex_type == TextureType.TYPE_2D_ARRAY:
-                base_array_layer = z
-                image_z = 0
-            elif self.tex_type == TextureType.TYPE_3D:
-                base_array_layer = 0
-                image_z = z
-            else:
-                base_array_layer = 0
-                image_z = z
+                if self.tex_type == TextureType.TYPE_2D_ARRAY:
+                    base_array_layer = z
+                    image_z = 0
+                elif self.tex_type == TextureType.TYPE_3D:
+                    base_array_layer = 0
+                    image_z = z
+                else:
+                    base_array_layer = 0
+                    image_z = z
 
-            # Copy buffer to image.
-            region = VkBufferImageCopy(
-                bufferOffset=0,
-                bufferRowLength=0,
-                bufferImageHeight=0,
-                imageSubresource=VkImageSubresourceLayers(
-                    aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
-                    mipLevel=0,
-                    baseArrayLayer=base_array_layer,
-                    layerCount=1,
-                ),
-                imageOffset=VkOffset3D(x, y, image_z),
-                imageExtent=VkExtent3D(width=image_data.width, height=image_data.height, depth=1),
-            )
+                # Copy buffer to image.
+                region = VkBufferImageCopy(
+                    bufferOffset=0,
+                    bufferRowLength=0,
+                    bufferImageHeight=0,
+                    imageSubresource=VkImageSubresourceLayers(
+                        aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel=0,
+                        baseArrayLayer=base_array_layer,
+                        layerCount=1,
+                    ),
+                    imageOffset=VkOffset3D(x, y, image_z),
+                    imageExtent=VkExtent3D(width=image_data.width, height=image_data.height, depth=1),
+                )
 
-            regions = [region]
-            region_array = c_array_list(regions, VkBufferImageCopy)
+                regions = [region]
+                region_array = c_array_list(regions, VkBufferImageCopy)
 
-            DeviceFunc.vkCmdCopyBufferToImage(vk_command_buffer,
-                                              staging_buffer.buffer.vk_buffer,
-                                              self.vk_image,
-                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                              1,
-                                              region_array)
+                DeviceFunc.vkCmdCopyBufferToImage(vk_command_buffer,
+                                                  staging_buffer.buffer.vk_buffer,
+                                                  self.vk_image,
+                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                  1,
+                                                  region_array)
 
-            # Make it accessible by a shader again.
-            self.transition_layout(
-                vk_command_buffer,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_ACCESS_SHADER_READ_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            )
+                # Make it accessible by a shader again.
+                self.transition_layout(
+                    vk_command_buffer,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                )
+        finally:
+            if command_buffers is not None:
+                pool.free(command_buffers)
+            if owns_staging_buffer:
+                staging_buffer.delete()
 
     def upload_data(self, image_data: ImageData, staging_buffer: StagingBufferObject | None = None, offset: int = 0):
         self.upload_data_region(image_data, 0, 0, 0, staging_buffer, offset)

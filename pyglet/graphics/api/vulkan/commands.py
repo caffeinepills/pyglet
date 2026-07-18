@@ -270,7 +270,11 @@ class CommandPool:
 
         Buffers get freed with the pool.
         """
-        if self.command_pool:
-            self.device.vkDestroyCommandPool(self.device.vk_device, self.command_pool, None)
+        vk_device = getattr(self.device, "vk_device", None) if self.device is not None else None
+        if self.command_pool and vk_device:
+            self.device.vkDestroyCommandPool(vk_device, self.command_pool, None)
             self.command_pool = None
-            self.command_buffers.clear()
+        elif self.command_pool:
+            self.command_pool = None
+        self.device = None
+        self.command_buffers.clear()

@@ -41,13 +41,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkSurfaceFormatKHR,
     VkSurfaceCapabilitiesKHR,
     VkImage,
-    VkImageMemoryBarrier,
-    VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
     VK_IMAGE_LAYOUT_UNDEFINED,
-    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-    VK_QUEUE_FAMILY_IGNORED,
 )
 
 if TYPE_CHECKING:
@@ -68,6 +62,7 @@ class VulkanSwapchain:
     window: Window
     image_views: list[VkImageView]
     framebuffers: list[VkFramebuffer]
+    image_layouts: list[int]
     surface_format: VkSurfaceFormatKHR | None
     present_mode: int | None
     extent: VkExtent2D | None
@@ -89,6 +84,7 @@ class VulkanSwapchain:
 
         self.image_views = []
         self.framebuffers = []
+        self.image_layouts = []
 
         self.surface_format = None  # Set during swapchain creation
         self.present_mode = None  # Set during swapchain creation
@@ -100,7 +96,6 @@ class VulkanSwapchain:
 
         self.create_swapchain()
         self.create_image_views()
-        self._initialize_swapchain_image_layouts()
 
     def recreate(self, width: int, height: int, renderpass: RenderPass) -> None:
         if width != self.width or height != self.height:
@@ -111,55 +106,7 @@ class VulkanSwapchain:
 
             self.create_swapchain()
             self.create_image_views()
-            self._initialize_swapchain_image_layouts()
             self.create_framebuffers(renderpass)
-
-    def _initialize_swapchain_image_layouts(self) -> None:
-        if not self.swapchain_images:
-            return
-
-        pool = self.instance.command_pool
-        command_buffer = pool.get_single_use(1)[0]
-
-        try:
-            with command_buffer as vk_command_buffer:
-                barriers = [
-                    VkImageMemoryBarrier(
-                        sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                        srcAccessMask=0,
-                        dstAccessMask=0,
-                        oldLayout=VK_IMAGE_LAYOUT_UNDEFINED,
-                        newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                        srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
-                        dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
-                        image=image,
-                        subresourceRange=VkImageSubresourceRange(
-                            aspectMask=VK_IMAGE_ASPECT_COLOR_BIT,
-                            baseMipLevel=0,
-                            levelCount=1,
-                            baseArrayLayer=0,
-                            layerCount=1,
-                        ),
-                    )
-                    for image in self.swapchain_images
-                ]
-
-                if barriers:
-                    barrier_array = c_array_list(barriers, VkImageMemoryBarrier)
-                    DeviceFunc.vkCmdPipelineBarrier(
-                        vk_command_buffer,
-                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                        0,
-                        0,
-                        None,
-                        0,
-                        None,
-                        len(barriers),
-                        barrier_array,
-                    )
-        finally:
-            pool.free([command_buffer])
 
     def create_framebuffers(self, renderpass: RenderPass) -> None:
         """Create framebuffers for each image view."""
@@ -180,8 +127,6 @@ class VulkanSwapchain:
             framebuffer = VkFramebuffer()
             DeviceFunc.vkCreateFramebuffer(self.logical.vk_device, byref(framebuffer_create), None, byref(framebuffer))
             self.framebuffers.append(framebuffer)
-
-        print("FRAME BUFFERS", self.framebuffers)
 
     def create_swapchain(self) -> None:
         surface_capabilities = GetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -232,6 +177,7 @@ class VulkanSwapchain:
             raise Exception(result)
 
         self.swapchain_images = GetSwapchainImagesKHR(self.logical.vk_device, self.swapchain)
+        self.image_layouts = [VK_IMAGE_LAYOUT_UNDEFINED] * len(self.swapchain_images)
 
     @staticmethod
     def choose_surface_format(formats: list[VkSurfaceFormatKHR]) -> VkSurfaceFormatKHR:
@@ -298,6 +244,8 @@ class VulkanSwapchain:
         if self.swapchain:
             DeviceFunc.vkDestroySwapchainKHR(self.logical.vk_device, self.swapchain, None)
             self.swapchain = None
+        self.swapchain_images.clear()
+        self.image_layouts.clear()
 
 
 class VulkanOffscreenSwapchain:
