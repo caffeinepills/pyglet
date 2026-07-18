@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass, field
 import sys
-from typing import Generic, Iterator, Literal, Protocol, Sequence, TYPE_CHECKING, TypeVar, overload
+from typing import Any, Generic, Iterator, Literal, Protocol, Sequence, TYPE_CHECKING, TypeVar, overload
 
 import pyglet
 from pyglet.enums import AddressMode, ComponentFormat, TextureFilter, TextureType, GraphicsAPI
+from pyglet.event import EventDispatcher
+from pyglet.graphics.buffer import PixelPackBuffer, PixelUnpackBuffer
 from pyglet.image.base import (
     _AbstractImage,
     _AbstractImageSequence,
@@ -29,6 +33,7 @@ class TextureArrayDepthExceeded(ImageException):
 
 
 TTexture = TypeVar("TTexture", bound="Texture")
+TPixelBuffer = TypeVar("TPixelBuffer", bound=PixelPackBuffer | PixelUnpackBuffer)
 
 
 class TextureSequence(_AbstractImageSequence, Generic[TTexture]):
@@ -68,6 +73,253 @@ class TextureSequence(_AbstractImageSequence, Generic[TTexture]):
 
     def get_texture_sequence(self) -> TextureSequence[TTexture]:
         return self
+
+
+@dataclass
+class TextureUploadJob:
+    """Queued texture upload operation managed by :class:`TextureStreamer`."""
+
+    texture: Texture
+    uploads: Sequence[tuple[ImageData | ImageDataRegion, int, int, int, int]]
+    region: TextureRegion | None = None
+    regions: list[TextureRegion] = field(default_factory=list)
+    submitted: bool = False
+    completed: bool = False
+    fence: Any | None = None
+    pbos: list[PixelUnpackBuffer] = field(default_factory=list)
+
+    def _submit(self, streamer: TextureStreamer) -> None:
+        self.submitted = True
+        context = streamer.context
+        if hasattr(context, "set_current"):
+            context.set_current()
+
+        for image, x, y, z, level in self.uploads:
+            size = self.texture.get_pbo_upload_size(image)
+            pbo = streamer._acquire_upload_pbo(size)
+            self.texture.upload_to_pbo(pbo, image, x, y, z, level=level)
+            self.pbos.append(pbo)
+
+        self.fence = context.create_frame_fence()
+        self.texture._flush()
+
+    def _delete_resources(self, context: SurfaceContext) -> None:
+        context.delete_frame_fence(self.fence)
+        self.fence = None
+        for pbo in self.pbos:
+            pbo.delete()
+        self.pbos.clear()
+
+    def _poll(self, streamer: TextureStreamer) -> bool:
+        if self.completed:
+            return True
+        if not self.submitted:
+            return False
+        context = streamer.context
+        if not context.poll_frame_fence(self.fence):
+            return False
+
+        context.delete_frame_fence(self.fence)
+        self.fence = None
+        for pbo in self.pbos:
+            streamer._release_pbo(streamer._upload_pbo_pool, pbo)
+        self.pbos.clear()
+        self.completed = True
+        return True
+
+
+@dataclass
+class TextureDownloadJob:
+    """Queued texture download operation managed by :class:`TextureStreamer`."""
+
+    texture: Texture
+    x: int = 0
+    y: int = 0
+    width: int | None = None
+    height: int | None = None
+    z: int = 0
+    level: int = 0
+    destination: ImageData | ImageDataRegion | None = None
+    submitted: bool = False
+    completed: bool = False
+    fence: Any | None = None
+    pbo: PixelPackBuffer | None = None
+
+    @property
+    def image_data(self) -> ImageData | ImageDataRegion | None:
+        return self.destination
+
+    def _submit(self, streamer: TextureStreamer) -> None:
+        self.submitted = True
+        context = streamer.context
+        if hasattr(context, "set_current"):
+            context.set_current()
+
+        size = self.texture.get_pbo_fetch_size(self.z, level=self.level)
+        self.pbo = streamer._acquire_download_pbo(size)
+        self.texture.fetch_to_pbo(self.pbo, self.z, level=self.level)
+        self.fence = context.create_frame_fence()
+        self.texture._flush()
+
+    def _delete_resources(self, context: SurfaceContext) -> None:
+        context.delete_frame_fence(self.fence)
+        self.fence = None
+        if self.pbo is not None:
+            self.pbo.delete()
+            self.pbo = None
+
+    def _poll(self, streamer: TextureStreamer) -> bool:
+        if self.completed:
+            return True
+        if not self.submitted:
+            return False
+        context = streamer.context
+        if not context.poll_frame_fence(self.fence):
+            return False
+
+        context.delete_frame_fence(self.fence)
+        self.fence = None
+        assert self.pbo is not None
+        self.destination = self.texture.fetch_from_pbo(
+            self.pbo,
+            z=self.z,
+            level=self.level,
+            x=self.x,
+            y=self.y,
+            width=self.width,
+            height=self.height,
+        )
+        streamer._release_pbo(streamer._download_pbo_pool, self.pbo)
+        self.pbo = None
+        self.completed = True
+        return True
+
+
+class TextureStreamer(EventDispatcher):
+    """Submit queued texture uploads and downloads, then poll completion later."""
+
+    def __init__(self, window: pyglet.window.Window | SurfaceContext, upload_pool_size: int = 2,
+                 download_pool_size: int = 2) -> None:
+        self.context = window.context if hasattr(window, "context") and not hasattr(window, "create_frame_fence") else window
+        self.upload_pool_size = max(1, upload_pool_size)
+        self.download_pool_size = max(1, download_pool_size)
+        self._upload_pbo_pool: list[PixelUnpackBuffer] = []
+        self._download_pbo_pool: list[PixelPackBuffer] = []
+        self._queued_uploads: deque[TextureUploadJob] = deque()
+        self._queued_downloads: deque[TextureDownloadJob] = deque()
+        self._pending_uploads: deque[TextureUploadJob] = deque()
+        self._pending_downloads: deque[TextureDownloadJob] = deque()
+        self._active_uploads: list[TextureUploadJob] = []
+        self._active_downloads: list[TextureDownloadJob] = []
+        self._deleted = False
+
+    def queue_upload(self, texture: Texture, image: ImageData | ImageDataRegion, x: int = 0, y: int = 0,
+                     z: int = 0, level: int = 0) -> TextureUploadJob:
+        region = texture.get_region(x, y, image.width, image.height)
+        job = TextureUploadJob(texture, [(image, x, y, z, level)], region=region, regions=[region])
+        self._queued_uploads.append(job)
+        return job
+
+    def queue_uploads(self, texture: Texture,
+                      uploads: Sequence[tuple[ImageData | ImageDataRegion, int, int] |
+                                        tuple[ImageData | ImageDataRegion, int, int, int] |
+                                        tuple[ImageData | ImageDataRegion, int, int, int, int]]) -> TextureUploadJob:
+        normalized_uploads = []
+        regions = []
+        for upload in uploads:
+            image, x, y, *rest = upload
+            z = rest[0] if len(rest) > 0 else 0
+            level = rest[1] if len(rest) > 1 else 0
+            normalized_uploads.append((image, x, y, z, level))
+            regions.append(texture.get_region(x, y, image.width, image.height))
+
+        job = TextureUploadJob(texture, normalized_uploads, regions=regions)
+        self._queued_uploads.append(job)
+        return job
+
+    def queue_download(self, texture: Texture, x: int = 0, y: int = 0, width: int | None = None,
+                       height: int | None = None, z: int = 0, level: int = 0) -> TextureDownloadJob:
+        job = TextureDownloadJob(texture, x, y, width, height, z, level)
+        self._queued_downloads.append(job)
+        return job
+
+    def submit(self) -> None:
+        self._pending_uploads.extend(self._queued_uploads)
+        self._pending_downloads.extend(self._queued_downloads)
+        self._queued_uploads.clear()
+        self._queued_downloads.clear()
+        self._submit_pending(self._pending_uploads, self._active_uploads, self.upload_pool_size)
+        self._submit_pending(self._pending_downloads, self._active_downloads, self.download_pool_size)
+
+    def process(self) -> None:
+        self._process_active(self._active_uploads, "on_upload_complete")
+        self._process_active(self._active_downloads, "on_download_complete")
+        self._submit_pending(self._pending_uploads, self._active_uploads, self.upload_pool_size)
+        self._submit_pending(self._pending_downloads, self._active_downloads, self.download_pool_size)
+
+    def delete(self) -> None:
+        if self._deleted:
+            return
+        for job in (*self._active_uploads, *self._active_downloads):
+            job._delete_resources(self.context)
+        self._queued_uploads.clear()
+        self._queued_downloads.clear()
+        self._pending_uploads.clear()
+        self._pending_downloads.clear()
+        self._active_uploads.clear()
+        self._active_downloads.clear()
+        self._delete_pbo_pool(self._upload_pbo_pool)
+        self._delete_pbo_pool(self._download_pbo_pool)
+        self._deleted = True
+
+    def _acquire_upload_pbo(self, size: int) -> PixelUnpackBuffer:
+        return self._acquire_pbo(self._upload_pbo_pool, size, self.get_backend_pixel_unpack_buffer)
+
+    def get_backend_pixel_unpack_buffer(self, size: int) -> PixelUnpackBuffer:
+        raise NotImplementedError
+
+    def _acquire_download_pbo(self, size: int) -> PixelPackBuffer:
+        return self._acquire_pbo(self._download_pbo_pool, size, self.get_backend_pixel_pack_buffer)
+
+    def get_backend_pixel_pack_buffer(self, size: int) -> PixelPackBuffer:
+        raise NotImplementedError
+
+    @staticmethod
+    def _acquire_pbo(pool: list[TPixelBuffer], size: int, create: Any) -> TPixelBuffer:
+        for index, pbo in enumerate(pool):
+            if pbo.size >= size:
+                return pool.pop(index)
+        return create(size)
+
+    @staticmethod
+    def _release_pbo(pool: list[TPixelBuffer], pbo: TPixelBuffer) -> None:
+        pool.append(pbo)
+
+    @staticmethod
+    def _delete_pbo_pool(pool: list[PixelPackBuffer] | list[PixelUnpackBuffer]) -> None:
+        for pbo in pool:
+            pbo.delete()
+        pool.clear()
+
+    def _submit_pending(self, pending: deque[TextureUploadJob] | deque[TextureDownloadJob],
+                        active: list[TextureUploadJob] | list[TextureDownloadJob],
+                        pool_size: int) -> None:
+        while pending and len(active) < pool_size:
+            job = pending.popleft()
+            job._submit(self)
+            active.append(job)
+
+    def _process_active(self, active: list[TextureUploadJob] | list[TextureDownloadJob], event: str) -> None:
+        for job in active[:]:
+            if job._poll(self):
+                active.remove(job)
+                self.dispatch_event(event, job)
+                self.dispatch_event("on_job_complete", job)
+
+
+TextureStreamer.register_event_type("on_upload_complete")
+TextureStreamer.register_event_type("on_download_complete")
+TextureStreamer.register_event_type("on_job_complete")
 
 
 class Texture(_AbstractImage):
@@ -269,6 +521,28 @@ class Texture(_AbstractImage):
             level:
                 The mipmap level of the texture to retrieve.
         """
+        raise NotImplementedError
+
+    def get_pbo_upload_size(self, image: ImageData | ImageDataRegion) -> int:
+        """Return the pixel unpack buffer size required to upload image data."""
+        raise NotImplementedError
+
+    def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
+        """Return the pixel pack buffer size required to fetch texture data."""
+        raise NotImplementedError
+
+    def upload_to_pbo(self, pbo: Any, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
+                      level: int = 0) -> None:
+        """Submit an upload through a caller-owned backend pixel unpack buffer."""
+        raise NotImplementedError
+
+    def fetch_to_pbo(self, pbo: Any, z: int = 0, level: int = 0) -> None:
+        """Submit a readback through a caller-owned backend pixel pack buffer."""
+        raise NotImplementedError
+
+    def fetch_from_pbo(self, pbo: Any, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
+                       width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
+        """Map a completed backend pixel pack buffer into image data."""
         raise NotImplementedError
 
     def _delete_resource(self) -> None:
@@ -613,6 +887,34 @@ class _TextureRegionShared:
     def upload(self, source: ImageData, x: int, y: int, z: int, level: int = 0) -> None:
         assert source.width <= self._width and source.height <= self._height, f"{source} is larger than {self}"
         self.owner.upload(source, x + self.x, y + self.y, z + self.z, level=level)
+
+    def get_pbo_upload_size(self, image: ImageData | ImageDataRegion) -> int:
+        return self.owner.get_pbo_upload_size(image)
+
+    def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
+        return self.owner.get_pbo_fetch_size(self.z + z, level=level)
+
+    def upload_to_pbo(self, pbo: Any, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
+                      level: int = 0) -> None:
+        assert image.width <= self._width and image.height <= self._height, f"{image} is larger than {self}"
+        self.owner.upload_to_pbo(pbo, image, x + self.x, y + self.y, z + self.z, level=level)
+
+    def fetch_to_pbo(self, pbo: Any, z: int = 0, level: int = 0) -> None:
+        self.owner.fetch_to_pbo(pbo, self.z + z, level=level)
+
+    def fetch_from_pbo(self, pbo: Any, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
+                       width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
+        width = self.width if width is None else width
+        height = self.height if height is None else height
+        return self.owner.fetch_from_pbo(
+            pbo,
+            z=self.z + z,
+            level=level,
+            x=self.x + x,
+            y=self.y + y,
+            width=width,
+            height=height,
+        )
 
     def __repr__(self) -> str:
         return (f"{self.__class__.__name__}(id={self.id},"
@@ -1036,6 +1338,8 @@ if not _is_pyglet_doc_run:
             GLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
             GLTextureGrid,
             GLTextureGrid as TextureGrid,  # noqa: F401
+            GLTextureStreamer,
+            GLTextureStreamer as TextureStreamer,  # noqa: F401
             get_max_texture_size,
             get_max_array_texture_layers,
         )
@@ -1058,6 +1362,8 @@ if not _is_pyglet_doc_run:
             WebGLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
             WebGLTextureGrid,
             WebGLTextureGrid as TextureGrid,  # noqa: F401
+            WebGLTextureStreamer,
+            WebGLTextureStreamer as TextureStreamer,  # noqa: F401
             get_max_texture_size,  # noqa: F401
             get_max_array_texture_layers,  # noqa: F401
         )
