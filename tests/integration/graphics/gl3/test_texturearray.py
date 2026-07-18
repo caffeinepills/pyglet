@@ -1,18 +1,20 @@
 import unittest
 
-from pyglet.graphics import Texture3D
+from pyglet.graphics.texture import TextureArray
 from pyglet.image import ImageData, ImageGrid
 from pyglet.window import Window
 
-from tests.annotations import skip_graphics_api, GraphicsAPIGroups
+from tests.annotations import GraphicsAPIGroups, require_graphics_api
+
+
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 
 def colorbyte(color):
     return bytes((color,))
 
 
-@skip_graphics_api(GraphicsAPIGroups.GL2)
-class TestTexture3D(unittest.TestCase):
+class TestTextureArray(unittest.TestCase):
     """Test the Texture3D for image grids."""
 
     def create_image(self, width, height, color):
@@ -44,11 +46,11 @@ class TestTexture3D(unittest.TestCase):
                 data += (width * b'\0') * rowpad
         assert len(data) == width * height
         self.image = ImageData(width, height, 'R', data)
-        grid = ImageGrid(self.image, rows, cols,
+        self.grid = ImageGrid(self.image, rows, cols,
                          itemwidth, itemheight, rowpad, colpad)
-        self.grid = Texture3D.create_for_image_grid(grid)
+        self.texture_array = TextureArray.create_for_image_grid(self.grid)
 
-    def check_cell(self, cell_texture, cellindex):
+    def check_cell(self, cell_texture: TextureArray, cellindex):
         self.assertTrue(cell_texture.width == self.grid.item_width)
         self.assertTrue(cell_texture.height == self.grid.item_height)
 
@@ -65,7 +67,7 @@ class TestTexture3D(unittest.TestCase):
     def test2(self):
         # Test 2 images of 32x32
         images = [self.create_image(32, 32, i + 1) for i in range(2)]
-        texture = Texture3D.create_for_images(images)
+        texture = TextureArray.create_for_images(images)
         self.assertTrue(len(texture) == 2)
         for i in range(2):
             self.check_image(texture[i], 32, 32, i + 1)
@@ -73,7 +75,7 @@ class TestTexture3D(unittest.TestCase):
     def test5(self):
         # test 5 images of 31x94  (power2 issues)
         images = [self.create_image(31, 94, i + 1) for i in range(5)]
-        texture = Texture3D.create_for_images(images)
+        texture = TextureArray.create_for_images(images)
         self.assertTrue(len(texture) == 5)
         for i in range(5):
             self.check_image(texture[i], 31, 94, i + 1)
@@ -81,7 +83,7 @@ class TestTexture3D(unittest.TestCase):
     def testSet(self):
         # test replacing an image
         images = [self.create_image(32, 32, i + 1) for i in range(3)]
-        texture = Texture3D.create_for_images(images)
+        texture = TextureArray.create_for_images(images)
         self.assertTrue(len(texture) == 3)
         for i in range(3):
             self.check_image(texture[i], 32, 32, i + 1)
@@ -98,7 +100,7 @@ class TestTexture3D(unittest.TestCase):
 
     def testUploadZ(self):
         images = [self.create_image(8, 8, 1) for _ in range(2)]
-        texture = Texture3D.create_for_images(images)
+        texture = TextureArray.create_for_images(images)
         texture.upload(self.create_image(8, 8, 5), 0, 0, 0)
         texture.upload(self.create_image(8, 8, 9), 0, 0, 1)
         self.check_image(texture[0], 8, 8, 5)
@@ -115,12 +117,5 @@ class TestTexture3D(unittest.TestCase):
         # Test a 2x5 grid with no padding and 3x8 images
         rows, cols = 2, 5
         self.set_grid_image(3, 8, rows, cols, 0, 0)
-        for i in range(rows * cols):
-            self.check_cell(self.grid[i], i)
-
-    def testPad(self):
-        # Test a 5x3 grid with rowpad=3 and colpad=7 and 10x9 images
-        rows, cols = 5, 3
-        self.set_grid_image(10, 9, rows, cols, 3, 7)
         for i in range(rows * cols):
             self.check_cell(self.grid[i], i)

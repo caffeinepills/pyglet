@@ -3,7 +3,10 @@ import pytest
 import pyglet
 from pyglet.graphics.shader import ShaderException
 
-from tests.annotations import skip_graphics_api, GraphicsAPIGroups
+from tests.annotations import GraphicsAPIGroups, require_graphics_api
+
+
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 
 COMPUTE_SRC_GL = """#version 430 core
@@ -30,7 +33,6 @@ void main() {
 """
 
 
-@skip_graphics_api(GraphicsAPIGroups.GL2)
 def test_compute_shader_program_creation(gl3_context):
     gl3_context.switch_to()
     backend = pyglet.options.backend

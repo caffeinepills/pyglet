@@ -1,5 +1,9 @@
 from pyglet.shapes import Circle
 from pyglet.graphics import Group, Batch
+from tests.annotations import GraphicsAPIGroups, require_graphics_api
+
+
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3 + GraphicsAPIGroups.GL2)
 
 
 def test_batch_migration(gl3_context):

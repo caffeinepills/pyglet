@@ -7,6 +7,10 @@ import pyglet
 from pyglet.enums import CompareOp, GeometryMode
 from pyglet.graphics.draw import _DomainKey
 from pyglet.graphics.state import State
+from tests.annotations import GraphicsAPIGroups, require_graphics_api
+
+
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3 + GraphicsAPIGroups.GL2)
 
 
 class UniqueState(State):
