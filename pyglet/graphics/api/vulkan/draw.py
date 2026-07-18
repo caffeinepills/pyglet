@@ -243,10 +243,15 @@ class VulkanBatch(Batch):
 
     def delete(self) -> None:
         type(self)._live_batches.discard(self)
-        for group in self.group_map.values():
-            for domain in group.values():
-                print("DOMAIN", domain)
-                domain.delete()
+        for domain in self._domain_registry.values():
+            domain.delete()
+        self._domain_registry.clear()
+        for group in tuple(self.group_map):
+            group._assigned_batches.discard(self)  # noqa: SLF001
+        self.group_map.clear()
+        self.group_children.clear()
+        self.top_groups.clear()
+        self._draw_list.clear()
 
     def __del__(self) -> None:
         try:
@@ -258,6 +263,13 @@ class VulkanBatch(Batch):
     def _delete_tracked_instances(cls) -> None:
         for batch in tuple(cls._live_batches):
             batch.delete()
+
+    @classmethod
+    def _delete_context_instances(cls, context: VulkanSurfaceContext) -> None:
+        for batch in tuple(cls._live_batches):
+            if batch._context is context:
+                batch.delete()
+                print("DELETING BATCH", batch)
 
     def invalidate(self) -> None:
         """Force the batch to update the draw list.
@@ -290,22 +302,26 @@ class VulkanBatch(Batch):
         Returns:
             False if the domain's no longer match. The caller should handle this scenario.
         """
-        # No new attributes.
-        attributes = program.attributes.copy()
+        attributes = self._normalized_shader_attributes(program, vertex_list.initial_attribs)
 
-        # Formats may differ (normalization) than what is declared in the shader.
-        # Make those adjustments and attempt to get a domain.
-        for a_name in attributes:
-            if (a_name in vertex_list.initial_attribs and
-                    vertex_list.initial_attribs[a_name]['format'] != attributes[a_name]['format']):
-                attributes[a_name]['format'] = vertex_list.initial_attribs[a_name]['format']
+        if missing := [name for name in vertex_list.initial_attribs if name not in attributes]:
+            if _debug_graphics_batch:
+                import warnings
 
-        domain = self.get_domain(vertex_list.indexed, vertex_list.instanced, mode, group, attributes)
+                warnings.warn(f"Missing required shader attributes for update: {missing}")
+            return False
+
+        drawable_attributes = {name: attributes[name] for name in vertex_list.initial_attribs}
+        domain = self.get_domain(vertex_list.indexed, vertex_list.instanced, mode, group, drawable_attributes)
 
         # TODO: Allow migration if we can restore original vertices somehow. Much faster.
         # If the domain's don't match, we need to re-create the vertex list. Tell caller no match.
         if domain != vertex_list.domain:
             return False
+
+        if vertex_list.group != group:
+            vertex_list.update_group(group)
+            self._draw_list_dirty = True
 
         return True
 
@@ -335,7 +351,11 @@ class VulkanBatch(Batch):
         """
         attributes = vertex_list.domain.attribute_meta
         domain = batch.get_domain(vertex_list.indexed, vertex_list.instanced, mode, group, attributes)
-        vertex_list.migrate(domain)
+        if domain != vertex_list.domain:
+            vertex_list.migrate(domain, group)
+        else:
+            vertex_list.update_group(group)
+            self._draw_list_dirty = True
 
     def get_domain(self, indexed: bool, instanced: bool, mode: GeometryMode, group: Group,
                    attributes: dict[str, Any]) -> (
@@ -345,29 +365,40 @@ class VulkanBatch(Batch):
 
         mode is the render mode such as GL_LINES or GL_TRIANGLES
         """
-        # Batch group
+        # Group map is only used for group-tree lookup; domains are shared
+        # across groups so transient text group replacement can reuse buffers.
         if group not in self.group_map:
             self._add_group(group)
 
-        domain_map = self.group_map[group]
-
-        # If instanced, ensure a separate domain, as multiple instance sources can match the key.
-        if instanced:
-            self._instance_count += 1
-            key = (indexed, self._instance_count, mode, str(attributes))
-        else:
-            # Find domain given formats, indices and mode
-            key = (indexed, 0, mode, str(attributes))
+        key = _DomainKey(indexed, instanced, mode, self._attributes_key(attributes))
 
         try:
-            domain = domain_map[key]
+            domain = self._domain_registry[key]
         except KeyError:
             # Create domain
             domain = _domain_class_map[(indexed, instanced)](self._context, self.initial_count, attributes)
-            domain_map[key] = domain
+            self._domain_registry[key] = domain
             self._draw_list_dirty = True
 
         return domain
+
+    def _cleanup_group(self, group: Group) -> None:
+        del self.group_map[group]
+        group._assigned_batches.remove(self)  # noqa: SLF001
+        if group.parent:
+            self.group_children[group.parent].remove(group)
+        try:
+            del self.group_children[group]
+        except KeyError:
+            pass
+        try:
+            self.top_groups.remove(group)
+        except ValueError:
+            pass
+
+        for domain in self._domain_registry.values():
+            if domain.has_bucket(group):
+                del domain._vertex_buckets[group]  # noqa: SLF001
 
     def _add_group(self, group: Group) -> None:
         self.group_map[group] = {}
@@ -501,18 +532,14 @@ class VulkanBatch(Batch):
 
             draw_list = []
 
-            # Draw domains using this group
-            domain_map = self.group_map[group]
+            drawable_domains = [
+                (domain_key, domain, bucket)
+                for domain_key, domain in self._domain_registry.items()
+                if (bucket := domain.get_drawable_bucket(group))
+            ]
 
-            # indexed, instanced, mode, program, str(attributes))
-            for (indexed, instanced, mode, formats), domain in list(domain_map.items()):
-                # Remove unused domains from batch
-                if domain.is_empty:
-                    domain.delete()
-                    del domain_map[(indexed, instanced, mode, formats)]
-                    continue
-
-                #print("DOMAIN!", domain)
+            for domain_key, domain, bucket in drawable_domains:
+                mode = domain_key.mode
                 set_default_scissor()
 
                 pipeline = self.pipeline_mgr.get_pipeline_from_group(group,
@@ -577,7 +604,7 @@ class VulkanBatch(Batch):
 
                 pipeline.push_constants(vk_command_buffer, 0)
 
-                domain.draw(vk_command_buffer)
+                domain.draw_buckets(vk_command_buffer, [bucket])
 
             # Sort and visit child groups of this group
             children = self.group_children.get(group)
@@ -587,22 +614,11 @@ class VulkanBatch(Batch):
                     if child.visible:
                         draw_list.extend(visit(child))
 
-            if children or domain_map:
+            if children or drawable_domains:
                 return [*draw_list]
 
             # Remove unused group from batch
-            del self.group_map[group]
-            group._assigned_batches.remove(self)  # noqa: SLF001
-            if group.parent:
-                self.group_children[group.parent].remove(group)
-            try:
-                del self.group_children[group]
-            except KeyError:
-                pass
-            try:
-                self.top_groups.remove(group)
-            except ValueError:
-                pass
+            self._cleanup_group(group)
 
             return []
 
@@ -630,10 +646,12 @@ class VulkanBatch(Batch):
     def _dump_draw_list(self) -> None:
         def dump(group: Group, indent: str = '') -> None:
             print(indent, 'Begin group', group)
-            domain_map = self.group_map[group]
-            for domain in domain_map.values():
+            for domain in self._domain_registry.values():
+                bucket = domain.get_drawable_bucket(group)
+                if bucket is None:
+                    continue
                 print(indent, '  ', domain)
-                for start, size in zip(*domain.vertex_buffers.allocator.get_allocated_regions()):
+                for start, size in bucket.merged_ranges:
                     print(indent, '    ', 'Region %d size %d:' % (start, size))
                     for key in domain.attrib_name_buffers:
                         buffer = domain.vertex_buffers.attrib_name_buffers[key]
@@ -741,17 +759,15 @@ class VulkanBatch(Batch):
             nonlocal current_desc_binding
             nonlocal current_descriptor_key
 
-            domain_map = self.group_map[group]
-            for (indexed, instanced, mode, formats), domain in list(domain_map.items()):
-                if domain.is_empty:
-                    domain.delete()
-                    del domain_map[(indexed, instanced, mode, formats)]
-                    continue
-
-                selected_lists = selected_by_domain.get(domain)
+            for domain_key, domain in self._domain_registry.items():
+                selected_lists = [
+                    vertex_list for vertex_list in selected_by_domain.get(domain, ())
+                    if vertex_list.group is group
+                ]
                 if not selected_lists:
                     continue
 
+                mode = domain_key.mode
                 set_default_scissor()
 
                 pipeline = self.pipeline_mgr.get_pipeline_from_group(

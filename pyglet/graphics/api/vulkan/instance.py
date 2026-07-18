@@ -61,6 +61,8 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkRect2D,
     VkRenderPassBeginInfo,
     VkSurfaceKHR,
+    VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+    VK_API_VERSION_1_1,
 )
 from pyglet.graphics.shader import ShaderType, UniformBlockDesc
 from pyglet.math import Mat4
@@ -419,11 +421,24 @@ class VulkanSurfaceContext(SurfaceContext[VulkanFrameContext]):
         self.frame_sync.present()
 
     def delete(self):
+        print("-------DELETING CONTEXT")
+        self._deleting = True
         if self.logical_device and self.logical_device.vk_device:
             self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
-            self.core.resource_removal.process()
+            self.core.resource_removal.drain(wait=False)
+
+        from pyglet.graphics.api.vulkan.draw import VulkanBatch  # noqa: PLC0415
+
+        VulkanBatch._delete_context_instances(self)  # noqa: SLF001
+        if self.logical_device and self.logical_device.vk_device:
+            self.logical_device.vkDeviceWaitIdle(self.logical_device.vk_device)
+            self.core.resource_removal.drain(wait=False)
+
+        self.core.resource_removal.drain(wait=True)
 
         self.frame_resources.delete()
+
+        print("END")
 
         if self.swapchain:
             self.swapchain.delete()
@@ -604,6 +619,11 @@ class VulkanInstance(VulkanInstanceFuncs):
             self.extensions.extend([b'VK_KHR_surface', b'VK_EXT_metal_surface'])
         else:
             raise Exception("Platform not supported")
+
+        # Include features 2 if the version is lower.
+        features2_extension = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME.encode("utf-8")
+        if self.api_version < VK_API_VERSION_1_1 and features2_extension in self.available_extensions:
+            self.extensions.append(features2_extension)
 
         app_info = VkApplicationInfo(
             sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -829,7 +849,7 @@ class VulkanGlobal(BackendGlobalObject):
     def _delete_tracked_resources() -> None:
         """Delete internally tracked Vulkan resources prior to manager teardown."""
         # To prevent any possible circular imports.
-        from pyglet.graphics.api.vulkan.buffer import VulkanUniformBufferObject  # noqa: PLC0415
+        from pyglet.graphics.api.vulkan.buffer import VulkanBufferResource, VulkanUniformBufferObject  # noqa: PLC0415
         from pyglet.graphics.api.vulkan.draw import VulkanBatch  # noqa: PLC0415
         from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram  # noqa: PLC0415
         from pyglet.graphics.api.vulkan.texture import VulkanTexture, VulkanSampler  # noqa: PLC0415
@@ -839,9 +859,16 @@ class VulkanGlobal(BackendGlobalObject):
         VulkanShaderProgram._delete_tracked_instances()  # noqa: SLF001
         VulkanTexture._delete_tracked_instances()  # noqa: SLF001
         VulkanSampler._delete_tracked_shared_samplers()  # noqa: SLF001
+        VulkanBufferResource.delete_live_resources()  # noqa: SLF001
+        print("DELETED IT")
+
+    def __del__(self):
+        self.delete()
 
     def delete(self):
+        self._deleting = True
         self.wait_idle()
+        print("SAY WHAT")
         self._delete_tracked_resources()
 
         """Initialize a full cleanup."""
@@ -849,10 +876,11 @@ class VulkanGlobal(BackendGlobalObject):
             window.delete()
         self.windows.clear()
 
+
         # Shader programs are deleted by _delete_tracked_resources().
         self.cached_programs.clear()
 
-        self.resource_removal.delete()
+        self.resource_removal.drain(wait=True)
 
         self.pipeline_mgr.delete()
         self.descriptor_mgr.delete()

@@ -20,6 +20,7 @@ from pyglet.graphics.vertexdomain import (
     VertexArrayBinding,
     VertexArrayProtocol,
     VertexDomain as BaseVertexDomain,
+    VertexGroupBucket,
     VertexList as BaseVertexList,
     VertexStream,
     _RunningIndexSupport,
@@ -326,6 +327,13 @@ class VulkanVertexDomain(BaseVertexDomain):
         for start, size in zip(starts, sizes):
             DeviceFunc.vkCmdDraw(command_buffer, size, 1, start, 0)
 
+    def draw_buckets(self, command_buffer, buckets: list[VertexGroupBucket]) -> None:
+        self.vertex_buffers.bind(command_buffer)
+
+        for bucket in buckets:
+            for start, size in bucket.merged_ranges:
+                DeviceFunc.vkCmdDraw(command_buffer, size, 1, start, 0)
+
     def draw_subset(self, mode: GeometryMode, vertex_list: VulkanVertexList) -> None:
         for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
             batch.draw_subset([vertex_list])
@@ -394,6 +402,14 @@ class VulkanIndexedVertexDomain(BaseIndexedVertexDomain):
         for start, size in zip(starts, sizes):
             DeviceFunc.vkCmdDrawIndexed(command_buffer, size, 1, start, 0, 0)
 
+    def draw_buckets(self, command_buffer, buckets: list[VertexGroupBucket]) -> None:
+        self.vertex_buffers.bind(command_buffer)
+        self.index_stream.bind(command_buffer)
+
+        for bucket in buckets:
+            for start, size in bucket.merged_ranges:
+                DeviceFunc.vkCmdDrawIndexed(command_buffer, size, 1, start, 0, 0)
+
     def draw_subset(self, mode: GeometryMode, vertex_list: VulkanIndexedVertexList) -> None:
         for batch in tuple(vertex_list.group._assigned_batches):  # noqa: SLF001
             batch.draw_subset([vertex_list])
@@ -431,13 +447,16 @@ class VulkanInstanceDomainArrays(InstanceDomain):
 
     def draw(self, command_buffer) -> None:
         for bucket in self._buckets.values():
-            if bucket.instance_count <= 0:
-                continue
+            self.draw_bucket(command_buffer, bucket)
 
-            first_vertex, vertex_count = self._geom[bucket]
-            self._domain.vertex_buffers.bind(command_buffer)
-            bucket.stream.bind(command_buffer)
-            DeviceFunc.vkCmdDraw(command_buffer, vertex_count, bucket.instance_count, first_vertex, 0)
+    def draw_bucket(self, command_buffer, bucket: InstanceBucket) -> None:
+        if bucket.instance_count <= 0:
+            return
+
+        first_vertex, vertex_count = self._geom[bucket]
+        self._domain.vertex_buffers.bind(command_buffer)
+        bucket.stream.bind(command_buffer)
+        DeviceFunc.vkCmdDraw(command_buffer, vertex_count, bucket.instance_count, first_vertex, 0)
 
     def draw_subset(self, command_buffer, vertex_list: VulkanInstanceVertexList) -> None:
         bucket = vertex_list.instance_bucket
@@ -447,6 +466,12 @@ class VulkanInstanceDomainArrays(InstanceDomain):
         self._domain.vertex_buffers.bind(command_buffer)
         bucket.stream.bind(command_buffer)
         DeviceFunc.vkCmdDraw(command_buffer, vertex_list.count, bucket.instance_count, vertex_list.start, 0)
+
+    def delete(self) -> None:
+        for bucket in self._buckets.values():
+            bucket.stream.delete()
+        self._buckets.clear()
+        self._geom.clear()
 
 
 class VulkanInstanceDomainElements(InstanceDomain):
@@ -503,6 +528,12 @@ class VulkanInstanceDomainElements(InstanceDomain):
             0,
         )
 
+    def delete(self) -> None:
+        for bucket in self._buckets.values():
+            bucket.stream.delete()
+        self._buckets.clear()
+        self._geom.clear()
+
 
 class VulkanInstancedVertexDomain(BaseInstancedVertexDomain, VulkanVertexDomain):
     _vertex_class = VulkanInstanceVertexList
@@ -532,6 +563,11 @@ class VulkanInstancedVertexDomain(BaseInstancedVertexDomain, VulkanVertexDomain)
     def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanInstanceVertexList) -> None:
         self.instance_domain.draw_subset(command_buffer, vertex_list)
 
+    def draw_buckets(self, command_buffer, buckets: list[VertexGroupBucket]) -> None:
+        for bucket in buckets:
+            for vl_range in bucket.ranges:
+                self.instance_domain.draw_bucket(command_buffer, self._instance_map[vl_range])
+
     def draw(self, command_buffer) -> None:
         self.instance_domain.draw(command_buffer)
 
@@ -542,6 +578,10 @@ class VulkanInstancedVertexDomain(BaseInstancedVertexDomain, VulkanVertexDomain)
 
         msg = "Vulkan instanced subset drawing requires a batch assignment."
         raise NotImplementedError(msg)
+
+    def delete(self) -> None:
+        self.instance_domain.delete()
+        self.vertex_buffers.delete()
 
 
 class VulkanInstancedIndexedVertexDomain(BaseInstancedIndexedVertexDomain, VulkanIndexedVertexDomain):
@@ -587,6 +627,11 @@ class VulkanInstancedIndexedVertexDomain(BaseInstancedIndexedVertexDomain, Vulka
     ) -> None:
         self.instance_domain.draw_subset(command_buffer, vertex_list)
 
+    def draw_buckets(self, command_buffer, buckets: list[VertexGroupBucket]) -> None:
+        for bucket in buckets:
+            for vl_range in bucket.ranges:
+                self.instance_domain.draw_bucket(command_buffer, self._instance_map[vl_range])
+
     def draw(self, command_buffer) -> None:
         self.instance_domain.draw(command_buffer)
 
@@ -597,3 +642,8 @@ class VulkanInstancedIndexedVertexDomain(BaseInstancedIndexedVertexDomain, Vulka
 
         msg = "Vulkan instanced indexed subset drawing requires a batch assignment."
         raise NotImplementedError(msg)
+
+    def delete(self) -> None:
+        self.instance_domain.delete()
+        self.index_stream.delete()
+        self.vertex_buffers.delete()

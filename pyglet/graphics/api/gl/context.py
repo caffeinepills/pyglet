@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import weakref
+from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 from pyglet.enums import GraphicsAPI
@@ -33,6 +34,11 @@ if TYPE_CHECKING:
     from pyglet.graphics.api.gl.global_opengl import OpenGLBackend
     from pyglet.graphics.api.gl.framebuffer import GLFramebuffer
 
+
+
+@dataclass
+class GLFrameContext:
+    """GL data scoped to one reusable frame slot, to do later."""
 
 class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
     """A base OpenGL context for drawing.
@@ -83,6 +89,9 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
 
         # GLES needs an FBO to read pixel data.
         self.gles_pixel_fbo = None
+
+    def create_backend_frame_context(self, _slot_index: int) -> GLFrameContext:
+        return GLFrameContext()
 
     def resized(self, width, height):
         ...
