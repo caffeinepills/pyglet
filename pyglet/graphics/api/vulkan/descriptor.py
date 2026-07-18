@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Any, Sequence
 import pyglet
 from pyglet.graphics.api.vulkan import c_array_list
 from pyglet.graphics.api.vulkan.frame_local import FrameLocalResource
+from pyglet.libs.shared.vulkan_lib.exceptions import (
+    VulkanFragmentedPoolException,
+    VulkanOutOfPoolMemoryException,
+)
 from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
     VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
@@ -36,13 +40,11 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkDescriptorSetLayoutCreateInfo,
     VkWriteDescriptorSet,
     VK_SUCCESS,
-    VkDescriptorSetLayoutCreateFlags,
     VkCommandBuffer,
     VK_PIPELINE_BIND_POINT_GRAPHICS,
     VkPipelineLayout,
     VkDescriptorPoolCreateFlags,
 )
-from pyglet.graphics.state import State
 
 _debug_api = pyglet.options.debug_api
 
@@ -51,9 +53,9 @@ _debug_api = pyglet.options.debug_api
 if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.state import DescriptorResourceState
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
-    from pyglet.graphics.api.vulkan.buffer import UniformBuffer, VulkanUniformBufferObject
+    from pyglet.graphics.api.vulkan.buffer import VulkanUniformBufferObject
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
-    from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram, stages_to_bits
+    from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram
 
 
 # VK_DESCRIPTOR_TYPE_SAMPLER = 0
@@ -149,17 +151,30 @@ class SamplerKey(DescriptorResourceKey):
 class DescriptorSetCacheKey:
     layout_key: DescriptorSetLayoutsKey
     resources: tuple[DescriptorResourceKey, ...]
-    frame_index: int
     owner_key: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class UniformCacheKey(DescriptorResourceKey):
+    buffer_id: int
+
+
+@dataclass(slots=True)
+class _DescriptorPoolState:
+    vk_descriptor_pool: VkDescriptorPool
+    max_sets: int
+    allocated_sets: int
+    descriptor_capacity: dict[int, int]
+    descriptor_allocated: dict[int, int]
 
 
 class DescriptorPool:
     """Owns the Vulkan descriptor pool used by cached descriptor sets.
 
-    The pool itself is device/global Vulkan state, not a frame-lifetime object.
-    It is sized by ``frames_in_flight`` because ``DescriptorSetObject`` allocates
-    one compatible descriptor-set tuple per frame slot. Individual descriptor
-    sets are selected by frame index when commands are recorded.
+    The allocator grows by creating additional Vulkan pools. Descriptor sets
+    allocated from earlier pools remain valid until the allocator is destroyed.
+    Each pool is sized by ``frames_in_flight`` because ``DescriptorSetObject``
+    allocates one compatible descriptor-set tuple per frame slot.
     """
 
     flags: VkDescriptorPoolCreateFlags
@@ -169,10 +184,11 @@ class DescriptorPool:
         self.max_sets = 0
         self.pool_sizes = []
         self.vk_descriptor_pool = None
+        self._pools: list[_DescriptorPoolState] = []
         self.flags = 0
 
-    def create_pool(self, frames_in_flight: int, max_sets: int, flags: int = 0):
-        if self.vk_descriptor_pool:
+    def create_pool(self, frames_in_flight: int, max_sets: int, flags: int = 0) -> None:
+        if self._pools:
             if self.frames_in_flight != frames_in_flight or self.max_sets != max_sets or self.flags != flags:
                 msg = ("Descriptor pool is already initialized with different settings "
                        f"(frames_in_flight={self.frames_in_flight}, max_sets={self.max_sets}, flags={self.flags}).")
@@ -183,42 +199,73 @@ class DescriptorPool:
         self.max_sets = max_sets
         self.flags = flags
         assert len(self.pool_sizes) == 0, "Pool sizes should be empty."
+        self._pools.append(self._create_pool(max_sets))
+        self.vk_descriptor_pool = self._pools[0].vk_descriptor_pool
+
+    def _create_pool(
+        self,
+        max_sets: int,
+        minimum_descriptor_counts: dict[int, int] | None = None,
+    ) -> _DescriptorPoolState:
+        descriptor_capacity = {
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: self.frames_in_flight * max_sets,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: self.frames_in_flight * max_sets,
+        }
+        if minimum_descriptor_counts:
+            for descriptor_type, count in minimum_descriptor_counts.items():
+                default_capacity = self.frames_in_flight * max_sets
+                descriptor_capacity[descriptor_type] = max(
+                    descriptor_capacity.get(descriptor_type, default_capacity),
+                    count,
+                )
 
         self.pool_sizes = [
             VkDescriptorPoolSize(
-                type=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                descriptorCount=frames_in_flight * max_sets
-            ),
-            VkDescriptorPoolSize(
-                type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                descriptorCount=frames_in_flight * max_sets
-            ),
+                type=descriptor_type,
+                descriptorCount=count,
+            )
+            for descriptor_type, count in descriptor_capacity.items()
         ]
 
         poolsize_descs = c_array_list(self.pool_sizes, VkDescriptorPoolSize)
         pool_info = VkDescriptorPoolCreateInfo(
             sType=VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            flags=flags,
+            flags=self.flags,
             poolSizeCount=len(self.pool_sizes),
             pPoolSizes=poolsize_descs,
-            maxSets=frames_in_flight * max_sets,
+            maxSets=self.frames_in_flight * max_sets,
         )
 
-        self.vk_descriptor_pool = VkDescriptorPool()
+        vk_descriptor_pool = VkDescriptorPool()
         result = self.device.vkCreateDescriptorPool(self.device.vk_device, pool_info, None,
-                                                    byref(self.vk_descriptor_pool))
+                                                    byref(vk_descriptor_pool))
         if result != VK_SUCCESS:
             msg = f"Failed to create descriptor pool: {result}"
             raise RuntimeError(msg)
+        return _DescriptorPoolState(
+            vk_descriptor_pool=vk_descriptor_pool,
+            max_sets=max_sets,
+            allocated_sets=0,
+            descriptor_capacity=descriptor_capacity,
+            descriptor_allocated=dict.fromkeys(descriptor_capacity, 0),
+        )
 
-    def allocate_descriptor_sets(self, layouts: list[VkDescriptorSetLayout]) -> list[list[VkDescriptorSet]]:
+    def allocate_descriptor_sets(
+        self,
+        layouts: list[VkDescriptorSetLayout],
+        set_layouts_key: DescriptorSetLayoutsKey | None = None,
+    ) -> list[list[VkDescriptorSet]]:
         """Allocate a descriptor set from the provided layouts.
 
         Will return multiple for each frame in flight.
         """
-        assert self.vk_descriptor_pool is not None
+        assert self._pools
         assert self.frames_in_flight != 0
         layout_ct = len(layouts)
+        requested_sets, descriptor_counts = self._allocation_requirements(layout_ct, set_layouts_key)
+        pool = self._find_pool(requested_sets, descriptor_counts)
+        if pool is None:
+            pool = self._add_pool(requested_sets, descriptor_counts)
 
         fif_layouts = layouts * self.frames_in_flight
 
@@ -226,25 +273,85 @@ class DescriptorPool:
 
         alloc_info = VkDescriptorSetAllocateInfo(
             sType=VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool=self.vk_descriptor_pool,
-            descriptorSetCount=self.frames_in_flight * layout_ct,
+            descriptorPool=pool.vk_descriptor_pool,
+            descriptorSetCount=requested_sets,
             pSetLayouts=set_layouts,
         )
-        descriptor_sets = (VkDescriptorSet * (layout_ct * self.frames_in_flight))()
-        self.device.vkAllocateDescriptorSets(self.device.vk_device, byref(alloc_info), descriptor_sets)
+        descriptor_sets = (VkDescriptorSet * requested_sets)()
+        try:
+            self.device.vkAllocateDescriptorSets(self.device.vk_device, byref(alloc_info), descriptor_sets)
+        except (VulkanOutOfPoolMemoryException, VulkanFragmentedPoolException):
+            pool = self._add_pool(requested_sets, descriptor_counts)
+            alloc_info.descriptorPool = pool.vk_descriptor_pool
+            self.device.vkAllocateDescriptorSets(self.device.vk_device, byref(alloc_info), descriptor_sets)
+
+        pool.allocated_sets += requested_sets
+        for descriptor_type, count in descriptor_counts.items():
+            pool.descriptor_allocated[descriptor_type] = pool.descriptor_allocated.get(descriptor_type, 0) + count
 
         # Group by layout element_count.
         return [descriptor_sets[i:i+layout_ct]
             for i in range(0, layout_ct * self.frames_in_flight, layout_ct)]
+
+    def _allocation_requirements(
+        self,
+        layout_ct: int,
+        set_layouts_key: DescriptorSetLayoutsKey | None,
+    ) -> tuple[int, dict[int, int]]:
+        requested_sets = self.frames_in_flight * layout_ct
+        descriptor_counts: dict[int, int] = {}
+        if set_layouts_key is None:
+            descriptor_counts[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER] = requested_sets
+            descriptor_counts[VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER] = requested_sets
+            return requested_sets, descriptor_counts
+
+        for set_layout in set_layouts_key.set_layouts:
+            for binding in set_layout.layout_key.bindings:
+                descriptor_type = int(binding.descriptor_type)
+                descriptor_counts[descriptor_type] = (
+                    descriptor_counts.get(descriptor_type, 0)
+                    + int(binding.descriptor_count) * self.frames_in_flight
+                )
+        return requested_sets, descriptor_counts
+
+    def _find_pool(
+        self,
+        requested_sets: int,
+        descriptor_counts: dict[int, int],
+    ) -> _DescriptorPoolState | None:
+        for pool in self._pools:
+            if pool.allocated_sets + requested_sets > self.frames_in_flight * pool.max_sets:
+                continue
+            if all(
+                pool.descriptor_allocated.get(descriptor_type, 0) + count
+                <= pool.descriptor_capacity.get(descriptor_type, 0)
+                for descriptor_type, count in descriptor_counts.items()
+            ):
+                return pool
+        return None
+
+    def _add_pool(
+        self,
+        requested_sets: int,
+        descriptor_counts: dict[int, int],
+    ) -> _DescriptorPoolState:
+        requested_sets_per_frame = (requested_sets + self.frames_in_flight - 1) // self.frames_in_flight
+        next_max_sets = max(self.max_sets, requested_sets_per_frame)
+        if self._pools:
+            next_max_sets = max(next_max_sets, self._pools[-1].max_sets * 2)
+        pool = self._create_pool(next_max_sets, descriptor_counts)
+        self._pools.append(pool)
+        return pool
 
     def __del__(self) -> None:
         self.delete()
 
     def delete(self) -> None:
         """Destroy the descriptor pool, and all descriptor sets it has created."""
-        if self.vk_descriptor_pool:
-            self.device.vkDestroyDescriptorPool(self.device.vk_device, self.vk_descriptor_pool, None)
-            self.vk_descriptor_pool = None
+        for pool in self._pools:
+            self.device.vkDestroyDescriptorPool(self.device.vk_device, pool.vk_descriptor_pool, None)
+        self._pools.clear()
+        self.vk_descriptor_pool = None
         self.frames_in_flight = 0
         self.max_sets = 0
         self.flags = 0
@@ -456,11 +563,14 @@ class DescriptorManager:
             normalized_uniform_bindings,
             active_frame,
         ))
+        cache_resources = self.build_cache_resource_keys(
+            resource_states,
+            normalized_uniform_bindings,
+        )
         owner_key = id(owner) if owner is not None else None
         key = DescriptorSetCacheKey(
             set_layouts.key,
-            normalized_resources,
-            active_frame,
+            cache_resources,
             owner_key,
         )
         if key in self.descriptor_set_cache:
@@ -469,6 +579,7 @@ class DescriptorManager:
                 resource_states=resource_states,
                 uniform_bindings=normalized_uniform_bindings,
                 frame_idx=active_frame,
+                resources=normalized_resources,
             )
             dset.validate_resources(normalized_resources)
             return dset
@@ -479,16 +590,33 @@ class DescriptorManager:
 
         self.descriptor_set_cache[key] = dset = DescriptorSetObject(
             self.device,
-            self.descriptor_pool.allocate_descriptor_sets(list(set_layouts.layouts)),
+            self.descriptor_pool.allocate_descriptor_sets(
+                list(set_layouts.layouts),
+                set_layouts_key=set_layouts.key,
+            ),
             set_layouts_key=set_layouts.key,
         )
         dset.update_bound_resources(
             resource_states=resource_states,
             uniform_bindings=normalized_uniform_bindings,
             frame_idx=active_frame,
+            resources=normalized_resources,
         )
         dset.validate_resources(normalized_resources)
         return dset
+
+    def build_cache_resource_keys(
+        self,
+        resource_states: Sequence[DescriptorResourceState],
+        uniform_bindings: Sequence[tuple[VulkanUniformBufferObject, int, int]],
+    ) -> tuple[DescriptorResourceKey, ...]:
+        keys: list[DescriptorResourceKey] = []
+        keys.extend(
+            self._get_uniform_cache_key(ubo, binding, set_index)
+            for ubo, binding, set_index in uniform_bindings
+        )
+        keys.extend(self._get_state_resource_key(state) for state in resource_states)
+        return tuple(sorted(keys, key=self._resource_sort_key))
 
     def build_resource_keys(
         self,
@@ -545,6 +673,22 @@ class DescriptorManager:
             range_size=int(frame_slice.size),
         )
 
+    def _get_uniform_cache_key(
+        self,
+        ubo: VulkanUniformBufferObject,
+        binding: int,
+        set_index: int,
+    ) -> UniformCacheKey:
+        buffer_id = int(ubo.id)
+        generation_id = self._get_ubo_generation_id(ubo, buffer_id)
+        return UniformCacheKey(
+            set_index=int(set_index),
+            binding=int(binding),
+            descriptor_type=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            descriptor_generation_id=int(generation_id),
+            buffer_id=buffer_id,
+        )
+
     @staticmethod
     def _get_state_resource_key(state: DescriptorResourceState) -> DescriptorResourceKey:
         texture = getattr(state, "texture", None)
@@ -584,7 +728,10 @@ class DescriptorManager:
             raise RuntimeError(msg)
         return DescriptorSetObject(
             self.device,
-            self.descriptor_pool.allocate_descriptor_sets(list(set_layouts.layouts)),
+            self.descriptor_pool.allocate_descriptor_sets(
+                list(set_layouts.layouts),
+                set_layouts_key=set_layouts.key,
+            ),
             set_layouts_key=set_layouts.key,
         )
 
@@ -664,6 +811,7 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         self.bindings: list[Any] = []
         self._resource_states: tuple[DescriptorResourceState, ...] = ()
         self._uniform_bindings: tuple[tuple[VulkanUniformBufferObject, int, int], ...] = ()
+        self._resource_keys_by_frame: list[tuple[DescriptorResourceKey, ...]] = [() for _ in self.frame_states]
         #self.name_to_binding = {}  # Mapping of resource name to (binding, type)
 
     def _create_frame_states(self) -> list[DescriptorFrameState]:
@@ -714,17 +862,25 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         resource_states: Sequence[DescriptorResourceState],
         uniform_bindings: Sequence[tuple[VulkanUniformBufferObject, int, int]],
         frame_idx: int,
+        resources: Sequence[DescriptorResourceKey] | None = None,
     ) -> None:
         resolved_frame = self._resolve_frame_idx(frame_idx)
         normalized_resource_states = tuple(resource_states)
         normalized_uniform_bindings = tuple(uniform_bindings)
+        normalized_resources = tuple(resources or ())
 
         if (
             normalized_resource_states != self._resource_states
             or normalized_uniform_bindings != self._uniform_bindings
+            or (
+                normalized_resources
+                and normalized_resources != self._resource_keys_by_frame[resolved_frame]
+            )
         ):
             self._resource_states = normalized_resource_states
             self._uniform_bindings = normalized_uniform_bindings
+            if normalized_resources:
+                self._resource_keys_by_frame[resolved_frame] = normalized_resources
             self.mark_data_updated()
 
         self.upload_if_needed(resolved_frame)
