@@ -7,6 +7,7 @@ import warnings
 import pyglet
 
 from .base import Display, Screen
+import pyglet.libs.linux.egl as egl
 from pyglet.util import debug_print
 
 _debug = debug_print('debug_api')
@@ -38,7 +39,7 @@ class EGLHeadlessDisplay(HeadlessDisplay):
         num_devices = egl.EGLint()
         try:
             egl.eglQueryDevicesEXT(0, None, byref(num_devices))
-        except pyglet.libs.egl.eglext.MissingFunctionException:
+        except pyglet.libs.linux.egl.eglext.MissingFunctionException:
             warnings.warn('No device available for EGL device platform. Using native display type.')
             display = egl.EGLNativeDisplayType()
             self._display_connection = egl.eglGetDisplay(display)
