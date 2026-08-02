@@ -304,7 +304,7 @@ class Options:
     .. versionadded:: 2.0.16
     """
 
-    wayland: bool = False
+    wayland: bool = True
     """If ``True``, use Wayland instead of Xlib on Linux.
 
     .. versionadded:: 3.0.0

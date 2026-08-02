@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import namedtuple
+from pathlib import Path
 from ctypes import c_void_p, cast
 from threading import Event
 from typing import Literal
@@ -12,6 +13,24 @@ from .base import Display, Screen, ScreenMode
 
 ModeInfo = namedtuple('ModeInfo', 'width, height, depth, rate, current, primary')
 Geometry = namedtuple('Geometry', 'x, y, physical_width, physical_height, make, model, transform')
+
+# ``xdg-decoration`` is optional.
+_protocols = [
+    '/usr/share/wayland/wayland.xml',
+    '/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml',
+]
+for _optional_protocol in (
+    '/usr/share/wayland-protocols/stable/viewporter/viewporter.xml',
+    '/usr/share/wayland-protocols/staging/xdg-activation/xdg-activation-v1.xml',
+    '/usr/share/wayland-protocols/staging/fractional-scale/fractional-scale-v1.xml',
+    '/usr/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml',
+    '/usr/share/wayland-protocols/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml',
+    '/usr/share/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml',
+    '/usr/share/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
+    '/usr/share/wayland-protocols/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml',
+):
+    if Path(_optional_protocol).is_file():
+        _protocols.append(_optional_protocol)
 
 
 class WaylandScreenMode(ScreenMode):
@@ -26,7 +45,7 @@ class WaylandScreenMode(ScreenMode):
 
 
 class WaylandDisplay(Display):
-    _protocols = ('/usr/share/wayland/wayland.xml', '/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml')
+    _protocols = tuple(_protocols)
     _display_instance: WaylandDisplay | None = None
 
     def __new__(cls):
@@ -118,6 +137,7 @@ class WaylandScreen(Screen):
         self._is_primary = is_primary
         self.name = name
         self.description = description
+        self.wl_output = wl_output
         self._scale = scale
         self._geo = geometry
         self._modes = modes
@@ -131,7 +151,7 @@ class WaylandScreen(Screen):
             _dpi_height = _height_pixels / _height_inches
             self._dpi = (_dpi_width + _dpi_height) / 2
         else:
-            self._dpi = scale
+            self._dpi = 96 * scale
 
         super().__init__(display, self._geo.x, self._geo.y, _width_pixels, _height_pixels)
 

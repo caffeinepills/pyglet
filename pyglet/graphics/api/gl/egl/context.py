@@ -95,3 +95,7 @@ class EGLContext(OpenGLSurfaceContext):
             return
 
         egl.eglSwapBuffers(self.display_connection, self.egl_surface)
+
+    def set_vsync(self, vsync: bool = True) -> None:
+        """Set the EGL swap interval for the current surface."""
+        egl.eglSwapInterval(self.display_connection, int(vsync))

@@ -171,7 +171,9 @@ class EventLoop(event.EventDispatcher):
     @staticmethod
     def _redraw_windows(dt: float) -> None:
         # Redraw all windows
-        for window in app.windows:
+        # A close handler may remove its window while it is being redrawn.
+        # Iterate over a snapshot to keep the weak set stable for this frame.
+        for window in tuple(app.windows):
             window.draw(dt)
 
     def _schedule_window_draw(self, interval: float | None) -> None:
@@ -261,7 +263,7 @@ class EventLoop(event.EventDispatcher):
         Window._enable_event_queue = False
 
         # Dispatch pending events
-        for window in app.windows:
+        for window in tuple(app.windows):
             #window.switch_to()
             window.dispatch_pending_events()
 

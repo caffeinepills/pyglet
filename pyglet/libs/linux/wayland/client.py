@@ -40,6 +40,7 @@ from pyglet.libs.linux.wayland.lib_wayland import (
     wl_proxy,
     wl_proxy_add_listener,
     wl_proxy_destroy,
+    wl_proxy_get_id,
     wl_proxy_marshal,
     wl_proxy_marshal_constructor_versioned,
     wl_registry,
@@ -389,16 +390,25 @@ class Request:
     def create_interface_proxy(self, name: str, *args: Any) -> None:
         interface_struct = self._protocol._interface_structures[name]
         _formated_args = []
-        for arg in args:
-            if isinstance(arg, int):
-                _formated_args.append(c_uint32(arg))
-            elif isinstance(arg, str):
-                _formated_args.append(c_char_p(arg.encode()))
-            elif hasattr(arg, "_proxy"):
-                # It has an interface with a proxy, like wl_surface.
-                _formated_args.append(cast(arg._proxy, c_void_p))
+        for argument, value in zip(self.arguments, args):
+            if argument.type_name == 'object':
+                if value is None:
+                    _formated_args.append(c_void_p())
+                elif hasattr(value, '_proxy'):
+                    _formated_args.append(cast(value._proxy, c_void_p))
+                else:
+                    msg = f"Expected an interface or None for {argument.name}, got {value!r}"
+                    raise TypeError(msg)
+            elif argument.type_name in ('int', 'fixed'):
+                _formated_args.append(c_int32(value))
+            elif argument.type_name == 'fd':
+                _formated_args.append(c_int(value))
+            elif isinstance(value, int):
+                _formated_args.append(c_uint32(value))
+            elif isinstance(value, str):
+                _formated_args.append(c_char_p(value.encode()))
             else:
-                msg = f"Unsupported arg type for {arg!r}"
+                msg = f"Unsupported arg type for {value!r}"
                 raise TypeError(msg)
 
         return wl_proxy_marshal_constructor_versioned(
@@ -434,7 +444,19 @@ class Request:
                     return interface
 
             assert _debug_wayland(f"> calling: {self.name} : args={args}")
-            wl_proxy_marshal(self._interface._proxy, self.opcode, *args)
+            formatted_args = []
+            for argument, value in zip(self.arguments, args):
+                if argument.type_name == 'object':
+                    formatted_args.append(cast(value._proxy, c_void_p) if value is not None else c_void_p())
+                elif argument.type_name in ('int', 'fixed'):
+                    formatted_args.append(c_int32(value))
+                elif argument.type_name == 'fd':
+                    formatted_args.append(c_int(value))
+                elif argument.type_name == 'string':
+                    formatted_args.append(c_char_p(value.encode()) if value is not None else c_void_p())
+                else:
+                    formatted_args.append(c_uint32(value))
+            wl_proxy_marshal(self._interface._proxy, self.opcode, *formatted_args)
             return None
 
         # Pure socket call.
@@ -503,26 +525,38 @@ class Interface:
         wrappers = []
 
         for ev in self.events:
-            if ev.name not in self._handlers:
+            # Interfaces initialize each event with an empty list.  A listener
+            # must provide a callable for an event or libwayland will invoke
+            # that list when the compositor sends the event.
+            if not callable(self._handlers.get(ev.name)):
                 assert _debug_wayland(f"> Handler for {ev.name} not found. Using dummy function.")
 
-                def _make_wrapper(event_name):
+                def _make_wrapper(event):
                     def _callback(data, proxy, *args): ...
 
                     return _callback
             else:
                 # Wrap this since we don't use the user_data or wl_registry argument.
-                def _make_wrapper(event_name):
-                    handler = self._handlers[event_name]
+                def _make_wrapper(event):
+                    handler = self._handlers[event.name]
 
                     def _callback(data, proxy, *args):
-                        handler(*args)
+                        values = []
+                        for argument, value in zip(event.arguments, args):
+                            if argument.returns_new_object:
+                                value = self.protocol.create_interface(
+                                    argument.interface,
+                                    oid=wl_proxy_get_id(value),
+                                    proxy=value,
+                                )
+                            values.append(value)
+                        handler(*values)
 
                     return _callback
 
             # handler_func = self._handlers[ev.name]
             cb_type = CFUNCTYPE(None, c_void_p, POINTER(wl_registry), *ev.arg_ctypes)
-            py_fn = _make_wrapper(ev.name)
+            py_fn = _make_wrapper(ev)
             c_fn = cb_type(py_fn)
             # c_fn = cb_type(handler_func)
             assert _debug_wayland(
@@ -544,8 +578,10 @@ class Interface:
         self._listener_keepalive = (arr, wrappers)
 
     def dispatch_event(self, name: str, *args: Any) -> None:
-        handler = self._handlers[name]
-        handler(*args)
+        if handler := self._handlers.get(name):
+            if not callable(handler):
+                return
+            handler(*args)
 
     def set_handler(self, name: str, handler: Callable) -> None:
         assert self._listener_keepalive is None, "You have already set a handler. For multiple types, use set_handlers."
