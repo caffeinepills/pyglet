@@ -1,84 +1,88 @@
 from __future__ import annotations
 
-
 from contextlib import contextmanager
-from ctypes import byref, Array, sizeof, c_void_p
-from typing import cast, Iterator, Sequence, TYPE_CHECKING
+from ctypes import Array, byref, c_void_p, sizeof
+from typing import TYPE_CHECKING, Iterator, Sequence, cast
 
 import pyglet
-from pyglet.enums import TextureType, TextureFilter, ComponentFormat, AddressMode, GraphicsAPI
+from pyglet.enums import AddressMode, ComponentFormat, GraphicsAPI, TextureFilter, TextureType
 from pyglet.graphics import GraphicsAPIError
-from pyglet.graphics.api.gl import OpenGLSurfaceContext, GL_COMPRESSED_RGB8_ETC2
-from pyglet.graphics.api.base import SurfaceContext
+from pyglet.graphics.api.gl import GL_COMPRESSED_RGB8_ETC2, OpenGLSurfaceContext, gl
+from pyglet.graphics.api.gl.buffer import GLPixelPackBufferObject, GLPixelUnpackBufferObject
+from pyglet.graphics.api.gl.enums import texture_map
 from pyglet.graphics.api.gl.gl import (
-    GL_RED,
-    GL_RG,
-    GL_RGB,
     GL_BGR,
-    GL_RGBA,
-    GL_BGRA,
-    GL_RED_INTEGER,
-    GL_RG_INTEGER,
-    GL_RGB_INTEGER,
     GL_BGR_INTEGER,
-    GL_RGBA_INTEGER,
+    GL_BGRA,
     GL_BGRA_INTEGER,
-    GL_DEPTH_COMPONENT,
-    GL_DEPTH_STENCIL,
-    GL_UNSIGNED_BYTE,
-    GL_TEXTURE_MIN_FILTER,
-    GL_TEXTURE_MAG_FILTER,
-    GL_TEXTURE_MAX_LEVEL,
-    GL_TEXTURE_2D,
-    GLuint,
-    GL_TEXTURE0,
-    GL_READ_WRITE,
-    GL_RGBA32F,
-    GLubyte,
-    GL_UNPACK_SKIP_PIXELS,
-    GL_UNPACK_SKIP_ROWS,
-    GL_UNPACK_ALIGNMENT,
-    GL_UNPACK_ROW_LENGTH,
-    GL_TEXTURE_2D_ARRAY,  # noqa: F401
-    GL_TRIANGLES,  # noqa: F401
-    GL_RGBA8,  # noqa: F401
-    GL_R8,  # noqa: F401
-    GL_RG8,  # noqa: F401
-    GL_RGB8,  # noqa: F401
     GL_BYTE,  # noqa: F401
-    GL_INT,  # noqa: F401
+    GL_COLOR_ATTACHMENT0,
+    GL_COMPRESSED_RED_RGTC1,
+    GL_COMPRESSED_RG_RGTC2,
+    GL_COMPRESSED_RGB_S3TC_DXT1_EXT,
+    GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
+    GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,
+    GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,
+    GL_COMPRESSED_SIGNED_RED_RGTC1,
+    GL_COMPRESSED_SIGNED_RG_RGTC2,
+    GL_DEPTH_COMPONENT,
     GL_DEPTH_COMPONENT16,  # noqa: F401
     GL_DEPTH_COMPONENT24,  # noqa: F401
     GL_DEPTH_COMPONENT32,  # noqa: F401
     GL_DEPTH_COMPONENT32F,  # noqa: F401
+    GL_DEPTH_STENCIL,
     GL_FRAMEBUFFER,
-    GL_COLOR_ATTACHMENT0,
-    GL_COMPRESSED_RGBA_S3TC_DXT1_EXT,
-    GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,
-    GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,
-    GL_COMPRESSED_RGB_S3TC_DXT1_EXT,
-    GL_TEXTURE_SWIZZLE_R,
-    GL_TEXTURE_SWIZZLE_G,
-    GL_TEXTURE_SWIZZLE_B,
-    GL_TEXTURE_SWIZZLE_A,
     GL_GREEN,
-    GL_COMPRESSED_RED_RGTC1,
-    GL_COMPRESSED_SIGNED_RED_RGTC1,
-    GL_COMPRESSED_RG_RGTC2,
-    GL_COMPRESSED_SIGNED_RG_RGTC2,
+    GL_INT,  # noqa: F401
+    GL_R8,  # noqa: F401
+    GL_READ_WRITE,
+    GL_RED,
+    GL_RED_INTEGER,
+    GL_RG,
+    GL_RG8,  # noqa: F401
+    GL_RG_INTEGER,
+    GL_RGB,
+    GL_RGB8,  # noqa: F401
+    GL_RGB_INTEGER,
+    GL_RGBA,
+    GL_RGBA8,  # noqa: F401
+    GL_RGBA32F,
+    GL_RGBA_INTEGER,
+    GL_TEXTURE0,
+    GL_TEXTURE_2D,
+    GL_TEXTURE_2D_ARRAY,  # noqa: F401
+    GL_TEXTURE_MAG_FILTER,
+    GL_TEXTURE_MAX_LEVEL,
+    GL_TEXTURE_MIN_FILTER,
+    GL_TEXTURE_SWIZZLE_A,
+    GL_TEXTURE_SWIZZLE_B,
+    GL_TEXTURE_SWIZZLE_G,
+    GL_TEXTURE_SWIZZLE_R,
+    GL_TRIANGLES,  # noqa: F401
+    GL_UNPACK_ALIGNMENT,
+    GL_UNPACK_ROW_LENGTH,
+    GL_UNPACK_SKIP_PIXELS,
+    GL_UNPACK_SKIP_ROWS,
+    GL_UNSIGNED_BYTE,
+    GLubyte,
+    GLuint,
 )
-
-from pyglet.graphics.api.gl import gl
-from pyglet.graphics.api.gl.enums import texture_map
-from pyglet.graphics.api.gl.buffer import GLPixelPackBufferObject, GLPixelUnpackBufferObject
-from pyglet.image.base import ImageData, ImageDataRegion, CompressionFormat, \
-    CompressedImageData
-from pyglet.image.base import ImageException
-from pyglet.graphics.texture import PixelData, PixelReadback, Texture, UniformTextureSequence, CompressedTexture, \
-from pyglet.graphics.texture import Texture, TextureStreamer, UniformTextureSequence, CompressedTexture, \
-    _TextureRegionShared, _Texture3DShared, _TextureArrayShared, TextureGrid
+from pyglet.graphics.texture import (
+    CompressedTexture,
+    PixelData,
+    PixelReadback,
+    Texture,
+    TextureGrid,
+    TextureStreamer,
+    UniformTextureSequence,
+    _Texture3DShared,
+    _TextureArrayShared,
+    _TextureRegionShared,
+)
+from pyglet.image.base import CompressedImageData, CompressionFormat, ImageData, ImageDataRegion, ImageException
 
 if TYPE_CHECKING:
+    from pyglet.graphics.api.base import SurfaceContext
     from pyglet.customtypes import Buffer
     from pyglet.graphics.api.gl.framebuffer import GLFramebuffer
 
@@ -733,7 +737,7 @@ class GLTexture(Texture):
         pbo.bind()
 
         self.bind()
-        self._context.glPixelStorei(GL_PACK_ALIGNMENT, 1)
+        self._context.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
         if self._context.info.get_opengl_api() in (GraphicsAPI.OPENGL_ES_2, GraphicsAPI.OPENGL_ES_3):
             self._context.gles_pixel_fbo.bind()
             self._attach_gles_fbo_texture(z, level)

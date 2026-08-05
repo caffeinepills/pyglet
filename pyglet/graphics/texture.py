@@ -1437,6 +1437,8 @@ if not _is_pyglet_doc_run:
             GLTextureArrayRegion as TextureArrayRegion,  # noqa: F401
             GLTextureGrid,
             GLTextureGrid as TextureGrid,  # noqa: F401
+            GLTextureStreamer,
+            GLTextureStreamer as TextureStreamer,  # noqa: F401
             get_max_texture_size,
             get_max_array_texture_layers,
         )
