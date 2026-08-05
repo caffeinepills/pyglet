@@ -24,6 +24,7 @@ from pyglet.graphics.state import (
     State,
     TextureState,
     UniformBufferState,
+    ViewportProtocol,
     ViewportState,
     _expand_states_in_order,
 )
@@ -59,9 +60,11 @@ class Group:
         def on_draw():
             batch.draw()
     """
-    states: list[State]
+    _state_names: dict[str, State]
+    _expanded_states: list[State]
     _hash: int
-    _hashable_states: tuple
+    _hashable_states: tuple[State, ...]
+    _state_cache_dirty: bool
 
     def __init__(self, order: int = 0, parent: Group | None = None) -> None:
         """Initialize a rendering group.
@@ -83,9 +86,12 @@ class Group:
         self._expanded_states = []
         self._comparisons = []
 
-        # Default hash
+        # Preserve the default hash for an unconfigured Group. Once state is
+        # added, expansion and re-hashing are deferred until the group is
+        # compared, hashed, or rendered.
         self._hashable_states = ()
         self._hash = hash((self._order, self.parent))
+        self._state_cache_dirty = False
 
         if parent and parent.has_enforced_states:
             for p_state in parent._enforced_states:  # noqa: SLF001
@@ -100,27 +106,50 @@ class Group:
         """Sets a state to be applied to the group.
 
         If the state is an enforced state, setting a new state will not update any children.
+
+        Args:
+            state:
+                State instance to apply when this group is drawn. States of
+                the same concrete type replace any previously assigned state
+                of that type. Derived state order and hashing are deferred
+                until the group is first used.
         """
-        assert not self.batches, "New states cannot be set once a group is in a batch."
+        assert not self._assigned_batches, "New states cannot be set once a group is in a batch."
         state_type = type(state)
         self._state_names[state_type.__name__] = state
-        group_states = self._state_names.values()
-        self._expanded_states = _expand_states_in_order(group_states)
         if state.enforced_state:
             self._enforced_states.append(state)
 
+        self._state_cache_dirty = True
+
+    def _ensure_state_cache(self) -> None:
+        """Build derived state data at the first point where it is required."""
+        if not self._state_cache_dirty:
+            return
+
+        group_states = self._state_names.values()
+        self._expanded_states = _expand_states_in_order(group_states)
         self._hashable_states = tuple({state for state in group_states if state.group_hash is True})
         self._hash = hash((self._order, self.parent, self._hashable_states))
+        self._state_cache_dirty = False
 
     @property
     def states(self) -> tuple[State, ...]:
         """The states that will apply to members of this group."""
         return tuple(self._state_names.values())
 
-    def add_comparison(self, value):
+    def add_comparison(self, value: Any) -> None:
+        """Adds a value to compare between groups of this type."""
         self._comparisons.append(value)
 
     def set_scissor(self, scissor_object: ScissorProtocol) -> None:
+        """Set the scissor state.
+
+        Args:
+            scissor_object:
+                Object describing the scissor rectangle to apply while this
+                group is drawn.
+        """
         self.set_state(ScissorState(scissor_object))
 
     def set_camera(self, camera: CameraScopeProtocol) -> None:
@@ -129,6 +158,12 @@ class Group:
         The camera object is applied during batch draw inside a draw context.
         If the camera/view provides an effective scissor area, a matching
         camera scissor state is attached automatically.
+
+        Args:
+            camera:
+                Camera or camera-like object that provides viewport state,
+                begins and ends its drawing scope, and may provide a scissor
+                area for this group.
         """
         self.set_state(CameraScopeState(camera))
         if isinstance(camera, CameraScissorProviderProtocol):
@@ -136,19 +171,64 @@ class Group:
             if scissor is not None:
                 self.set_state(ScissorState(scissor, owned_by_camera=True))
 
-    def set_blend(self, blend_src: BlendFactor, blend_dst: BlendFactor, blend_op: BlendOp = BlendOp.ADD):
+    def set_blend(self, blend_src: BlendFactor, blend_dst: BlendFactor, blend_op: BlendOp = BlendOp.ADD) -> None:
+        """Set the blend state.
+
+        Args:
+            blend_src:
+                Source blend factor used for incoming fragment color values.
+            blend_dst:
+                Destination blend factor used for framebuffer color values.
+            blend_op:
+                Blend operation used to combine the source and destination
+                values. Defaults to additive blending.
+        """
         self.set_state(BlendState(blend_src, blend_dst, blend_op))
 
     def set_depth_test(self, func: CompareOp) -> None:
+        """Set the depth comparison state.
+
+        Args:
+            func:
+                Comparison operation used to decide whether a fragment passes
+                the depth test.
+        """
         self.set_state(DepthBufferComparison(func))
 
-    def set_viewport(self, x, y, width, height):
-        self.set_state(ViewportState(x, y, width, height))
+    def set_viewport(self, viewport: ViewportProtocol) -> None:
+        """Set the viewport state.
 
-    def set_shader_program(self, program: ShaderProgram):
+        Args:
+            viewport:
+                Mutable viewport provider with ``x``, ``y``, ``width``, and
+                ``height`` attributes. The current values are read whenever
+                this group state is applied.
+        """
+        if not isinstance(viewport, ViewportProtocol):
+            msg = "set_viewport expects an object with x, y, width, and height attributes."
+            raise TypeError(msg)
+
+        self.set_state(ViewportState(viewport))
+
+    def set_shader_program(self, program: ShaderProgram) -> None:
+        """Set the shader program state.
+
+        Args:
+            program:
+                Shader program to bind while this group is drawn.
+        """
         self.set_state(ShaderProgramState(program))
 
     def set_shader_uniforms(self, program: ShaderProgram, uniforms: dict[str, Any]) -> None:
+        """Set shader uniform values.
+
+        Args:
+            program:
+                Shader program that owns the uniforms.
+            uniforms:
+                Mapping of uniform names to values to apply to the shader
+                program while this group is drawn.
+        """
         self.set_state(ShaderUniformState(program, uniforms))
 
     def set_uniform_buffer(self, region: UniformBufferRegion, binding_index: int | None = None) -> None:
@@ -176,6 +256,7 @@ class Group:
             set_id:
                 The set that the sampler belongs to. Only applicable in Vulkan.
         """
+        assert not self._assigned_batches, "New states cannot be set once a group is in a batch."
         self._state_names.pop(MultiTextureSamplerState.__name__, None)
         self.set_state(TextureState.from_texture(texture, texture_unit, set_id))
 
@@ -197,6 +278,7 @@ class Group:
             set_id:
                 The set that the sampler belongs to. Only applicable in Vulkan.
         """
+        assert not self._assigned_batches, "New states cannot be set once a group is in a batch."
         self._state_names.pop(TextureState.__name__, None)
         self.set_state(MultiTextureSamplerState.from_textures(program, textures, first_texture_unit, set_id))
 
@@ -245,8 +327,12 @@ class Group:
 
         :see: ``__hash__`` function, both must be implemented.
         """
-        return (self.__class__ is other.__class__ and
-                self._order == other.order and
+        if self.__class__ is not other.__class__:
+            return False
+
+        self._ensure_state_cache()
+        other._ensure_state_cache()
+        return (self._order == other.order and
                 self.parent == other.parent and
                 self._hashable_states == other._hashable_states and
                 self._comparisons == other._comparisons)
@@ -258,23 +344,32 @@ class Group:
 
         For simplicity, the hash should be a tuple containing your unique identifiers of your Group.
 
-        By default, this is (``order``, ``parent``).
+        By default, this includes ``order``, ``parent``, and all states that
+        participate in group hashing.
 
         :see: ``__eq__`` function, both must be implemented.
         """
+        self._ensure_state_cache()
         return self._hash
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(order={self._order})"
 
     def set_state_all(self, ctx: DrawContext) -> None:
-        """Calls all set states of the underlying Group."""
+        """Calls all set states of the underlying Group.
+
+        Args:
+            ctx:
+                Draw context that receives the group's state changes.
+        """
+        self._ensure_state_cache()
         for state in self._expanded_states:
             if state.sets_state:
                 state.set_state(ctx)
 
     def unset_state_all(self, ctx: DrawContext) -> None:
         """Calls all unset states of the underlying Group."""
+        self._ensure_state_cache()
         for state in self._expanded_states:
             if state.unsets_state:
                 state.unset_state(ctx)
@@ -285,6 +380,10 @@ class Group:
         Call this method if you are using a group in isolation: the
         parent groups will be called in top-down order, with this class's
         ``set`` being called last.
+
+        Args:
+            ctx:
+                Draw context that receives the parent and child state changes.
         """
         if self.parent:
             self.parent.set_state_recursive(ctx)
@@ -335,7 +434,7 @@ class BatchDrawOptions:
 
     def resolve(self, ctx: SurfaceContext) -> DrawPass:
         """Resolves the draw options to give a final DrawPass."""
-        camera = self.camera or ctx.window.default_camera
+        camera = self.camera or ctx.window.camera
         return DrawPass(
             #framebuffer=self.framebuffer or ctx.default_framebuffer,
             framebuffer=self.framebuffer,
@@ -686,6 +785,9 @@ class Batch:
         return domain
 
     def _add_group(self, group: Group) -> None:
+        # Subclasses may override __hash__ for identity semantics, so hashing
+        # during dictionary insertion is not a reliable finalization boundary.
+        group._ensure_state_cache()  # noqa: SLF001
         self.group_map[group] = {}
         if group.parent is None:
             self.top_groups.append(group)
@@ -930,7 +1032,8 @@ class _BucketBatch(Batch):
         active_states: dict[type, State] = {}
 
         def _next_same_type_set(idx: int, state_type: type) -> None | State:
-            for dom2, mode2, group2 in draw_list[idx + 1:]:
+            for next_idx in range(idx + 1, len(draw_list)):
+                dom2, mode2, group2 = draw_list[next_idx]
                 if dom2 is None and mode2 == "set":
                     for state in group2._expanded_states:  # noqa: SLF001
                         if type(state) is state_type:

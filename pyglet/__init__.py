@@ -18,11 +18,14 @@ if TYPE_CHECKING:
     from typing import Any, Callable, ItemsView, Sized
 
 #: The release version
-version = '3.0.dev6'
+version = '3.0.dev7'
 __version__ = version
 
-MIN_PYTHON_VERSION = 3, 8
+MIN_PYTHON_VERSION = 3, 10
 MIN_PYTHON_VERSION_STR = ".".join([str(v) for v in MIN_PYTHON_VERSION])
+
+#: The Pyodide release used to develop and test pyglet's browser support.
+PYODIDE_VERSION = "0.29.4"
 
 if sys.version_info < MIN_PYTHON_VERSION:
     msg = f"pyglet {version} requires Python {MIN_PYTHON_VERSION_STR} or newer."
@@ -55,7 +58,6 @@ class PyodideOptions:
     If the ID is not detected, a canvas will be created with the above. If you have a canvas already embedded in your
     page, and do not want to alter your code, then modify this option.
     """
-
 
 @dataclass
 class Options:
@@ -190,16 +192,20 @@ class Options:
     """
 
     text_shaping: Literal["platform", "harfbuzz", False] = 'platform'
-    """Determines how text is processed and displayed based on features of the font.
+    """Selects the text-shaping backend used by layouts and labels that enable shaping.
+
+    Individual :class:`~pyglet.text.Label`, :class:`~pyglet.text.HTMLLabel`, and
+    :class:`~pyglet.text.DocumentLabel` instances can opt out with ``shaping=False``.
+    This option selects the backend; it does not force shaping on every label.
 
     Valid option names are:
 
-     * ``False``, Disables the shaping process for text. This may increase performance as it reduces the amount
-        of calls during rendering. If your font is simple, monospaced, or you require no advanced OpenType features,
-        this option may be useful.
-     * ``'platform'``, Uses platform's font system for shaping. Supported by Windows (DirectWrite) and Mac (CoreText).
-     * ``'harfbuzz'``, Utilize the harfbuzz library for font shaping. This requires an optional dependency, if not
-     found, it will fallback to platform shaping.
+     * ``False``, Disables shaping for every layout and label. Prefer ``shaping=False`` on individual labels when
+        only frequently-updated text, such as an FPS counter, does not need advanced typography.
+     * ``'platform'``, Uses the platform font system for shaping. Supported by Windows (DirectWrite) and Mac
+        (CoreText); other platforms use unshaped glyph metrics.
+     * ``'harfbuzz'``, Uses the HarfBuzz library for shaping. This is an explicit opt-in because it is an optional
+        dependency and can change text metrics. If it is unavailable, pyglet falls back to platform behavior.
 
     .. versionadded:: 2.0
     """
@@ -498,6 +504,7 @@ if TYPE_CHECKING:
         resource,
         shapes,
         sprite,
+        storage,
         text,
         window,
     )
@@ -521,6 +528,7 @@ else:
     resource = _ModuleProxy("resource")  # type: ignore
     sprite = _ModuleProxy("sprite")  # type: ignore
     shapes = _ModuleProxy("shapes")  # type: ignore
+    storage = _ModuleProxy("storage")  # type: ignore
     text = _ModuleProxy("text")  # type: ignore
     window = _ModuleProxy("window")  # type: ignore
 

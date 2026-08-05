@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from pyglet.graphics import Batch
     from pyglet.graphics.shader import ShaderProgram
     from pyglet.graphics.vertexdomain import VertexList
-    from pyglet.graphics import Texture
+    from pyglet.graphics import Texture, TextureRenderTarget
     from pyglet.text.document import AbstractDocument, InlineElement
     from pyglet.text.runlist import AbstractRunIterator, RunIterator
 
@@ -403,23 +403,25 @@ class _GlyphBox(_AbstractBox):
         vertices = []
         tex_coords = []
         baseline = 0
-        x1 = line_x
+        x1 = round(line_x)
         for start, end, baseline_ in context.baseline_iter.ranges(i, i + n_glyphs):
             baseline = layout._parse_distance(baseline_)  # noqa: SLF001
             assert len(self.glyphs[start - i:end - i]) == end - start
-            for (kern, glyph, glyph_pos) in self.glyphs[start - i:end - i]:
-                x1 += kern
+            y1 = round(line_y + baseline)
+            for kern, glyph, glyph_pos in self.glyphs[start - i:end - i]:
+                x1 += round(kern)
                 v0, v1, v2, v3 = glyph.vertices
-                v0 += x1 + glyph_pos.x_offset
-                v2 += x1 + glyph_pos.x_offset
-                v1 += line_y + baseline + glyph_pos.y_offset
-                v3 += line_y + baseline + glyph_pos.y_offset
-                vertices.extend(map(round, [v0, v1, 0, v2, v1, 0, v2, v3, 0, v0, v3, 0]))
-                t = glyph.tex_coords
-                tex_coords.extend(t)
-                x1 += glyph.advance + glyph_pos.x_advance
-                v1 += glyph_pos.y_advance
-                v3 += glyph_pos.y_advance
+                # Translate the whole glyph as a block. Rounding v0/v1/v2/v3 can distort vertices.
+                gx = x1 + round(glyph_pos.x_offset)
+                gy = y1 + round(glyph_pos.y_offset)
+                vertices.extend([
+                    v0 + gx, v1 + gy, 0,
+                    v2 + gx, v1 + gy, 0,
+                    v2 + gx, v3 + gy, 0,
+                    v0 + gx, v3 + gy, 0,
+                ])
+                tex_coords.extend(glyph.tex_coords)
+                x1 += round(glyph.advance + glyph_pos.x_advance)
 
         # Text color
         colors = []
@@ -797,11 +799,14 @@ class TextLayout:
             wrap_lines:
                 If True and `multiline` is True, the text is word-wrapped using the specified width.
             shaping:
-                If the text should use proper positioning and typography according to the font and global
-                ``pyglet.options.text_shaping`` option. If ``False``, metrics will instead be tied to the glyph sizes.
+                Whether this layout should use text shaping. The shaping backend is selected globally with
+                ``pyglet.options.text_shaping``. If ``False``, glyph positions are based on their unshaped metrics.
             init_document:
                 If True the document will be initialized. If subclassing then
                 you may want to avoid duplicate initializations by changing to False.
+
+        .. versionchanged:: 3.0
+            Added the *shaping* parameter.
         """
         self._x = x
         self._y = y
@@ -1031,7 +1036,8 @@ class TextLayout:
         for line in self._lines:
             acc_anchor_x = self._anchor_left
             for box in line.boxes:
-                box.update_anchor(acc_anchor_x, anchor_y)
+                place_anchor_x = round(acc_anchor_x) if self._rotation == 0 else acc_anchor_x
+                box.update_anchor(place_anchor_x, anchor_y)
                 acc_anchor_x += box.advance
 
     @property
@@ -1279,36 +1285,60 @@ class TextLayout:
         self._vertex_lists.clear()
         self._boxes.clear()
 
-    def get_as_texture(self) -> Texture:
-        """Utilizes a :py:class:`~pyglet.image.framebuffer.Framebuffer` to draw the current layout into a texture.
+    def get_as_texture(self, render_target: TextureRenderTarget | None = None) -> Texture:
+        """Draw the current layout into a new texture.
 
-        .. warning:: Usage is recommended only if you understand how texture generation affects your application.
-            Improper use will cause texture memory leaks and performance degradation.
+        When generating one texture, omit ``render_target`` and the temporary
+        framebuffer and camera will be cleaned up automatically::
+
+            texture = layout.get_as_texture()
+
+        Reuse a :class:`~pyglet.graphics.framebuffer.TextureRenderTarget` when
+        converting many layouts to avoid recreating that target state::
+
+            target = pyglet.graphics.TextureRenderTarget()
+            textures = [layout.get_as_texture(target) for layout in layouts]
+            target.delete()
+
+        Every returned texture is independent and owned by the caller. Delete
+        each texture when it is no longer needed.
+
+        .. warning::
+            This allocates a GPU texture and renders the layout on the GPU.
+            Generating many textures, especially every frame, can be slow.
+            Reusing a render target reduces setup overhead but does not remove
+            the texture allocation or rendering cost. The caller must delete
+            returned textures to avoid GPU memory leaks.
 
         .. note:: Does not include InlineElements.
+
+        Args:
+            render_target:
+                Optional reusable texture render target. When omitted, a temporary
+                target is created and deleted for this operation.
 
         Returns:
             A new texture with the layout drawn into it.
 
         .. versionadded:: 2.0.11
         """
-        raise NotImplementedError
-        # framebuffer = pyglet.image.Framebuffer()
-        # temp_pos = self.position
-        # width = int(round(self._content_width))
-        # height = int(round(self._content_height))
-        # texture = pyglet.graphics.Texture.create(width, height, texture_desc)
-        # depth_buffer = pyglet.image.buffer.Renderbuffer(width, height, GL_DEPTH_COMPONENT)
-        # framebuffer.attach_texture(texture)
-        # framebuffer.attach_renderbuffer(depth_buffer, attachment=GL_DEPTH_ATTACHMENT)
-        #
-        # self.position = (0 - self._anchor_left, 0 - self._anchor_bottom, 0)
-        # framebuffer.bind()
-        # self.draw()
-        # framebuffer.unbind()
-        #
-        # self.position = temp_pos
-        # return texture
+        width = round(self._content_width)
+        height = round(self._content_height)
+        owns_render_target = render_target is None
+        render_target = render_target or pyglet.graphics.TextureRenderTarget()
+        original_position = self.position
+
+        try:
+            self.position = -self._anchor_left, -self._anchor_bottom, 0
+            with render_target.render_to_texture(width, height) as texture:
+                self.draw()
+            return texture
+        finally:
+            try:
+                self.position = original_position
+            finally:
+                if owns_render_target:
+                    render_target.delete()
 
     def draw(self) -> None:
         """Draw this text layout.
@@ -1891,7 +1921,8 @@ class TextLayout:
         acc_anchor_x = anchor_x
         # GlyphBoxes (boxes) are collection of Glyphs/Inline Elements. A line can have multiple GlyphBoxes.
         for box in boxes:
-            box.place(self, i, self._x, self._y, self._z, line_x, line_y, self._rotation, self._visible, acc_anchor_x,
+            place_anchor_x = round(acc_anchor_x) if self._rotation == 0 else acc_anchor_x
+            box.place(self, i, self._x, self._y, self._z, line_x, line_y, self._rotation, self._visible, place_anchor_x,
                       anchor_y, context)
             i += box.length
             acc_anchor_x += box.advance

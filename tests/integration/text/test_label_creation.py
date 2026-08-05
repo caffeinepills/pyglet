@@ -15,11 +15,13 @@ Z = random.randint(-10, 10)
 
 
 @pytest.mark.parametrize('label_class', [Label, HTMLLabel])
-def test_label_creation(gl3_context, label_class):
-    label = label_class("This is a test", x=X, y=Y, z=Z)
+@pytest.mark.parametrize('shaping', [True, False])
+def test_label_creation(test_window, label_class, shaping):
+    label = label_class("This is a test", x=X, y=Y, z=Z, shaping=shaping)
     assert label.x == X
     assert label.y == Y
     assert label.z == Z
+    assert label._shaping is shaping  # noqa: SLF001
 
 
 @pytest.fixture(params=[(decode_text, "This is a string of regular text."),
@@ -29,9 +31,10 @@ def document(request):
     decoder, string = request.param
     return decoder(string)
 
-
-def test_documentlabel_creation(gl3_context, document):
-    label = DocumentLabel(document=document, x=X, y=Y, z=Z)
+@pytest.mark.parametrize('shaping', [True, False])
+def test_documentlabel_creation(test_window, document, shaping):
+    label = DocumentLabel(document=document, x=X, y=Y, z=Z, shaping=shaping)
     assert label.x == X
     assert label.y == Y
     assert label.z == Z
+    assert label._shaping is shaping  # noqa: SLF001
