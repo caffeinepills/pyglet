@@ -1,1 +1,1 @@
-# For OpenGL-family integration tests.
+"""Tests for modern OpenGL-family graphics backends."""

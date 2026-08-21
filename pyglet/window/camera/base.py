@@ -6,8 +6,8 @@ import weakref
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, overload, runtime_checkable
 
 import pyglet
-from pyglet.enums import GraphicsAPI
 from pyglet.graphics.buffer import UniformBufferRegion
+from pyglet.math import Vec3, Vec4
 
 
 if TYPE_CHECKING:
@@ -23,6 +23,12 @@ ViewportType = tuple[int, int, int, int]
 ScissorArea = tuple[int, int, int, int]
 
 
+def _divide_w(point: Vec4) -> Vec3:
+    if point.w == 0:
+        return Vec3(point.x, point.y, point.z)
+    return Vec3(point.x / point.w, point.y / point.w, point.z / point.w)
+
+
 class CameraScissor:
     """Mutable scissor rectangle for camera/view group-scoped clipping."""
     x: int
@@ -30,7 +36,7 @@ class CameraScissor:
     width: int
     height: int
 
-    __slots__ = ("height", "width", "x", "y")
+    __slots__ = ("x", "y", "width", "height")
 
     def __init__(self, x: int, y: int, width: int, height: int) -> None:
         self.x = int(x)
@@ -51,6 +57,10 @@ class CameraScissor:
         self.y = int(y)
         self.width = max(0, int(width))
         self.height = max(0, int(height))
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(x={self.x}, y={self.y}, width={self.width}, height={self.height})"
+
 
 @runtime_checkable
 class CameraViewStorage(Protocol):
@@ -315,6 +325,164 @@ class _CameraViewBase:
         framebuffer_width, framebuffer_height = self._camera._window.get_framebuffer_size()  # noqa: SLF001
         self._set_viewport((0, 0, max(1, int(framebuffer_width)), max(1, int(framebuffer_height))))
 
+    def screen_to_viewport(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert screen-space coordinates to viewport-local coordinates.
+
+        ``screen`` space uses the same lower-left-origin framebuffer
+        coordinate system as viewports and scissors. ``viewport`` space is
+        local to this view's viewport, so ``(0, 0)`` is the viewport's
+        lower-left corner.
+
+        The returned ``z`` value is unchanged.
+        """
+        point = Vec3(x, y, z)
+        viewport_x, viewport_y, _, _ = self._camera._resolve_viewport(self)  # noqa: SLF001
+        return Vec3(point.x - viewport_x, point.y - viewport_y, point.z)
+
+    def viewport_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert viewport-local coordinates to screen-space coordinates.
+
+        ``screen`` space uses the same lower-left-origin framebuffer
+        coordinate system as viewports and scissors.
+
+        The returned ``z`` value is unchanged.
+        """
+        point = Vec3(x, y, z)
+        viewport_x, viewport_y, _, _ = self._camera._resolve_viewport(self)  # noqa: SLF001
+        return Vec3(point.x + viewport_x, point.y + viewport_y, point.z)
+
+    def contains_screen_point(self, x: float, y: float) -> bool:
+        """Return whether a screen-space point is inside this view's viewport."""
+        viewport_x, viewport_y, viewport_width, viewport_height = self._camera._resolve_viewport(self)  # noqa: SLF001
+        return viewport_x <= x <= viewport_x + viewport_width and viewport_y <= y <= viewport_y + viewport_height
+
+    def _viewport_to_clip(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        point = Vec3(x, y, z)
+        _, _, viewport_width, viewport_height = self._camera._resolve_viewport(self)  # noqa: SLF001
+        viewport_width = max(1, int(viewport_width))
+        viewport_height = max(1, int(viewport_height))
+        return Vec3(
+            (point.x / viewport_width) * 2.0 - 1.0,
+            (point.y / viewport_height) * 2.0 - 1.0,
+            point.z,
+        )
+
+    def _clip_to_viewport(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        point = Vec3(x, y, z)
+        _, _, viewport_width, viewport_height = self._camera._resolve_viewport(self)  # noqa: SLF001
+        viewport_width = max(1, int(viewport_width))
+        viewport_height = max(1, int(viewport_height))
+        return Vec3(
+            (point.x + 1.0) * 0.5 * viewport_width,
+            (point.y + 1.0) * 0.5 * viewport_height,
+            point.z,
+        )
+
+    def _screen_to_clip(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        point = self.screen_to_viewport(x, y, z)
+        return self._viewport_to_clip(point.x, point.y, point.z)
+
+    def _clip_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        point = self._clip_to_viewport(x, y, z)
+        return self.viewport_to_screen(point.x, point.y, point.z)
+
+    @staticmethod
+    def _clip_to_projection(x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec4:
+        point = Vec3(x, y, z)
+        return Vec4(point.x * w, point.y * w, point.z * w, w)
+
+    @staticmethod
+    def _projection_to_clip(x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec3:
+        return _divide_w(Vec4(x, y, z, w))
+
+    def _view_to_projection(self, x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec4:
+        projection, _ = self._camera._get_matrices_for_view(self)  # noqa: SLF001
+        return projection @ Vec4(x, y, z, w)
+
+    def _projection_to_view(self, x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec3:
+        projection, _ = self._camera._get_matrices_for_view(self)  # noqa: SLF001
+        return _divide_w(~projection @ Vec4(x, y, z, w))
+
+    def _screen_to_projection(self, x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec4:
+        point = self._screen_to_clip(x, y, z)
+        return self._clip_to_projection(point.x, point.y, point.z, w)
+
+    def _projection_to_screen(self, x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec3:
+        point = self._projection_to_clip(x, y, z, w)
+        return self._clip_to_screen(point.x, point.y, point.z)
+
+    def _world_to_projection(self, x: float, y: float, z: float = 0.0) -> Vec4:
+        projection, view_matrix = self._camera._get_matrices_for_view(self)  # noqa: SLF001
+        return projection @ view_matrix @ Vec4(x, y, z, 1.0)
+
+    def _projection_to_world(self, x: float, y: float, z: float = 0.0, w: float = 1.0) -> Vec3:
+        projection, view_matrix = self._camera._get_matrices_for_view(self)  # noqa: SLF001
+        return _divide_w(~view_matrix @ ~projection @ Vec4(x, y, z, w))
+
+    def view_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert view-space coordinates to screen-space coordinates."""
+        point = self._view_to_projection(x, y, z)
+        return self._projection_to_screen(point.x, point.y, point.z, point.w)
+
+    def screen_to_view(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert screen-space coordinates to view-space coordinates.
+
+        ``z`` is the depth in the projection range. Use ``-1`` for the near
+        clip plane, ``1`` for the far clip plane, or ``0`` for the middle.
+        For 3D picking, call this with ``z=-1`` and ``z=1`` to get points on
+        the near and far clip planes.
+        """
+        point = self._screen_to_projection(x, y, z)
+        return self._projection_to_view(point.x, point.y, point.z, point.w)
+
+    def world_to_view(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert world-space coordinates to this view's view space."""
+        _, view_matrix = self._camera._get_matrices_for_view(self)  # noqa: SLF001
+        return _divide_w(view_matrix @ Vec4(x, y, z, 1.0))
+
+    def view_to_world(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert view-space coordinates to world space."""
+        _, view_matrix = self._camera._get_matrices_for_view(self)  # noqa: SLF001
+        return _divide_w(~view_matrix @ Vec4(x, y, z, 1.0))
+
+    def world_to_viewport(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert world-space coordinates to viewport-local coordinates."""
+        point = self._projection_to_clip(*self._world_to_projection(x, y, z))
+        return self._clip_to_viewport(point.x, point.y, point.z)
+
+    def viewport_to_world(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert viewport-local coordinates to world-space coordinates.
+
+        ``z`` is the depth in the projection range. Use ``-1`` for the near
+        clip plane, ``1`` for the far clip plane, or ``0`` for the middle.
+        """
+        point = self._viewport_to_clip(x, y, z)
+        projected = self._clip_to_projection(point.x, point.y, point.z)
+        return self._projection_to_world(projected.x, projected.y, projected.z, projected.w)
+
+    def world_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert world-space coordinates to screen-space coordinates.
+
+        The returned ``x`` and ``y`` are framebuffer coordinates in the same
+        lower-left-origin space as the viewport.
+
+        The returned ``z`` is the depth in the projection range.
+        """
+        point = self._projection_to_clip(*self._world_to_projection(x, y, z))
+        return self._clip_to_screen(point.x, point.y, point.z)
+
+    def screen_to_world(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert screen-space coordinates to world-space coordinates.
+
+        ``z`` is the depth in the projection range. For a 2D camera, the
+        default ``z=0`` maps to the usual world ``z=0`` plane.
+
+        For 3D, call this with ``z=-1`` and ``z=1`` to get near and far world-space
+        points for a ray.
+        """
+        point = self._screen_to_projection(x, y, z)
+        return self._projection_to_world(point.x, point.y, point.z, point.w)
+
     @property
     def scissor_area(self) -> ScissorArea | None:
         """Optional window-space scissor area for this view."""
@@ -396,6 +564,9 @@ class BaseCamera(Generic[ViewT]):
     matrix state. This allows callers to read/set the current camera matrices
     directly (for example through ``window.projection`` / ``window.view``)
     without needing to mutate transform fields on the view object.
+
+    Viewports are stored by camera views. The camera-level ``viewport`` property
+    is a convenience proxy for the root view's viewport.
     """
 
     def __init__(
@@ -404,6 +575,7 @@ class BaseCamera(Generic[ViewT]):
         view_storage: CameraViewStorage | None = None,
         *,
         viewport: ViewportType | None = None,
+        register_handlers: bool = True,
     ) -> None:
         """Initialize a camera.
 
@@ -414,13 +586,20 @@ class BaseCamera(Generic[ViewT]):
                 Target for resolved projection/view matrix writes. If ``None``,
                 no output target is applied unless a view provides one.
             viewport:
-                Optional fixed viewport. If ``None``, the camera defaults to
-                the full framebuffer viewport and tracks resize/scale events.
+                Optional fixed viewport for the root view. If ``None``, the
+                root view defaults to the full framebuffer viewport and tracks
+                resize/scale events.
+            register_handlers:
+                If ``True``, register the camera for window resize and scale
+                events. Disable this for fixed-size offscreen cameras.
         """
         self._window = weakref.proxy(window)
 
         if not isinstance(view_storage, CameraViewStorage):
-            msg = "Camera region must implement apply(projection, view), commit(draw_context), and bind_camera(draw_context)."
+            msg = (
+                "Camera region must implement apply(projection, view), commit(draw_context), "
+                "and bind_camera(draw_context)."
+            )
             raise TypeError(msg)
 
         self.view_storage = view_storage
@@ -435,10 +614,12 @@ class BaseCamera(Generic[ViewT]):
 
         self._resolved_viewport: tuple[int, int, int, int] | None = None
 
-        window.push_handlers(self)
+        if register_handlers:
+            window.push_handlers(self)
 
     def _create_default_view_storage(
         self,
+        window: Window,
         *,
         window_block: UniformBlock | None = None,
         copies_per_resource: int = 3,
@@ -446,7 +627,7 @@ class BaseCamera(Generic[ViewT]):
         view_uniform: str = "u_view",
     ) -> CameraViewStorage:
         """Create the root view storage for this camera."""
-        if pyglet.options.backend in (GraphicsAPI.OPENGL_2, GraphicsAPI.OPENGL_ES_2):
+        if not window.context.info.features.uniform_buffers:
             return UniformSetCameraRegion(
                 projection_uniform=projection_uniform,
                 view_uniform=view_uniform,
@@ -461,11 +642,60 @@ class BaseCamera(Generic[ViewT]):
 
     @property
     def viewport(self) -> tuple[int, int, int, int]:
+        """Viewport of this camera's root view.
+
+        The viewport is stored on camera views. This property is a convenience
+        proxy for ``camera.view.viewport``.
+        """
         return self.view.viewport
 
     @viewport.setter
     def viewport(self, values: tuple[int, int, int, int] | None) -> None:
         self.view.viewport = values
+
+    def screen_to_viewport(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert screen-space coordinates to root-view viewport coordinates."""
+        return self.view.screen_to_viewport(x, y, z)
+
+    def viewport_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert root-view viewport coordinates to screen-space coordinates."""
+        return self.view.viewport_to_screen(x, y, z)
+
+    def contains_screen_point(self, x: float, y: float) -> bool:
+        """Return whether a screen-space point is inside the root view's viewport."""
+        return self.view.contains_screen_point(x, y)
+
+    def view_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert root-view view-space coordinates to screen space."""
+        return self.view.view_to_screen(x, y, z)
+
+    def screen_to_view(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert screen-space coordinates to root-view view space."""
+        return self.view.screen_to_view(x, y, z)
+
+    def world_to_view(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert world-space coordinates to root-view view space."""
+        return self.view.world_to_view(x, y, z)
+
+    def view_to_world(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert root-view view-space coordinates to world space."""
+        return self.view.view_to_world(x, y, z)
+
+    def world_to_viewport(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert world-space coordinates to root-view viewport coordinates."""
+        return self.view.world_to_viewport(x, y, z)
+
+    def viewport_to_world(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert root-view viewport coordinates to world space."""
+        return self.view.viewport_to_world(x, y, z)
+
+    def world_to_screen(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert world-space coordinates to screen space using the root view."""
+        return self.view.world_to_screen(x, y, z)
+
+    def screen_to_world(self, x: float, y: float, z: float = 0.0) -> Vec3:
+        """Convert screen-space coordinates to world space using the root view."""
+        return self.view.screen_to_world(x, y, z)
 
     def _mark_projection_dirty(self) -> None:
         self._projection_dirty = True
@@ -527,6 +757,15 @@ class BaseCamera(Generic[ViewT]):
             view._view_matrix = self._build_view_matrix(view)  # noqa: SLF001
             view._view_dirty = False  # noqa: SLF001
         return view._view_matrix  # noqa: SLF001
+
+    def _get_matrices_for_view(self, view: ViewT) -> tuple[Mat4, Mat4]:
+        """Resolve projection and view matrices using a view's effective viewport."""
+        previous_viewport = self._resolved_viewport
+        self._resolved_viewport = self._resolve_viewport(view)
+        try:
+            return self._get_projection_matrix(view), self._get_view_matrix(view)
+        finally:
+            self._resolved_viewport = previous_viewport
 
     @property
     def view(self) -> ViewT:

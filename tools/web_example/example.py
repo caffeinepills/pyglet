@@ -15,12 +15,8 @@ label = pyglet.text.Label('Press Any Key To Add A Sprite!',
                           anchor_y='center',
                           batch=batch)
 
-try:
-    # Will be found in the pyodide VFS.
-    image = pyglet.resource.image("pyglet.png")
-except pyglet.resource.ResourceNotFoundException:
-    # Could not find the image, check your path.
-    image = pyglet.image.SolidColorImagePattern((255, 0, 0, 255)).create_image(64, 64)
+# Packaged by ``resources`` in pyproject.toml and loaded from the Pyodide VFS.
+image = pyglet.resource.image("pyglet.png")
 
 image.anchor_x = image.width // 2
 image.anchor_y = image.height // 2
@@ -43,9 +39,4 @@ def on_draw():
     window.clear()
     batch.draw()
 
-# Pyodide 0.27.7 has a memory leak with asyncio. Use pyglet.app.run(None) until it's resolved.
-if pyglet.compat_platform == "emscripten":
-    # None will use requestAnimationFrame as a base for timer scheduling and rendering.
-    pyglet.app.run(None)
-else:
-    pyglet.app.run()
+pyglet.app.run()

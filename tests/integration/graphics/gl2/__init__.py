@@ -1,1 +1,1 @@
-# For OpenGL 2.x and GLES 2 integration tests.
+"""Tests specific to the OpenGL/ES 2 graphics backends."""

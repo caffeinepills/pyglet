@@ -35,7 +35,7 @@ else:
     if options['headless']:
         from pyglet.enums import GraphicsAPI  # noqa: PLC0415
         if options.backend == GraphicsAPI.VULKAN:
-            from pyglet.display.headless import HeadlessDisplay as Display
+            from pyglet.display.headless import EGLHeadlessDisplay as Display
         else:
             from pyglet.display.headless import EGLHeadlessDisplay as Display
         from pyglet.display.headless import HeadlessScreen as Screen

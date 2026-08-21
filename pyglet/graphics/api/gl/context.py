@@ -5,7 +5,6 @@ import weakref
 from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
-from pyglet.enums import GraphicsAPI
 from pyglet.graphics import GraphicsAPIError, GraphicsIntegrationError
 from pyglet.graphics.api.gl import gl, gl_info, ObjectSpace
 from pyglet.graphics.api.base import SurfaceContext, NullContext
@@ -26,13 +25,13 @@ from pyglet.graphics.api.gl.renderer import GLRenderer
 
 if TYPE_CHECKING:
     from pyglet.config import SurfaceConfig
+    from pyglet.graphics.texture import PixelReadback
     from pyglet.graphics.api.gl.shader import GLDataType, GLFunc
     from ctypes import Array
     from pyglet.window import Window
     from pyglet.graphics.api.gl.xlib.glx_info import GLXInfo
     from pyglet.graphics.api.gl.win32.wgl_info import WGLInfo
     from pyglet.graphics.api.gl.global_opengl import OpenGLBackend
-    from pyglet.graphics.api.gl.framebuffer import GLFramebuffer
 
 
 
@@ -45,7 +44,7 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
 
     Use ``DisplayConfig.create_context`` to create a context.
     """
-    gles_pixel_fbo: GLFramebuffer | None
+    _pixel_readback: PixelReadback | None
     #: gl_info.GLInfo instance, filled in on first set_current
     _info: gl_info.GLInfo
 
@@ -87,8 +86,16 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
         self.cached_programs = weakref.WeakValueDictionary()
         self.renderer = GLRenderer(self)
 
-        # GLES needs an FBO to read pixel data.
-        self.gles_pixel_fbo = None
+        self._pixel_readback = None
+
+    @property
+    def pixel_readback(self) -> PixelReadback:
+        """Return the lazily created texture pixel readback helper."""
+        if self._pixel_readback is None:
+            from pyglet.graphics.api.gl.texture import GLPixelReadback  # noqa: PLC0415
+
+            self._pixel_readback = GLPixelReadback(self)
+        return self._pixel_readback
 
     def create_backend_frame_context(self, _slot_index: int) -> GLFrameContext:
         return GLFrameContext()
@@ -109,6 +116,7 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
         return
 
     def set_clear_color(self, r: float, g: float, b: float, a: float) -> None:
+        self.clear_color = (r, g, b, a)
         self.glClearColor(r, g, b, a)
 
     def clear(self) -> None:
@@ -133,7 +141,7 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
         super().frame_begin()
 
     def create_frame_fence(self) -> object | None:
-        if not (self.info.have_version(3, 2) or self.info.have_extension("GL_ARB_sync")):
+        if not self.info.features.sync_objects:
             return None
         return self.glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
 
@@ -177,10 +185,6 @@ class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
                 self.platform_func = self.platform_func_class()
             self.uniform_getters, self.uniform_setters = self._get_uniform_func_tables()
             self._info.query(self)
-            if self.info.get_opengl_api() in (GraphicsAPI.OPENGL_ES_2, GraphicsAPI.OPENGL_ES_3):
-                from pyglet.graphics.api.gl.framebuffer import GLFramebuffer
-                self.gles_pixel_fbo = GLFramebuffer(context=self)
-                self.gles_pixel_fbo.finalize()
 
         if self.object_space.doomed_textures:
             self._delete_objects(self.object_space.doomed_textures, self.glDeleteTextures)

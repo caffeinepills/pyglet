@@ -8,12 +8,9 @@ from pyglet.enums import GeometryMode, GraphicsAPI
 
 window = pyglet.window.Window(width=540, height=540, resizable=True)
 
-
 window.context.set_clear_color(0.2, 0.3, 0.3, 1)
 
-
 batch = pyglet.graphics.Batch()
-
 
 _vertex_source: str = """#version 330 core
     in vec3 position;
@@ -94,6 +91,7 @@ else:
 
 program = pyglet.graphics.ShaderProgram(pyglet.graphics.Shader(vertex_source, "vertex"),
                                         pyglet.graphics.Shader(fragment_source, "fragment"))
+program.set_instance_attributes(colors=1, translate=1)
 
 
 def _get_quad_vertices(size: int) -> list[int]:
@@ -104,6 +102,7 @@ def _get_quad_vertices(size: int) -> list[int]:
 
     return [x1, y1, 0, x2, y1, 0, x2, y2, 0, x1, y2, 0]
 
+
 def _get_triangle_vertices(size: int) -> list[int]:
     return [0, 0, 0,
             size, 0, 0,
@@ -113,6 +112,7 @@ def _get_triangle_vertices(size: int) -> list[int]:
 background_group = pyglet.graphics.ShaderGroup(program, order=0)
 BORDER = 25
 
+
 @dataclass(frozen=True)
 class ScissorData:
     x: int
@@ -120,23 +120,26 @@ class ScissorData:
     width: int
     height: int
 
-scissor = ScissorData(BORDER, BORDER,  window.width - BORDER * 2, window.height - BORDER * 2)
+    @property
+    def area(self):
+        return self.x, self.y, self.width, self.height
+
+
+scissor = ScissorData(BORDER, BORDER, window.width - BORDER * 2, window.height - BORDER * 2)
 background_group.set_scissor(scissor)
 foreground_group = pyglet.graphics.ShaderGroup(program, order=1)
 
 vertex_list = program.vertex_list(3, GeometryMode.TRIANGLES,
-                                  position=('f', (100, 300, 0,  200, 250, 0,  200, 350, 0)),
-                                  colors=('f', (1, 0, 0, 1,  0, 1, 0, 1,  0.3, 0.3, 1, 1)))
-
+                                  position=(100, 300, 0, 200, 250, 0, 200, 350, 0),
+                                  colors=(1, 0, 0, 1, 0, 1, 0, 1, 0.3, 0.3, 1, 1))
 
 vlist_1_size = 15
 vlist_1 = program.vertex_list_instanced_indexed(4, mode=GeometryMode.TRIANGLES, indices=[0, 1, 2, 0, 2, 3],
-                                                instance_attributes={"colors": 1, "translate": 1},
                                                 batch=batch,
                                                 group=background_group,
-                                                position=('f', _get_quad_vertices(vlist_1_size)),
-                                                colors=('f', (1, 0, 0, 1)),
-                                                translate=('f', (0, 0, 0)))
+                                                position=_get_quad_vertices(vlist_1_size),
+                                                colors=(1, 0, 0, 1),
+                                                translate=(0, 0, 0))
 
 for i in range(40):
     for j in range(40):
@@ -145,12 +148,11 @@ for i in range(40):
 
 vlist_2_size = 5
 vlist_2 = program.vertex_list_instanced_indexed(4, mode=GeometryMode.TRIANGLES, indices=[0, 1, 2, 0, 2, 3],
-                                                instance_attributes={"colors": 1, "translate": 1},
                                                 batch=batch,
                                                 group=foreground_group,
-                                                position=('f', _get_quad_vertices(vlist_2_size)),
-                                                colors=('f', (1, 0, 0, 1)),
-                                                translate=('f', (0, 0, 0)))
+                                                position=_get_quad_vertices(vlist_2_size),
+                                                colors=(1, 0, 0, 1),
+                                                translate=(0, 0, 0))
 for i in range(40):
     for j in range(40):
         m = vlist_2.create_instance(colors=(random.random(), random.random(), random.random(), 1),
@@ -158,26 +160,23 @@ for i in range(40):
 
 vlist_2_1_size = 50
 vlist_2_1 = program.vertex_list_instanced_indexed(4, mode=GeometryMode.TRIANGLES, indices=[0, 1, 2, 0, 2, 3],
-                                                instance_attributes={"colors": 1, "translate": 1},
-                                                batch=batch,
-                                                group=foreground_group,
-                                                position=('f', _get_quad_vertices(vlist_2_1_size)),
-                                                colors=('f', (1, 0, 0, 1)),
-                                                translate=('f', (300, 300, 0)))
+                                                  batch=batch,
+                                                  group=foreground_group,
+                                                  position=_get_quad_vertices(vlist_2_1_size),
+                                                  colors=(1, 0, 0, 1),
+                                                  translate=(300, 300, 0))
 for i in range(4):
     for j in range(4):
         m = vlist_2_1.create_instance(colors=(random.random(), random.random(), random.random(), 1),
-                                    translate=(300 + i * vlist_2_1_size, 300 + j * vlist_2_1_size, 0))
-
+                                      translate=(300 + i * vlist_2_1_size, 300 + j * vlist_2_1_size, 0))
 
 vlist_3_size = 15
 vlist_3 = program.vertex_list_instanced(3, mode=GeometryMode.TRIANGLES,
-                                        instance_attributes={"colors": 1, "translate": 1},
                                         batch=batch,
                                         group=foreground_group,
-                                        position=('f', _get_triangle_vertices(vlist_3_size)),
-                                        colors=('f', (1, 0, 0, 1)),
-                                        translate=('f', (0, 0, 0)))
+                                        position=_get_triangle_vertices(vlist_3_size),
+                                        colors=(1, 0, 0, 1),
+                                        translate=(0, 0, 0))
 for i in range(20):
     for j in range(20):
         m = vlist_3.create_instance(colors=(random.random(), random.random(), random.random(), 1),
@@ -189,6 +188,7 @@ for i in range(20):
 def on_draw():
     window.clear()
     batch.draw()
+
 
 if __name__ == "__main__":
     pyglet.app.run()

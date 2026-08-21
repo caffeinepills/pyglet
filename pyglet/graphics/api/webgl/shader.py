@@ -17,11 +17,10 @@ from ctypes import (
     cast,
     sizeof,
 )
-from typing import TYPE_CHECKING, Any, Callable, Sequence, Type, Union, overload
+from typing import TYPE_CHECKING, Callable, Sequence, Type, Union
 
 import pyglet
 
-from pyglet.enums import GeometryMode
 from pyglet.graphics.api.base import NullContext
 from pyglet.graphics.api.webgl import gl
 from pyglet.graphics.api.webgl.buffer import WebGLUniformBufferObject
@@ -36,7 +35,6 @@ from pyglet.graphics.shader import (
     _AbstractShader,
     _AbstractShaderProgram,
     Attribute,
-    MissingAttributeException,
     Shader,
     ShaderException,
     UnsupportedShaderType,
@@ -53,7 +51,7 @@ from pyglet.graphics.shader import (
 )
 
 try:
-    import js
+    import js  # noqa: F821
 except ImportError:
     pass
 
@@ -64,11 +62,9 @@ class GLException(Exception):
 
 if TYPE_CHECKING:
     from pyglet.customtypes import CTypesPointer, DataTypes, CType
-    from pyglet.graphics import Batch, Group, UnsupportedBackendError
+    from pyglet.graphics import UnsupportedBackendError
     from pyglet.graphics.api.webgl.context import OpenGLSurfaceContext
     from pyglet.graphics.api.webgl.webgl_js import WebGL2RenderingContext, WebGLProgram, WebGLRenderingContext
-    from pyglet.graphics.vertexdomain import IndexedVertexList, VertexList, InstanceVertexList, \
-        InstanceIndexedVertexList
 
 _debug_api_shaders = pyglet.options.debug_api_shaders
 
@@ -849,6 +845,7 @@ class WebGLShaderProgram(ShaderProgram):
         self.use()
 
         self._attributes = _introspect_attributes(self._id)
+        self._update_attribute_key()
         self._uniforms = _introspect_uniforms(self._gl, self._id)
         self._uniform_blocks = self._get_uniform_blocks()
         self.stop()
@@ -879,45 +876,6 @@ class WebGLShaderProgram(ShaderProgram):
                 self._id = None
             except (AttributeError, ImportError):
                 pass  # Interpreter is shutting down
-
-    @overload
-    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: None = None,
-                            instances: None = None, batch: Batch | None = None, group: Group | None = None,
-                            **data: Any) -> VertexList:
-        ...
-
-    @overload
-    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] = ...,
-                            instances: None = None, batch: Batch | None = None, group: Group | None = None,
-                            **data: Any) -> IndexedVertexList:
-        ...
-
-    @overload
-    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: None = None,
-                            instances: dict[str, int] = ..., batch: Batch | None = None, group: Group | None = None,
-                            **data: Any) -> InstanceVertexList:
-        ...
-
-    @overload
-    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] = ...,
-                            instances: dict[str, int] = ..., batch: Batch | None = None, group: Group | None = None,
-                            **data: Any) -> InstanceIndexedVertexList:
-        ...
-
-    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] | None = None,
-                            instances: dict[str, int] | None = None,
-                            batch: Batch | None = None, group: Group | None = None,
-                            **data: Any) -> VertexList | InstanceVertexList | IndexedVertexList | InstanceIndexedVertexList:
-        assert isinstance(mode, GeometryMode), f"Mode {mode} is not geometry mode."
-        return super()._vertex_list_create(
-            count,
-            mode,
-            indices=indices,
-            instances=instances,
-            batch=batch,
-            group=group,
-            **data,
-        )
 
 
 
@@ -993,8 +951,9 @@ _default_fragment_source: str = """#version 330 core
 
 def get_default_shader() -> WebGLShaderProgram:
     """A default basic shader for default batches."""
-    return pyglet.graphics.api.core.get_cached_shader(
+    program = pyglet.graphics.api.core.get_cached_shader(
         "default_graphics",
         (_default_vertex_source, 'vertex'),
         (_default_fragment_source, 'fragment'),
     )
+    return program

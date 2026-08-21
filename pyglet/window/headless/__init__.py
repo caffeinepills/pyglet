@@ -112,7 +112,7 @@ class EGLHeadlessWindow(HeadlessWindow):
         if not pyglet.options.backend or self._shadow:
             return
 
-        from pyglet.libs.egl import (  # Local import: avoid hard EGL dependency for Vulkan headless usage.
+        from pyglet.libs.egl import (  # noqa: PLC0415
             EGLint,
             EGL_WIDTH,
             EGL_HEIGHT,
@@ -139,10 +139,10 @@ class EGLHeadlessWindow(HeadlessWindow):
         super().close()
         if self.egl_surface:
             from pyglet.libs.egl import eglDestroySurface  # noqa: PLC0415
+
             eglDestroySurface(self.egl_display_connection, self.egl_surface)
             self.egl_surface = None
         self.egl_display_connection = None
 
 
-__all__ = ['HeadlessWindow', 'EGLHeadlessWindow']
-
+__all__ = ['EGLHeadlessWindow', 'HeadlessWindow', 'EGLHeadlessWindow']

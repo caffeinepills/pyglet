@@ -23,6 +23,7 @@ primitives of the same OpenGL primitive mode.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence, Protocol, Iterable, NoReturn
 
 import pyglet
@@ -38,6 +39,21 @@ if TYPE_CHECKING:
     from pyglet.graphics.buffer import AttributeBufferObject, IndexedBufferObject
     from pyglet.graphics import Group
     from pyglet.enums import GeometryMode
+
+
+@dataclass(frozen=True)
+class DomainAttributes:
+    """Vertex attributes together with their stable domain lookup key."""
+    attributes: dict[str, Any]
+    key: str
+
+    @classmethod
+    def from_attributes(cls, attributes: dict[str, Any]) -> DomainAttributes:
+        """Create domain metadata and calculate its platform-independent key."""
+        key = str(tuple(
+            attribute.key for attribute in sorted(attributes.values(), key=lambda attribute: attribute.location)
+        ))
+        return cls(attributes, key)
 
 
 def _nearest_pow2(v: int) -> int:
@@ -570,6 +586,7 @@ class VertexDomain(ABC):
     """
 
     attribute_meta: dict[str, Attribute]
+    domain_attributes: DomainAttributes
     buffer_attributes: list[tuple[AttributeBufferObject, Attribute]]
     attribute_names: dict[str, Attribute]
     attrib_name_buffers: dict[str, VertexStream | InstanceStream]
@@ -750,7 +767,7 @@ class IndexedVertexDomain(VertexDomain):
     def __init__(self, context: SurfaceContext, initial_count: int, attribute_meta: dict[str, Attribute],
                  index_type: DataTypes = "I") -> None:
         self.index_type = index_type
-        self._supports_base_vertex = context.info.have_extension("GL_ARB_draw_elements_base_vertex")
+        self._supports_base_vertex = context.info.features.base_vertex
         super().__init__(context, initial_count, attribute_meta)
 
     def get_group_bucket(self, group: Group) -> IndexedVertexGroupBucket:
