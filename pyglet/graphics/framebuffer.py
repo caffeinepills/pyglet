@@ -51,7 +51,13 @@ elif pyglet.options.backend == GraphicsAPI.WEBGL:
         get_screenshot,  # noqa: F401
         get_viewport,
     )
-
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
+    from pyglet.graphics.api.vulkan.framebuffer import (
+        VulkanFramebuffer as Framebuffer,
+        VulkanRenderbuffer as Renderbuffer,
+        get_screenshot,  # noqa: F401
+        get_viewport,
+    )
 
 class _TextureRenderTargetBase:
     """Shared framebuffer and camera state for texture render targets."""
@@ -441,7 +447,3 @@ class TextureRenderTarget(_TextureRenderTargetBase):
                 self.texture = None
             if not succeeded and texture.id is not None:
                 texture.delete()
-
-elif pyglet.options.backend == GraphicsAPI.VULKAN:
-    from pyglet.graphics.api.vulkan.framebuffer import VulkanFramebuffer as Framebuffer, VulkanRenderbuffer as Renderbuffer
-    from pyglet.graphics.api.vulkan.framebuffer import get_screenshot

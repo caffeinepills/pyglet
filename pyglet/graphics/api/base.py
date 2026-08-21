@@ -5,7 +5,7 @@ import os
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol, Sequence, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol, Sequence, get_type_hints, TypeVar, Generic
 
 from pyglet.enums import PixelFormat
 from pyglet.graphics import GraphicsBackendError, GraphicsIntegrationError

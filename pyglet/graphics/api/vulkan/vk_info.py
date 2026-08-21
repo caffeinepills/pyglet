@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pyglet.enums import GraphicsAPI
-from pyglet.graphics.api.base import SurfaceInfo
+from pyglet.graphics.api.base import SurfaceFeatures, SurfaceInfo
 from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_API_VERSION_MAJOR,
     VK_API_VERSION_MINOR,
@@ -26,6 +26,7 @@ class VulkanInfo(SurfaceInfo):
 
     def __init__(self) -> None:
         super().__init__()
+        self._physical_features = None
 
     @staticmethod
     def _max_sample_count(sample_flags: int) -> int:
@@ -77,4 +78,25 @@ class VulkanInfo(SurfaceInfo):
         self.MAX_VERTEX_ATTRIBS = int(limits.maxVertexInputAttributes)
         self.MAX_UNIFORM_BUFFER_OFFSET_ALIGNMENT = int(limits.minUniformBufferOffsetAlignment)
 
+        self._physical_features = physical.features
+        self.update_features()
         self.was_queried = True
+
+    def update_features(self) -> None:
+        """Populate Vulkan feature support for the selected physical device."""
+        physical_features = self._physical_features
+        self.features = SurfaceFeatures(
+            # These operations are provided by the Vulkan core API and the
+            # queues required when creating this backend's logical device.
+            compute_shaders=True,
+            shader_storage_buffers=True,
+            uniform_buffers=True,
+            sync_objects=True,
+            geometry_shaders=bool(physical_features and physical_features.geometryShader),
+            tessellation_shaders=bool(physical_features and physical_features.tessellationShader),
+            base_vertex=True,
+            persistent_buffers=True,
+            separate_shader_objects=True,
+            pixel_buffer_objects=True,
+            texture_storage=True,
+        )

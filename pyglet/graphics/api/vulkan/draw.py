@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Generator, Sequence, Any, TYPE_CHECKING, ClassVar
 from ctypes import byref, c_float
 import pyglet
+from pyglet.graphics.vertexdomain import DomainAttributes, VertexDomain
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VkRenderPassBeginInfo, \
     VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VkOffset2D, VkRect2D, VkClearColorValue, VkClearValue, \
     VkClearAttachment, VkClearRect, VK_SUBPASS_CONTENTS_INLINE, VK_IMAGE_ASPECT_COLOR_BIT
@@ -211,6 +212,7 @@ class VulkanBatch(Batch):
     group_children: dict[Group, list[Group]]
     group_map: dict[Group, dict[_DomainKey, vertexdomain.VertexDomain]]
     _live_batches: ClassVar[weakref.WeakSet] = weakref.WeakSet()
+    _domain_class_map: dict[tuple[bool, bool], type[VertexDomain]] = _domain_class_map
 
     def __init__(self, context: VulkanSurfaceContext | None = None, initial_count: int = 32) -> None:
         """Create a graphics batch."""
@@ -357,9 +359,7 @@ class VulkanBatch(Batch):
             self._draw_list_dirty = True
 
     def get_domain(self, indexed: bool, instanced: bool, mode: GeometryMode, group: Group,
-                   attributes: dict[str, Any]) -> (
-            vertexdomain.VertexDomain | vertexdomain.IndexedVertexDomain | vertexdomain.InstancedVertexDomain |
-            vertexdomain.InstancedIndexedVertexDomain):
+                   domain_attributes: DomainAttributes) -> VertexDomain:
         """Get, or create, the vertex domain corresponding to the given arguments.
 
         mode is the render mode such as GL_LINES or GL_TRIANGLES
@@ -369,16 +369,18 @@ class VulkanBatch(Batch):
         if group not in self.group_map:
             self._add_group(group)
 
-        key = _DomainKey(indexed, instanced, mode, self._attributes_key(attributes))
+        key = _DomainKey(indexed, instanced, mode, domain_attributes.key)
 
         try:
             domain = self._domain_registry[key]
         except KeyError:
             # Create domain
-            domain = _domain_class_map[(indexed, instanced)](self._context, self.initial_count, attributes)
+            domain = self._domain_class_map[(indexed, instanced)](
+                self._context, self.initial_count, domain_attributes.attributes
+            )
+            domain.domain_attributes = domain_attributes
             self._domain_registry[key] = domain
             self._draw_list_dirty = True
-
         return domain
 
     def _cleanup_group(self, group: Group) -> None:
