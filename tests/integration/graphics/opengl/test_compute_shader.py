@@ -6,8 +6,9 @@ from pyglet.graphics import Texture
 from pyglet.graphics.api.gl import gl
 from pyglet.graphics.shader import ShaderException
 
-from tests.annotations import skip_graphics_api, GraphicsAPIGroups
+from tests.annotations import skip_graphics_api, GraphicsAPIGroups, require_graphics_api
 
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 COMPUTE_SRC_GL = """#version 430 core
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;

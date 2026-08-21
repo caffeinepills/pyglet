@@ -5,11 +5,9 @@ import random
 import pytest
 import ctypes
 
-from tests.annotations import skip_graphics_api, GraphicsAPIGroups
+from tests.annotations import skip_graphics_api, GraphicsAPIGroups, require_graphics_api
 
-
-pytestmark = [skip_graphics_api(GraphicsAPIGroups.GL2)]
-
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 _vertex_source: str = """#version 330 core
     in vec3 position;

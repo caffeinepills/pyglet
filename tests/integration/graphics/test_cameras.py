@@ -274,6 +274,7 @@ def test_group_camera_viewport_is_applied_to_draw_context_stack(test_window, mon
     draw_context = DrawContext(
         surface_ctx=test_window.context,
         backend_ctx=None,
+        frame_context=test_window.context.frame_context,
         draw_pass=DrawPass(
             framebuffer=None,
             camera=camera,
@@ -290,7 +291,7 @@ def test_group_camera_viewport_is_applied_to_draw_context_stack(test_window, mon
     assert renderer.viewports[-1] == (30, 40, 160, 90)
 
 
-@require_graphics_api(GraphicsAPIGroups.GL3)
+@require_graphics_api(GraphicsAPIGroups.GL3 + ("vulkan",))
 def test_camera_ubo_views_do_not_overwrite_stable_parent_range(test_window, monkeypatch):
     test_window.switch_to()
     ctx = test_window.context

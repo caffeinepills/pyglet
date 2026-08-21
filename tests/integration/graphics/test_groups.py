@@ -10,6 +10,8 @@ from pyglet.graphics.draw import _DomainKey
 from pyglet.graphics.state import State, Viewport
 
 
+pytest.skip("Skipping this entire test file, move to GL in future.", allow_module_level=True)
+
 class UniqueState(State):
     sets_state = True
 

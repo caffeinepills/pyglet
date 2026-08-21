@@ -5,8 +5,9 @@ import pytest
 
 from pyglet.enums import ComponentFormat, FramebufferAttachment, FramebufferTarget
 from pyglet.graphics.api.gl import gl
-from tests.annotations import skip_graphics_api, GraphicsAPIGroups
+from tests.annotations import skip_graphics_api, GraphicsAPIGroups, require_graphics_api
 
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 def _get_bound_framebuffer_id() -> int:
     binding = gl.GLint()
