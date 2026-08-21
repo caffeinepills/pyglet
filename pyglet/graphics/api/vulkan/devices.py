@@ -22,7 +22,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_KHR_SWAPCHAIN_EXTENSION
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, VkPhysicalDeviceDescriptorIndexingFeatures, \
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES, VkPhysicalDeviceTimelineSemaphoreFeatures, \
     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME, \
-    VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_API_VERSION_1_2
+    VK_KHR_MAINTENANCE3_EXTENSION_NAME, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_API_VERSION_1_2
 
 import pyglet
 from typing import TYPE_CHECKING
@@ -186,9 +186,12 @@ class VulkanLogicalDevice:
             and instance_api_version >= VK_API_VERSION_1_2
         )
         has_descriptor_indexing_ext = self.physical.have_extension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
+        has_maintenance3_ext = self.physical.have_extension(VK_KHR_MAINTENANCE3_EXTENSION_NAME)
         has_timeline_semaphore_ext = self.physical.have_extension(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)
 
-        wants_descriptor_indexing = api_is_1_2_or_higher or has_descriptor_indexing_ext
+        wants_descriptor_indexing = api_is_1_2_or_higher or (
+            has_descriptor_indexing_ext and has_maintenance3_ext
+        )
         wants_timeline = api_is_1_2_or_higher or has_timeline_semaphore_ext
         if not wants_descriptor_indexing and not wants_timeline:
             assert _debug_api_assert("(Vulkan) Descriptor indexing and timeline semaphore are unavailable for this API/driver.")
@@ -240,6 +243,7 @@ class VulkanLogicalDevice:
             ) or self.descriptor_binding_partially_bound
 
             if self.descriptor_indexing_enabled and not api_is_1_2_or_higher and has_descriptor_indexing_ext:
+                self.device_extensions.append(VK_KHR_MAINTENANCE3_EXTENSION_NAME)
                 self.device_extensions.append(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME)
 
             if self.descriptor_indexing_enabled:

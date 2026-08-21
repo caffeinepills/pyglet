@@ -39,6 +39,13 @@ if TYPE_CHECKING:
 class GLFrameContext:
     """GL data scoped to one reusable frame slot, to do later."""
 
+    @property
+    def has_pending_retirements(self) -> bool:
+        return False
+
+    def release_retired_resources(self) -> None:
+        return
+
 class OpenGLSurfaceContext(SurfaceContext, GLFunctions):
     """A base OpenGL context for drawing.
 

@@ -565,6 +565,12 @@ class VulkanTextureRegion(_TextureRegionShared, Texture):
 
 class VulkanTexture(Texture, UniqueIDHandler):
     _all_textures: ClassVar[weakref.WeakSet[VulkanTexture]] = weakref.WeakSet()
+
+    @property
+    def owner(self) -> VulkanTexture:
+        """The descriptor resource owner; regions override this with their root texture."""
+        return self
+
     _next_descriptor_generation: ClassVar[int] = 1
 
     tex_coords = (0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0)
@@ -815,15 +821,16 @@ class VulkanTexture(Texture, UniqueIDHandler):
 
     def delete(self) -> None:
         type(self)._all_textures.discard(self)
+        if self.id is None and self.image is None and self.image_view is None:
+            return
+
         self._bump_descriptor_generation()
-        if self.image:
-            self.image.delete()
-
-        if self.image_view:
-            self.image_view.delete()
-
-        self.image = None
+        image = self.image
+        image_view = self.image_view
         self.image_view = None
+        self.image = None
+        pyglet.graphics.api.core.retire_texture(self, image, image_view)
+
         self._shadow_mipmaps.clear()
 
         if self.id is not None:

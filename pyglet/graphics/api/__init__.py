@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Sequence
 import pyglet
 
 from pyglet.enums import GraphicsAPI
-from pyglet.graphics.api.base import ResourceManagement, NullBackend
+from pyglet.graphics.api.base import NullBackend
 
 if TYPE_CHECKING:
     from pyglet.graphics.api.base import GraphicsConfig, SurfaceContext

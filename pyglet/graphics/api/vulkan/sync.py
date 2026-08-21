@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 
-from _ctypes import byref
 import ctypes
-from ctypes import POINTER, c_uint32, c_uint64
+from ctypes import byref, POINTER, c_uint32, c_uint64
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 import pyglet
 from pyglet.graphics.api.vulkan import c_array_list, DeviceFunc
 from pyglet.libs.shared.vulkan_lib.exceptions import VulkanNotReadyException, VulkanOutOfDateKHRException
@@ -22,6 +21,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_PIPELINE_STAGE_COLOR_AT
     VK_QUEUE_FAMILY_IGNORED, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VkImageMemoryBarrier, VkImageSubresourceRange
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pyglet.graphics.api.vulkan.swapchain import VulkanOffscreenSwapchain, VulkanSwapchain
     from pyglet.graphics.api.vulkan.devices import VulkanLogicalDevice
     from pyglet.graphics.api.vulkan.commands import CommandBuffer, CommandPool
@@ -38,156 +38,6 @@ def create_fence(device: VulkanLogicalDevice, info: VkFenceCreateInfo):
     vk_fence = VkFence()
     device.vkCreateFence(device.vk_device, byref(info), None, byref(vk_fence))
     return vk_fence
-
-
-class DeferredResourceRemoval:
-    """Some resources may need to be deferred for removal until after the frame is completed."""
-
-    def __init__(self, device: VulkanLogicalDevice) -> None:
-        self.device = device
-        self.pending_fences = []
-        self.pending_timeline = []
-        self.vkGetSemaphoreCounterValue, self._semaphore_counter_fn_name = self._resolve_semaphore_counter_fn()
-
-    def _resolve_semaphore_counter_fn(self):
-        candidates = (
-            ("vkGetSemaphoreCounterValue", getattr(self.device, "vkGetSemaphoreCounterValue", None)),
-            ("vkGetSemaphoreCounterValueKHR", getattr(self.device, "vkGetSemaphoreCounterValueKHR", None)),
-            ("vkGetSemaphoreCounterValue", getattr(DeviceFunc, "vkGetSemaphoreCounterValue", None)),
-            ("vkGetSemaphoreCounterValueKHR", getattr(DeviceFunc, "vkGetSemaphoreCounterValueKHR", None)),
-        )
-        for name, fn in candidates:
-            if _is_callable_loaded(fn):
-                return fn, name
-        return None, None
-
-    def queue_fence(self, resource, fence: VkFence, destroy: bool):
-        """Queue a resource with one fence to be destroyed after completion."""
-        self.queue_fences(resource, (fence,), destroy)
-
-    def queue_fences(self, resource, fences: tuple[VkFence, ...] | list[VkFence], destroy: bool):
-        """Queue a resource to be destroyed after all fences are signaled."""
-        valid_fences = tuple(fence for fence in fences if fence)
-        if not valid_fences:
-            resource.delete()
-            return
-
-        self.pending_fences.append((resource, valid_fences, destroy))
-
-    def queue_timeline(self, resource, semaphore: VkSemaphore | None, value: int, destroy: bool, wait_fallback=None):
-        """Queue a resource to be destroyed when timeline semaphore reaches value."""
-        if semaphore is None or value <= 0:
-            resource.delete()
-            return
-
-        self.pending_timeline.append((resource, semaphore, int(value), destroy, wait_fallback))
-
-    def queue_frame_sync(self, resource, frame_sync, destroy: bool):
-        """Queue a resource against the active frame sync strategy."""
-        if getattr(frame_sync, "timeline_enabled", False):
-            self.queue_timeline(
-                resource,
-                getattr(frame_sync, "timeline_semaphore", None),
-                int(getattr(frame_sync, "timeline_value", 0) or 0),
-                destroy,
-                getattr(frame_sync, "wait_for_last_submission", None),
-            )
-            return
-
-        self.queue_fences(resource, tuple(getattr(frame_sync, "fences", ()) or ()), destroy)
-
-    def delete(self):
-        """Clear all pending on API cleanup."""
-        self.drain(wait=False)
-
-    @staticmethod
-    def _resource_owned_by(resource, owner) -> bool:
-        if owner is None:
-            return True
-        return getattr(resource, "owner_context", None) is owner
-
-    def _wait_for_fences(self, fences: tuple[VkFence, ...]) -> None:
-        if not fences:
-            return
-        fence_array = c_array_list(list(fences), VkFence)
-        self.device.vkWaitForFences(self.device.vk_device, len(fences), fence_array, VK_TRUE, UINT64_MAX)
-
-    def drain(self, wait: bool = False, owner=None) -> None:
-        """Destroy pending resources, optionally limiting to one owner context."""
-        for resource, fences, destroy in list(self.pending_fences):
-            if not self._resource_owned_by(resource, owner):
-                continue
-            if wait:
-                self._wait_for_fences(fences)
-            if destroy:
-                for fence in fences:
-                    self.device.vkDestroyFence(self.device.vk_device, fence, None)
-            resource.delete()
-            self.pending_fences.remove((resource, fences, destroy))
-
-        for resource, semaphore, target_value, destroy, wait_fallback in list(self.pending_timeline):
-            if not self._resource_owned_by(resource, owner):
-                continue
-            if wait and callable(wait_fallback):
-                wait_fallback()
-            if destroy and semaphore:
-                self.device.vkDestroySemaphore(self.device.vk_device, semaphore, None)
-            resource.delete()
-            self.pending_timeline.remove((resource, semaphore, target_value, destroy, wait_fallback))
-
-    def drain_context(self, context, wait: bool = False) -> None:
-        """Destroy pending resources owned by one surface context."""
-        self.drain(wait=wait, owner=context)
-
-    def process(self):
-        for resource, fences, destroy in list(self.pending_fences):
-            all_signaled = True
-            for fence in fences:
-                try:
-                    status = self.device.vkGetFenceStatus(self.device.vk_device, fence)
-                except VulkanNotReadyException:
-                    all_signaled = False
-                    break
-
-                if status != VK_SUCCESS:
-                    all_signaled = False
-                    break
-
-            if all_signaled:
-                print("Destroying resource", resource)
-                resource.delete()
-                if destroy:
-                    for fence in fences:
-                        self.device.vkDestroyFence(self.device.vk_device, fence, None)
-                self.pending_fences.remove((resource, fences, destroy))
-
-        for resource, semaphore, target_value, destroy, wait_fallback in list(self.pending_timeline):
-            reached = False
-            if self.vkGetSemaphoreCounterValue is not None:
-                current_value = c_uint64(0)
-                try:
-                    result = self.vkGetSemaphoreCounterValue(self.device.vk_device, semaphore, byref(current_value))
-                    reached = result == VK_SUCCESS and int(current_value.value) >= int(target_value)
-                except VulkanNotReadyException:
-                    reached = False
-                except Exception:
-                    reached = False
-            elif callable(wait_fallback):
-                # Fallback if semaphore counter query is unavailable on this loader/runtime.
-                wait_fallback()
-                reached = True
-
-            if reached:
-                print("Destroying resource", resource)
-                resource.delete()
-                if destroy and semaphore:
-                    self.device.vkDestroySemaphore(self.device.vk_device, semaphore, None)
-                self.pending_timeline.remove((resource, semaphore, target_value, destroy, wait_fallback))
-
-
-        # for resource in self.pending_resources:
-        #     resource.delete()
-        # self.pending_resources.clear()
 
 
 def _is_callable_loaded(func: Any) -> bool:

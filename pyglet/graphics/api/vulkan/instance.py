@@ -3,8 +3,8 @@ from __future__ import annotations
 import ctypes
 import os
 import weakref
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable
 
 import pyglet
 from pyglet.config import VulkanUserConfig
@@ -25,7 +25,7 @@ from pyglet.graphics.api.vulkan.renderpass import RenderPass, RenderPassManager
 from pyglet.graphics.api.vulkan.renderer import VulkanRenderer
 from pyglet.graphics.shader import Shader, ShaderProgram
 from pyglet.graphics.api.vulkan.swapchain import VulkanOffscreenSwapchain, VulkanSwapchain
-from pyglet.graphics.api.vulkan.sync import DeferredResourceRemoval, create_frame_sync, FrameSync
+from pyglet.graphics.api.vulkan.sync import create_frame_sync, FrameSync
 from pyglet.libs.shared.vulkan_lib import InstanceFunc, c_array_list, set_instance_functions, vulkan_core
 from pyglet.libs.shared.vulkan_lib.func_helpers import (
     CreateInstance,
@@ -214,6 +214,20 @@ class VulkanFrameContext:
     command_buffer: Any | None = None
     recording: bool = False
     clear_claimed: bool = False
+    retired_resources: list[Callable[[], None]] = field(default_factory=list)
+
+    @property
+    def has_pending_retirements(self) -> bool:
+        return bool(self.retired_resources)
+
+    def retire_resource(self, release: Callable[[], None]) -> None:
+        """Release a Vulkan resource when this frame slot is reusable."""
+        self.retired_resources.append(release)
+
+    def release_retired_resources(self) -> None:
+        releases, self.retired_resources = self.retired_resources, []
+        for release in releases:
+            release()
 
     def reset_for_frame(self) -> None:
         self.command_buffer = None
@@ -375,8 +389,6 @@ class VulkanSurfaceContext(SurfaceContext[VulkanFrameContext]):
 
     def set_current(self):
         self.core.set_current_context(self)
-        # Process deferred resource removal.
-        self.core.resource_removal.process()
 
     def frame_begin(self):
         self.set_current()
@@ -392,8 +404,20 @@ class VulkanSurfaceContext(SurfaceContext[VulkanFrameContext]):
         return ready
 
     def frame_submit(self) -> None:
-        self.frame_context.backend_ctx.end_primary_command_buffer()
-        super().frame_submit()
+        backend_ctx = self.frame_context.backend_ctx
+        backend_ctx.end_primary_command_buffer()
+        # Every acquired Vulkan frame gets a completion token. An empty frame
+        # still orders earlier graphics-queue work and may become the retirement
+        # point for a resource deleted between draws.
+        self.frame_resources.frame_submit(force_completion=True)
+
+    def retire_resource(self, release: Callable[[], None]) -> None:
+        """Release a resource after work associated with the active frame completes."""
+        frame_context = self.frame_context
+        if not self.frame_active and frame_context.fence is None:
+            release()
+            return
+        frame_context.backend_ctx.retire_resource(release)
 
     def create_frame_fence(self):
         """Return a borrowed Vulkan frame completion token for the active frame slot."""
@@ -427,12 +451,12 @@ class VulkanSurfaceContext(SurfaceContext[VulkanFrameContext]):
     def delete(self):
         self.core.set_current_context(self)
         self._wait_idle()
-        self.core.resource_removal.process()
 
         from pyglet.graphics.api.vulkan.draw import VulkanBatch  # noqa: PLC0415
 
         VulkanBatch._delete_context_instances(self)  # noqa: SLF001
         self._wait_idle()
+        self.core.descriptor_mgr.invalidate_owner(self, immediate=True)
 
         self.frame_resources.delete()
 
@@ -718,7 +742,43 @@ class VulkanGlobal(BackendGlobalObject):
         self.renderpass_mgr = RenderPassManager(self.devices.logical_device)
         self.pipeline_mgr = GraphicsPipelineManager(self.devices, self.descriptor_mgr, self.cached_programs, self.renderpass_mgr)
         self.command_pool = CommandPool(self.devices.logical_device)
-        self.resource_removal = DeferredResourceRemoval(self.devices.logical_device)
+
+    def retire_resource(self, release: Callable[[], None], owners: tuple[object, ...] = ()) -> None:
+        """Release a resource after every frame context that referenced it completes."""
+        contexts = {
+            id(owner): owner
+            for owner in owners
+            if isinstance(owner, VulkanSurfaceContext)
+        }
+        if not contexts and isinstance(self.current_context, VulkanSurfaceContext):
+            contexts[id(self.current_context)] = self.current_context
+
+        if not contexts:
+            release()
+            return
+
+        remaining = len(contexts)
+
+        def release_after_last_context() -> None:
+            nonlocal remaining
+            remaining -= 1
+            if remaining == 0:
+                release()
+
+        for context in contexts.values():
+            context.retire_resource(release_after_last_context)
+
+    def retire_texture(self, texture, image, image_view) -> None:
+        """Invalidate texture descriptors and retire its Vulkan handles together."""
+        owners = self.descriptor_mgr.invalidate_texture(texture)
+
+        def release() -> None:
+            if image_view is not None:
+                image_view.delete()
+            if image is not None:
+                image.delete()
+
+        self.retire_resource(release, owners)
 
     @property
     def object_space(self) -> ObjectSpace:
@@ -880,9 +940,6 @@ class VulkanGlobal(BackendGlobalObject):
         # Shader programs are deleted by _delete_tracked_resources().
         self.cached_programs.clear()
 
-        if self.resource_removal and vk_device:
-            self.resource_removal.drain(wait=False)
-
         if self.pipeline_mgr and vk_device:
             self.pipeline_mgr.delete()
         self.pipeline_mgr = None
@@ -894,7 +951,6 @@ class VulkanGlobal(BackendGlobalObject):
         if self.command_pool and vk_device:
             self.command_pool.delete()
         self.command_pool = None
-        self.resource_removal = None
 
         # Finally destroy the logical device after everything is cleaned up.
         if logical_device:

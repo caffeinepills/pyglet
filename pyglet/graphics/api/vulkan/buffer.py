@@ -379,23 +379,11 @@ class VulkanBufferObject(AbstractBuffer):
         return fence
 
     def _retire_old_resource(self, old_resource: VulkanBufferResource) -> None:
-        core = getattr(pyglet.graphics.api, "core", None)
-        if core is None:
-            old_resource.delete()
-            return
-
-        removal = getattr(core, "resource_removal", None)
-        try:
-            current_window = core.current_window
-        except Exception:
-            current_window = None
-        frame_sync = getattr(current_window, "frame_sync", None) if current_window else None
-
-        if removal and frame_sync:
-            removal.queue_frame_sync(old_resource, frame_sync, False)
-            return
-
-        old_resource.delete()
+        core = pyglet.graphics.api.core
+        descriptor_mgr = core.descriptor_mgr
+        vk_buffer = old_resource.vk_buffer
+        owners = descriptor_mgr.invalidate_buffer_id(int(vk_buffer.value or 0)) if vk_buffer else ()
+        core.retire_resource(old_resource.delete, owners)
 
     def resize(self, size: int) -> None:
         assert size > 0, "Size must be greater than 0."

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import atexit
 import os
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, NoReturn, Protocol, Sequence, get_type_hints, TypeVar, Generic
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, Sequence, get_type_hints, TypeVar, Generic
 
 from pyglet.enums import PixelFormat
 from pyglet.graphics import GraphicsBackendError, GraphicsIntegrationError
@@ -321,7 +320,20 @@ class SurfaceInfo(ABC):
         )
 
 
-BackendFrameContextT = TypeVar("BackendFrameContextT")
+class BackendFrameContext(Protocol):
+    """Backend-owned state associated with one reusable frame slot."""
+
+    @property
+    def has_pending_retirements(self) -> bool:
+        """Whether this slot owns deferred resource cleanup."""
+        ...
+
+    def release_retired_resources(self) -> None:
+        """Release cleanup deferred until this slot became reusable."""
+        ...
+
+
+BackendFrameContextT = TypeVar("BackendFrameContextT", bound=BackendFrameContext)
 
 
 @dataclass
@@ -337,6 +349,15 @@ class FrameContext(Generic[BackendFrameContextT]):
     @property
     def has_tracked_uses(self) -> bool:
         return bool(self.buffer_ranges)
+
+    @property
+    def has_pending_retirements(self) -> bool:
+        return self.backend_ctx.has_pending_retirements
+
+    @property
+    def needs_completion(self) -> bool:
+        """Whether slot reuse must wait for submitted work to complete."""
+        return self.has_tracked_uses or self.has_pending_retirements
 
 
 
@@ -381,6 +402,7 @@ class FrameResourceManager(Generic[BackendFrameContextT]):
             buffer_range.frame_use_count = max(0, buffer_range.frame_use_count - 1)
             buffer_range.in_use = buffer_range.frame_use_count > 0
         slot.buffer_ranges.clear()
+        slot.backend_ctx.release_retired_resources()
 
     def frame_begin(self, frame_index: int) -> None:
         slot_index = frame_index % len(self.slots)
@@ -393,7 +415,7 @@ class FrameResourceManager(Generic[BackendFrameContextT]):
                 assert _debug_print(f"CPU caught up to GPU on frame slot: {slot_index}, frame index: {frame_index}.")
                 self.surface_ctx.wait_frame_fence(slot.fence)
             self._release_slot(slot)
-        elif slot.has_tracked_uses:
+        elif slot.needs_completion:
             # Some backends may not expose a completion primitive. In that case
             # resource tracking degrades to frame-slot reuse without blocking.
             self._release_slot(slot)
@@ -426,8 +448,8 @@ class FrameResourceManager(Generic[BackendFrameContextT]):
         """Compatibility alias for UBO-backed ring-buffer usage."""
         self.use_buffer_range(ubo_range)
 
-    def frame_submit(self) -> None:
-        if not self._active_slot.has_tracked_uses:
+    def frame_submit(self, *, force_completion: bool = False) -> None:
+        if not force_completion and not self._active_slot.needs_completion:
             return
         self._active_slot.fence = self.surface_ctx.create_frame_fence()
 
@@ -703,55 +725,3 @@ class GraphicsConfig:
     def user_set_attributes(self) -> set[str]:
         """Return a set of attribute names that were explicitly set by the user."""
         return self._user_set_attributes
-
-
-class GraphicsResource(Protocol):  # noqa: D101
-    def delete(self) -> None:
-        ...
-
-
-class ResourceManagement:
-    """A manager to handle the freeing of resources for an API.
-
-    In some graphical API's, the order in which you free resources can be very specific.
-    """
-    managers: list[GraphicsResource]
-
-    def __init__(self) -> None:  # noqa: D107
-        self._func = None
-        self.managers = []
-        atexit.register(self.on_exit_cleanup)
-
-    def set_pre_cleanup_func(self, func: Callable) -> None:
-        """Register a function to be called before cleanup.
-
-        Some API's may need to enforce a sync before cleanup.
-        """
-        self._func = func
-
-    def register_manager(self, resource: GraphicsResource) -> None:
-        """A manager handles multiple resources, these will be called in reverse order on cleanup."""
-        self.managers.append(resource)
-
-    def register_resource(self, resource: GraphicsResource) -> None:
-        """Compatibility no-op.
-
-        Vulkan now owns explicit shutdown ordering internally, so this
-        registration hook is no longer required for backend cleanup.
-        """
-        _ = resource
-
-    def on_exit_cleanup(self) -> None:
-        """Cleans up all graphical resources that have been registered on application exit."""
-        self.cleanup_all()
-
-    def cleanup_all(self) -> None:
-        """Cleans up all graphical resources that have been registered.
-
-        Managers are called last, and in reverse order of registered.
-        """
-        if self._func:
-            self._func()
-
-        for resource in reversed(self.managers):
-            resource.delete()
