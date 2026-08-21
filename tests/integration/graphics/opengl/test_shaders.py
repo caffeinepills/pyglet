@@ -2,10 +2,7 @@ import pytest
 
 import pyglet
 
-from tests.annotations import GraphicsAPIGroups, require_graphics_api, skip_graphics_api
-
-
-pytestmark = require_graphics_api(GraphicsAPIGroups.GL3 + GraphicsAPIGroups.GL2)
+from tests.annotations import skip_graphics_api, GraphicsAPIGroups
 
 _MATRIX_UNIFORMS = (
     ("mat2", 4),
@@ -65,7 +62,6 @@ def _render_program_to_pixel(program) -> bytes:
     fb = pyglet.graphics.framebuffer.Framebuffer()
     texture = pyglet.graphics.Texture.create(1, 1)
     fb.attach_texture(texture)
-    fb.finalize()
 
     fb.bind()
     gl.glViewport(0, 0, 1, 1)

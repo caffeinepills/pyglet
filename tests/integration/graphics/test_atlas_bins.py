@@ -2,8 +2,10 @@ import pytest
 
 import pyglet
 
-from pyglet.graphics.atlas import AllocatorException, TextureAtlas, TextureBin
+from pyglet.graphics.atlas import AllocatorException, TextureAtlas, TextureBin, TextureArrayBin
+from pyglet.graphics.texture import TextureArraySizeExceeded
 from pyglet.image import ImageData
+from tests.annotations import GraphicsAPIGroups, skip_graphics_api
 
 
 def _solid_rgba_image(width: int, height: int, color: tuple[int, int, int, int]) -> ImageData:

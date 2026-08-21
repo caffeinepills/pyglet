@@ -8,7 +8,7 @@ import ctypes
 from tests.annotations import skip_graphics_api, GraphicsAPIGroups
 
 
-pytestmark = skip_graphics_api(GraphicsAPIGroups.GL2)
+pytestmark = [skip_graphics_api(GraphicsAPIGroups.GL2)]
 
 
 _vertex_source: str = """#version 330 core
