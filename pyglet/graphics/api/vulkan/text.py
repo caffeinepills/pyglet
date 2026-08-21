@@ -9,6 +9,7 @@ from pyglet.graphics.draw import Group
 from pyglet.graphics.shader import Attribute, SampledTextureBinding, PushConstants
 
 if TYPE_CHECKING:
+    from pyglet.graphics import Texture
     from pyglet.graphics.api.vulkan.texture import VulkanTexture
     from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram
 
@@ -135,6 +136,34 @@ def get_default_layout_shader() -> VulkanShaderProgram:
         program.set_attribute_format("colors", data_type="B", normalize=True)
         return program
 
+def get_default_scrollable_layout_shader() -> VulkanShaderProgram:
+    """The default shader used for all glyphs in the layout."""
+    try:
+        return pyglet.graphics.api.core.get_shader("default_layout")
+    except KeyError:
+        load_package_shader = pyglet.graphics.api.core.load_package_shader
+        program = pyglet.graphics.api.core.create_shader_program(
+            "default_layout",
+            (load_package_shader("pyglet.graphics.api.vulkan.shaders", "layout.vert.spv"), 'vertex'),
+            (load_package_shader("pyglet.graphics.api.vulkan.shaders", "layout.frag.spv"), 'fragment'),
+        )
+        if not program.is_defined:
+            program.set_attributes(
+                Attribute("position", location=0, components=3, data_type="f"),
+                Attribute("colors", location=1, components=4, data_type="f"),
+                Attribute("tex_coords", location=2, components=3, data_type="f"),
+                Attribute("translation", location=3, components=3, data_type="f"),
+                Attribute("view_translation", location=4, components=3, data_type="f"),
+                Attribute("anchor", location=5, components=2, data_type="f"),
+                Attribute("rotation", location=6, components=1, data_type="f"),
+                Attribute("visible", location=7, components=1, data_type="f"),
+            )
+            program.set_uniform_blocks(WindowBlock)
+            program.set_push_constants(PushConstants(stages=('fragment', ), constants=[("scissor", "bool"), ("scissor_area", "vec4")]))
+            program.set_sampled_textures(SampledTextureBinding("text", desc_set=0, binding=2))
+
+        program.set_attribute_format("colors", data_type="B", normalize=True)
+        return program
 
 def get_default_image_layout_shader() -> VulkanShaderProgram:
     """The default shader used for an InlineElement image. Used for HTML Labels that insert images via <img> tag."""
@@ -266,13 +295,15 @@ class TextLayoutGroup(Group):
     def __init__(self, texture: VulkanTexture, program: VulkanShaderProgram, order: int = 1,  # noqa: D107
                  parent: Group | None = None) -> None:
         super().__init__(order=order, parent=parent)
-        print("SETTING TEXTURE IN GROUP", texture, id(self))
         self.texture = texture
         self.set_blend(BlendFactor.SRC_ALPHA, BlendFactor.ONE_MINUS_SRC_ALPHA)
         self.set_shader_program(program)
         self.set_texture(texture, 2)
-        self.set_shader_uniform(program, "scissor", False)
-        self.set_shader_uniform(program, "scissor_area", (0, 0, 0, 0))
+        self.uniforms = {
+            "scissor": False,
+            "scissor_area": (0, 0, 0, 0),
+        }
+        self.set_shader_uniforms(program, self.uniforms)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(address={id(self)}, texture={self.texture})"
@@ -310,8 +341,11 @@ class ScrollableTextLayoutGroup(Group):
         self.set_blend(BlendFactor.SRC_ALPHA, BlendFactor.ONE_MINUS_SRC_ALPHA)
         self.set_shader_program(program)
         self.set_texture(self.texture, 2)
-        self.set_shader_uniform(program, "scissor", True)
-        self.set_shader_uniform(program, "scissor_area", self.scissor_area)
+        self.uniforms = {
+            "scissor": True,
+            "scissor_area": self.scissor_area,
+        }
+        self.set_shader_uniforms(program, self.uniforms)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.texture})"
@@ -337,8 +371,11 @@ class ScrollableTextDecorationGroup(Group):
         self.program = program
         self.set_blend(BlendFactor.SRC_ALPHA, BlendFactor.ONE_MINUS_SRC_ALPHA)
         self.set_shader_program(program)
-        self.set_shader_uniform(program,"scissor", True)
-        self.set_shader_uniform(program,"scissor_area", self.scissor_area)
+        self.uniforms = {
+            "scissor": True,
+            "scissor_area": self.scissor_area,
+        }
+        self.set_shader_uniforms(program, self.uniforms)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(scissor={self.scissor_area})"

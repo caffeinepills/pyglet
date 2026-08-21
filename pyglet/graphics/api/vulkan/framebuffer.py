@@ -420,6 +420,8 @@ class VulkanRenderbuffer:
 class VulkanFramebuffer:
     """Vulkan framebuffer compatibility class with an OpenGL-style API."""
 
+    _next_compat_id = 1
+
     def __init__(
         self,
         target: FramebufferTarget = FramebufferTarget.FRAMEBUFFER,
@@ -501,7 +503,9 @@ class VulkanFramebuffer:
         if self._width <= 0 or self._height <= 0:
             return "Framebuffer has invalid attachment dimensions."
 
-        renderpass_obj = _resolve_render_pass_object(self._render_pass, self._context)
+        # Offscreen framebuffers create their own compatible render pass in
+        # ``finalize``.  The window render pass may have different attachments.
+        renderpass_obj = self._render_pass
         attached_color_keys = tuple(a for a in _color_attachment_order if a in self._attachments)
         expected_color_keys = self._color_attachment_keys or attached_color_keys
         if renderpass_obj is not None and not self._color_attachment_keys:

@@ -833,5 +833,4 @@ def get_default_shader() -> ShaderProgram:
             from pyglet.graphics.api.vulkan.instance import WindowBlock
             program.set_uniform_blocks(WindowBlock)
 
-        program.set_attribute_format("colors", data_type="B", normalize=True)
         return program

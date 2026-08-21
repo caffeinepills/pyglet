@@ -162,9 +162,9 @@ def get_window_camera_ubo(window) -> VulkanUniformBufferObject | None:
     if window_ubo is not None:
         return window_ubo
 
-    camera = getattr(window, "default_camera", None)
+    camera = getattr(window, "camera", None)
     storage = getattr(camera, "view_storage", None)
-    return getattr(storage, "_ubo", None)
+    return getattr(storage, "ubo", getattr(storage, "_ubo", None))
 
 
 @dataclass
@@ -246,7 +246,9 @@ class VulkanBatch(Batch):
     def delete(self) -> None:
         type(self)._live_batches.discard(self)
         for domain in self._domain_registry.values():
-            domain.delete()
+            delete = getattr(domain, "delete", None)
+            if delete is not None:
+                delete()
         self._domain_registry.clear()
         for group in tuple(self.group_map):
             group._assigned_batches.discard(self)  # noqa: SLF001
@@ -313,7 +315,13 @@ class VulkanBatch(Batch):
             return False
 
         drawable_attributes = {name: attributes[name] for name in vertex_list.initial_attribs}
-        domain = self.get_domain(vertex_list.indexed, vertex_list.instanced, mode, group, drawable_attributes)
+        domain = self.get_domain(
+            vertex_list.indexed,
+            vertex_list.instanced,
+            mode,
+            group,
+            program.derive_domain_attributes(drawable_attributes),
+        )
 
         # TODO: Allow migration if we can restore original vertices somehow. Much faster.
         # If the domain's don't match, we need to re-create the vertex list. Tell caller no match.
@@ -350,8 +358,13 @@ class VulkanBatch(Batch):
                 The batch to migrate to (or the current batch).
 
         """
-        attributes = vertex_list.domain.attribute_meta
-        domain = batch.get_domain(vertex_list.indexed, vertex_list.instanced, mode, group, attributes)
+        domain = batch.get_domain(
+            vertex_list.indexed,
+            vertex_list.instanced,
+            mode,
+            group,
+            vertex_list.domain.domain_attributes,
+        )
         if domain != vertex_list.domain:
             vertex_list.migrate(domain, group)
         else:

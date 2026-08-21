@@ -654,6 +654,13 @@ class AttributeBufferObject(MappedBufferObject):
         if elements == 0:
             return
         byte_offset = start * self.attribute.stride
+        if self.attribute.normalized and self.attribute.data_type == "B":
+            # Development's vertex-list API accepts normalized colors as
+            # floats. Vulkan stores that format as UNORM bytes.
+            data = tuple(
+                round(max(0.0, min(1.0, value)) * 255) if isinstance(value, float) else value
+                for value in data
+            )
         data_type = self.attribute.c_type * elements
         c_array = data_type(*data)
         byte_size = ctypes.sizeof(c_array)
@@ -729,7 +736,8 @@ class StagingBufferObject(MappedBufferObject):
 
     def set_data_as_type(self, data: bytes, _ctype_type) -> None:
         raw = bytes(data)
-        assert len(raw) == self.size, f"Data size {len(raw)} exceeds buffer size {self.size}."
+        if len(raw) != self.size:
+            self.resize(len(raw))
         self.set_bytes(raw)
 
 

@@ -6,7 +6,7 @@ from pyglet.enums import BlendFactor, BlendOp, CompareOp
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VkOffset2D, VkRect2D, VkExtent2D
 
-from pyglet.graphics.state import State
+from pyglet.graphics.state import State, ViewportProtocol, _BaseViewportState
 
 if TYPE_CHECKING:
     from pyglet.graphics.draw import DrawContext
@@ -149,12 +149,18 @@ class PolygonModeState(State):
     face: int
     mode: int
 
-@dataclass(frozen=True)
-class ViewportState(State):
-    x: float
-    y: float
-    width: float
-    height: float
+@dataclass(frozen=True, eq=False)
+class ViewportState(_BaseViewportState):
+    """Mutable viewport state shared with the other backends."""
+
+    viewport: ViewportProtocol
+
+    sets_state: bool = True
+    unsets_state: bool = True
+    enforced_state: bool = True
+
+    def apply_to_backend(self, ctx: DrawContext) -> None:
+        ctx.apply_viewport()
 
 @dataclass(frozen=True)
 class UniformBufferState(State):

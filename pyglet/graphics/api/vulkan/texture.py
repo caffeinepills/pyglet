@@ -806,6 +806,7 @@ class VulkanTexture(Texture, UniqueIDHandler):
 
         if self.image is not None and level == 0 and self.tex_type == TextureType.TYPE_2D and z == 0:
             self.image.upload_data_region(image_data, x, y, z)
+        self._bump_descriptor_generation()
 
     def __del__(self) -> None:
         try:

@@ -727,6 +727,13 @@ class VulkanGlobal(BackendGlobalObject):
     def post_init(self) -> None:
         pass
 
+    def have_extension(self, extension_name: str) -> bool:
+        """Return support for an extension on the active Vulkan surface."""
+        context = self.current_context
+        if isinstance(context, NullContext):
+            return False
+        return context.info.have_extension(extension_name)
+
     @staticmethod
     def load_package_shader(package, resource_name):
         """Reads a binary resource from the given package or subpackage without external dependencies.
