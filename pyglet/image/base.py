@@ -510,12 +510,14 @@ class _AbstractGrid(ABC, Generic[T]):
     rows: int
     item_width: int
     item_height: int
+    top_left: bool
     _height: int
     _width: int
     _items: list[T] | None = None
 
     def __init__(
         self, rows: int, columns: int, item_width: int, item_height: int, row_padding: int = 0, column_padding: int = 0,
+        top_left: bool = False,
     ) -> None:
         self.rows = rows
         self.columns = columns
@@ -523,6 +525,7 @@ class _AbstractGrid(ABC, Generic[T]):
         self.item_height = item_height
         self.row_padding = row_padding
         self.column_padding = column_padding
+        self.top_left = top_left
         self._items = None
         self._width = (item_width * columns) + (column_padding * columns)
         self._height = (item_height * rows) + (row_padding * rows)
@@ -538,13 +541,13 @@ class _AbstractGrid(ABC, Generic[T]):
     def _generate_items(self) -> list[T]:
         if self._items is None:
             self._items = []
-            y = 0
+            y = (self.rows - 1) * (self.item_height + self.row_padding) if self.top_left else 0
             for row in range(self.rows):
                 x = 0
                 for col in range(self.columns):
                     self._items.append(self._create_item(x, y, self.item_width, self.item_height))
                     x += self.item_width + self.column_padding
-                y += self.item_height + self.row_padding
+                y += -(self.item_height + self.row_padding) if self.top_left else self.item_height + self.row_padding
         return self._items
 
     @abstractmethod
@@ -655,12 +658,13 @@ class ImageGrid(_AbstractGrid[Union[ImageData, ImageDataRegion]], _AbstractImage
         item_height: int | None = None,
         row_padding: int = 0,
         column_padding: int = 0,
+        top_left: bool = False,
     ) -> None:
         """Construct a grid for the given image.
 
         You can specify parameters for the grid, for example setting
         the padding between cells.  Grids are always aligned to the
-        bottom-left corner of the image.
+        bottom-left corner of the image by default.
 
         Args:
             image:
@@ -681,12 +685,15 @@ class ImageGrid(_AbstractGrid[Union[ImageData, ImageDataRegion]], _AbstractImage
             column_padding:
                 Pixels separating adjacent columns.  The padding is only
                 inserted between columns, not at the edges of the grid.
+            top_left:
+                If ``True``, sequence index ``0`` and row ``0`` refer to the
+                top-left cell. By default, they refer to the bottom-left cell.
         """
         item_width = item_width or (image.width - column_padding * (columns - 1)) // columns
         item_height = item_height or (image.height - row_padding * (rows - 1)) // rows
         assert item_width is not None
         assert item_height is not None
-        super().__init__(rows, columns, item_width, item_height, row_padding, column_padding)
+        super().__init__(rows, columns, item_width, item_height, row_padding, column_padding, top_left)
         self.image = image
 
     def _create_item(self, x: int, y: int, width: int, height: int) -> ImageDataRegion:

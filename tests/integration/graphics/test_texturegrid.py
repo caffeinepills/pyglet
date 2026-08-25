@@ -82,6 +82,15 @@ class TextureGridTestCase(unittest.TestCase):
             for col in range(cols):
                 self.check_cell(self.grid[(row, col)], row * cols + col)
 
+    def test_top_left_indexing(self):
+        self.set_grid_image(4, 4, rows=2, cols=3, rowpad=0, colpad=0)
+        image_grid = ImageGrid(self.image, 2, 3, 4, 4, top_left=True)
+        self.grid = TextureGrid.from_image_grid(image_grid)
+
+        self.check_cell(self.grid[0], 3)
+        self.check_cell(self.grid[(0, 0)], 3)
+        self.check_cell(self.grid[3], 0)
+
     def test_range(self):
         rows, cols = 4, 3
         self.set_grid_image(10, 1, rows, cols, 0, 0)

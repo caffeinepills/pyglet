@@ -995,12 +995,13 @@ class TextureGrid(_AbstractGrid[TextureRegion]):
         item_height: int | None = None,
         row_padding: int = 0,
         column_padding: int = 0,
+        top_left: bool = False,
     ) -> None:
         """Construct a grid for the given image.
 
         You can specify parameters for the grid, for example setting
         the padding between cells.  Grids are always aligned to the
-        bottom-left corner of the image.
+        bottom-left corner of the image by default.
 
         Args:
             texture:
@@ -1021,11 +1022,14 @@ class TextureGrid(_AbstractGrid[TextureRegion]):
             column_padding:
                 Pixels separating adjacent columns.  The padding is only
                 inserted between columns, not at the edges of the grid.
+            top_left:
+                If ``True``, sequence index ``0`` and row ``0`` refer to the
+                top-left cell. By default, they refer to the bottom-left cell.
         """
         item_width = item_width or (texture.width - column_padding * (columns - 1)) // columns
         item_height = item_height or (texture.height - row_padding * (rows - 1)) // rows
         self.texture = texture
-        super().__init__(rows, columns, item_width, item_height, row_padding, column_padding)
+        super().__init__(rows, columns, item_width, item_height, row_padding, column_padding, top_left)
 
     def _create_item(self, x: int, y: int, width: int, height: int) -> TextureRegion:
         return self.texture.get_region(x, y, width, height)
@@ -1048,6 +1052,7 @@ class TextureGrid(_AbstractGrid[TextureRegion]):
             image_grid.item_height,
             image_grid.row_padding,
             image_grid.column_padding,
+            image_grid.top_left,
         )
 
 
