@@ -262,12 +262,11 @@ class Source:
         Source._players.append(player)
 
         def _on_player_eos() -> None:
+            player.remove_handlers(on_player_eos=_on_player_eos)
             Source._players.remove(player)
-            # There is a closure on player. To break up that reference, delete this function.
-            player.on_player_eos = None
             player.delete()
 
-        player.on_player_eos = _on_player_eos
+        player.push_handlers(on_player_eos=_on_player_eos)
         return player
 
     def get_animation(self) -> Animation:
