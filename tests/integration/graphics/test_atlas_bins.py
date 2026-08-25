@@ -74,6 +74,29 @@ def test_texture_array_bin_creates_new_array_when_depth_full(test_window):
 
 
 @skip_graphics_api(GraphicsAPIGroups.GL2)
+def test_texture_array_bin_binds_existing_array_before_upload(test_window):
+    test_window.switch_to()
+
+    array_bin = TextureArrayBin(texture_width=4, texture_height=4, max_depth=2)
+    image_a = _solid_rgba_image(4, 4, (1, 2, 3, 255))
+    image_b = _solid_rgba_image(4, 4, (4, 5, 6, 255))
+    image_c = _solid_rgba_image(4, 4, (7, 8, 9, 255))
+    image_d = _solid_rgba_image(4, 4, (10, 11, 12, 255))
+
+    array_bin.add(image_a)
+    array_bin.add(image_b)
+    array_bin.add(image_c)
+
+    # Bind a different array before uploading into the existing second array.
+    array_bin.arrays[0].bind()
+    region_d = array_bin.add(image_d)
+
+    assert region_d.owner is array_bin.arrays[1]
+    fetched = bytes(region_d.get_image_data().get_bytes("RGBA", region_d.width * 4))
+    assert fetched == bytes([10, 11, 12, 255]) * 16
+
+
+@skip_graphics_api(GraphicsAPIGroups.GL2)
 def test_texture_array_bin_raises_for_oversized_image(test_window):
     test_window.switch_to()
 
