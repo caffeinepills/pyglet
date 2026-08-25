@@ -58,6 +58,20 @@ class VertexListTest(unittest.TestCase):
         assert program.get_attribute_view(colors="Bn") is layout
         assert tuple(vertex_list.colors[:]) == (255, 128, 0, 255) * 3
 
+    # !!! Remove legacy formats for official release.
+    def test_program_vertex_list_accepts_legacy_format_tuples(self):
+        program = pyglet.graphics.api.get_default_shader()
+
+        vertex_list = program.vertex_list(
+            3,
+            GeometryMode.TRIANGLES,
+            position=("f", (0, 0, 0) * 3),
+            colors=("Bn", (255, 128, 0, 255) * 3),
+        )
+
+        assert tuple(vertex_list.position[:]) == (0, 0, 0) * 3
+        assert tuple(vertex_list.colors[:]) == (255, 128, 0, 255) * 3
+
     def test_vertex_list_property_set(self):
         program = pyglet.graphics.api.get_default_shader()
 

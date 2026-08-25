@@ -208,7 +208,8 @@ class _AbstractShaderProgram(GraphicsResource[Any, ShaderProgramKey], ABC):
                 msg = f"Attribute {name} not found. Existing attributes: {list(self._attributes.keys())}"
                 raise MissingAttributeException(msg)
             if divisor < 1:
-                raise ValueError(f"Instance divisor for {name!r} must be greater than zero.")
+                msg = f"Instance divisor for {name!r} must be greater than zero."
+                raise ValueError(msg)
 
         if attributes != self._instance_attributes:
             self._instance_attributes = attributes.copy()
@@ -270,7 +271,8 @@ class _AbstractShaderProgram(GraphicsResource[Any, ShaderProgramKey], ABC):
                 and (len(fmt) == 1 or fmt[1] == 'n')
             )
             if not valid:
-                raise ValueError(f"Invalid vertex format {fmt!r} for attribute {name!r}.")
+                msg = f"Invalid vertex format {fmt!r} for attribute {name!r}."
+                raise ValueError(msg)
             try:
                 source = attributes[name]
             except KeyError:
@@ -545,6 +547,29 @@ class ShaderProgram(_AbstractShaderProgram):
         assert shaders, "At least one Shader object is required."
         super().__init__(*shaders)
 
+    # !!! Remove legacy formats for official release.
+    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] | None = None,
+                            instanced: bool = False, batch: Batch | None = None, group: Group | None = None,
+                            layout: _AbstractShaderProgram | ShaderProgramView | None = None,
+                            **data: Any) -> VertexList | InstanceVertexList | IndexedVertexList | InstanceIndexedVertexList:
+        legacy_data = {
+            name: values for name, values in data.items()
+            if isinstance(values, tuple) and values and isinstance(values[0], str)
+        }
+        if legacy_data:
+            invalid_data = [
+                name for name, values in legacy_data.items()
+                if len(values) != 2
+            ]
+            if invalid_data:
+                msg = f"Legacy attribute data must be (format, list), not {invalid_data!r}."
+                raise TypeError(msg)
+            formats = {name: values[0] for name, values in legacy_data.items()}
+            data = {name: values[1] if name in legacy_data else values for name, values in data.items()}
+            layout = self.get_attribute_view(**formats)
+
+        return super()._vertex_list_create(count, mode, indices, instanced, batch, group, layout, **data)
+
 
 class ShaderProgramView(ShaderProgram):
     """An interned ShaderProgram view with a specific vertex layout.
@@ -565,6 +590,16 @@ class ShaderProgramView(ShaderProgram):
         self._domain_attributes = program.derive_domain_attributes(attributes, self._attribute_key)
         self._instanced_domain_attributes = (
             program._derive_instanced_domain_attributes(attributes, instances, attribute_keys) if instances else None
+        )
+
+    def _vertex_list_create(self, count: int, mode: GeometryMode, indices: Sequence[int] | None = None,
+                            instanced: bool = False, batch: Batch | None = None, group: Group | None = None,
+                            layout: _AbstractShaderProgram | ShaderProgramView | None = None,
+                            **data: Any) -> VertexList | InstanceVertexList | IndexedVertexList | InstanceIndexedVertexList:
+        invalid_data = [name for name, values in data.items() if not isinstance(values, (list, tuple))]
+        assert not invalid_data, f"ShaderProgramView attribute data must be lists or tuples, not {invalid_data!r}."
+        return _AbstractShaderProgram._vertex_list_create(
+            self._program, count, mode, indices, instanced, batch, group, self, **data,
         )
 
     @property
@@ -618,31 +653,23 @@ class ShaderProgramView(ShaderProgram):
 
     def vertex_list(self, count: int, mode: GeometryMode, batch: Batch | None = None,
                     group: Group | None = None, **data: Any) -> VertexList:
-        return self._program._vertex_list_create(
-            count, mode, batch=batch, group=group, layout=self, **data
-        )
+        return self._vertex_list_create(count, mode, batch=batch, group=group, **data)
 
     def vertex_list_indexed(self, count: int, mode: GeometryMode, indices: Sequence[int],
                             batch: Batch | None = None, group: Group | None = None,
                             **data: Any) -> IndexedVertexList:
-        return self._program._vertex_list_create(
-            count, mode, indices, batch=batch, group=group, layout=self, **data
-        )
+        return self._vertex_list_create(count, mode, indices, batch=batch, group=group, **data)
 
     def vertex_list_instanced(self, count: int, mode: GeometryMode, batch: Batch | None = None,
                               group: Group | None = None, **data: Any) -> InstanceVertexList:
         assert self._instance_attributes, "Configure instance attributes with set_instance_attributes first."
-        return self._program._vertex_list_create(
-            count, mode, None, True, batch=batch, group=group, layout=self, **data
-        )
+        return self._vertex_list_create(count, mode, None, True, batch=batch, group=group, **data)
 
     def vertex_list_instanced_indexed(self, count: int, *, mode: GeometryMode, indices: Sequence[int],
                                       batch: Batch | None = None, group: Group | None = None,
                                       **data: Any) -> InstanceIndexedVertexList:
         assert self._instance_attributes, "Configure instance attributes with set_instance_attributes first."
-        return self._program._vertex_list_create(
-            count, mode, indices, True, batch=batch, group=group, layout=self, **data
-        )
+        return self._vertex_list_create(count, mode, indices, True, batch=batch, group=group, **data)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._program, name)
