@@ -38,7 +38,7 @@ from contextlib import contextmanager
 
 from ctypes import *
 from ctypes import util
-from typing import Type, TypeVar, Sequence, Any
+from typing import Type, TypeVar, Sequence, Any, Callable, List
 
 from .cocoatypes import *
 
@@ -65,6 +65,43 @@ libc = cdll.LoadLibrary(util.find_library('c'))
 # void free(void *)
 libc.free.restype = None
 libc.free.argtypes = [c_void_p]
+
+_NSConcreteGlobalBlock = c_void_p.in_dll(libc, "_NSConcreteGlobalBlock")
+
+BLOCK_IS_NOESCAPE      =  (1 << 23)
+BLOCK_HAS_COPY_DISPOSE =  (1 << 25)
+BLOCK_HAS_CTOR =          (1 << 26)
+BLOCK_IS_GLOBAL =         (1 << 28)
+BLOCK_HAS_STRET =         (1 << 29)
+BLOCK_HAS_SIGNATURE =     (1 << 30)
+
+libc.sysctlbyname.argtypes = [c_char_p, c_void_p, POINTER(c_size_t), c_void_p, c_size_t]
+libc.sysctlbyname.restype = c_int
+
+def _sysctl_get(name: str) -> str:
+    name_bytes = name.encode("utf-8")
+
+    size = c_size_t()
+    # Gets buffer size.
+    libc.sysctlbyname(name_bytes, None, byref(size), None, 0)
+
+    buf = create_string_buffer(size.value)
+    libc.sysctlbyname(name_bytes, buf, byref(size), None, 0)
+    return buf.value.decode("utf-8")
+
+def get_chip_model() -> str:
+    """Return Apple chip model name.
+
+    For example: "Apple M2"
+    """
+    try:
+        # Newer field.
+        return _sysctl_get("machdep.cpu.brand_string")
+    except Exception:
+        try:
+            return _sysctl_get("hw.model")
+        except Exception:
+            return "Unknown"
 
 ######################################################################
 
@@ -434,6 +471,9 @@ OBJC_ASSOCIATION_ASSIGN = 0  # Weak reference to the associated object.
 OBJC_ASSOCIATION_RETAIN = 0x0301  # Strong reference to the associated object. The association is made atomically.
 OBJC_ASSOCIATION_COPY = 0x0303  # Specifies that the associated object is copied. The association is made atomically.
 
+class MissingEncodingType(Exception):
+    """If an encoding type is missing."""
+
 
 def ensure_bytes(x: bytes | str) -> bytes:
     """Attempt to encode an object as :py:class:`bytes`.
@@ -792,26 +832,44 @@ def send_super(receiver, selName, *args, superclass_name=None, **kwargs):
 cfunctype_table = {}
 
 
-def parse_type_encoding(encoding):
-    """Takes a type encoding string and outputs a list of the separated type codes.
-    Currently does not handle unions or bitfields and strips out any field width
-    specifiers or type specifiers from the encoding.  For Python 3.2+, encoding is
-    assumed to be a bytes object and not unicode.
+def parse_type_encoding(encoding: bytes) -> List[bytes]:
+    """Split the bytes of a limited subset of encodings into a list of type codes.
+
+    Type encodings are covered in the Objective-C Runtime Programming Guide:
+    https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html
+
+    Limitations are numerous.
+
+    There is no support for:
+    * unions, e.g. ``b'(value=^v*)'`` for a union of:
+      * a void pointer
+      * a character string
+    * bitfields, e.g. `b'b8'` for an 8-bit bitfield
+
+    The following are removed:
+    * Numerical field widths (``'b'^v16'`` becomes ``[b'^v']``)
+    * Objective-C method encoding specifiers (any of ``b'rnNoORV'``)
 
     Examples:
-    parse_type_encoding('^v16@0:8') --> ['^v', '@', ':']
-    parse_type_encoding('{CGSize=dd}40@0:8{CGSize=dd}16Q32') --> ['{CGSize=dd}', '@', ':', '{CGSize=dd}', 'Q']
+
+    .. code-block:: python
+
+        >>> parse_type_encoding(b'^v16@0:8')
+        [b'^v', b'@', b':']
+        >>> parse_type_encoding(b'{CGSize=dd}40@0:8{CGSize=dd}16Q32')
+        [b'{CGSize=dd}', b'@', b':', b'{CGSize=dd}', b'Q']
+
+    Args:
+        encoding: A bytes object with a type encoding.
+
+    Returns:
+        A list of type encodings stripped of unsupported data (field widths, method encodings, etc).
     """
-    type_encodings = []
+    type_encodings: List[bytes] = []
     brace_count = 0  # number of unclosed curly braces
     bracket_count = 0  # number of unclosed square brackets
     typecode = b''
-    for c in encoding:
-        # In Python 3, c comes out as an integer in the range 0-255.  In Python 2, c is a single character string.
-        # To fix the disparity, we convert c to a bytes object if necessary.
-        if isinstance(c, int):
-            c = bytes([c])
-
+    for c in (encoding[i:i+1] for i in range(len(encoding))):
         if c == b'{':
             # Check if this marked the end of previous type code.
             if typecode and typecode[-1:] != b'^' and brace_count == 0 and bracket_count == 0:
@@ -841,11 +899,16 @@ def parse_type_encoding(encoding):
             # Ignore field width specifiers for now.
             pass
         elif c in b'rnNoORV':
-            # Also ignore type specifiers.
+            # Also ignore Objective-C method type specifiers.
+            # See Table 6-2 at the bottom of the Objective-C Runtime Programming Guide:
+            # https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html
             pass
         elif c in b'^cislqCISLQfdBv*@#:b?':
             if typecode and typecode[-1:] == b'^':
                 # Previous char was pointer specifier, so keep going.
+                typecode += c
+            elif typecode and c == b'?' and typecode[-1:] == b'@':
+                # Block type, combine them.
                 typecode += c
             else:
                 # Add previous type code to the list.
@@ -883,8 +946,10 @@ def cfunctype_for_encoding(encoding):
             argtypes.append(typecodes[code])
         elif code[0:1] == b'^' and code[1:] in typecodes:
             argtypes.append(POINTER(typecodes[code[1:]]))
+        elif code[0:2] == b'@?':
+            argtypes.append(c_void_p)
         else:
-            raise Exception('unknown type encoding: ' + code)
+            raise Exception(f'unknown type encoding: {code}')
 
     cfunctype = CFUNCTYPE(*argtypes)
 
@@ -983,11 +1048,10 @@ class ObjCMethod:
         # Get types for all the arguments.
         try:
             self.argtypes = [self.ctype_for_encoding(t) for t in self.argument_types]
-        except:
-            # print(f'no argtypes encoding for {self.name} ({self.argument_types})')
+        except MissingEncodingType as e:
+            #print(f'no argtypes encoding for {self.name}: {e}')
             self.argtypes = None
         # Get types for the return type.
-
         try:
             if self.return_type == b'@':
                 self.restype = ObjCInstance
@@ -1004,7 +1068,7 @@ class ObjCMethod:
         libc.free(return_type_ptr)
 
 
-    def ctype_for_encoding(self, encoding):
+    def ctype_for_encoding(self, encoding: bytes):
         """Return ctypes type for an encoded Objective-C type."""
         if encoding in self.typecodes:
             return self.typecodes[encoding]
@@ -1019,8 +1083,10 @@ class ObjCMethod:
         elif encoding[0:2] == b'r^' and encoding[2:] in self.typecodes:
             # const pointer, also don't care
             return POINTER(self.typecodes[encoding[2:]])
+        elif encoding[0:2] == b'@?':
+            return c_void_p
         else:
-            raise Exception('unknown encoding for %s: %s' % (self.name, encoding))
+            raise MissingEncodingType(encoding)
 
     def get_prototype(self):
         """Returns a ctypes CFUNCTYPE for the method."""
@@ -1071,7 +1137,8 @@ class ObjCMethod:
             # Add more useful info to argument error exceptions, then reraise.
             error.args += ('selector = ' + str(self.name),
                            'argtypes =' + str(self.argtypes),
-                           'encoding = ' + str(self.encoding))
+                           'encoding = ' + str(self.encoding),
+                           f'args passed = {args}')
             raise
 
 
@@ -1081,7 +1148,7 @@ class ObjCBoundMethod:
     """This represents an Objective-C method (an IMP) which has been bound
     to some id which will be passed as the first parameter to the method."""
 
-    def __init__(self, method, objc_id):
+    def __init__(self, method: ObjCMethod, objc_id):
         """Initialize with a method and ObjCInstance or ObjCClass object."""
         self.method = method
         self.objc_id = objc_id
@@ -1285,9 +1352,19 @@ class ObjCInstance:
         # Store new object in the dictionary of cached objects, keyed
         # by the (integer) memory address pointed to by the object_ptr.
         cls._cached_objects[object_ptr.value] = objc_instance
+
+        # Tagged pointers are value-encoded Objective-C objects, not heap
+        # allocations.  They do not receive normal dealloc messages, so a
+        # retained dealloc observer would never be released.  The weak Python
+        # cache is enough for them.
+        if not _is_objc_tagged_pointer(object_ptr):
+            _set_cache_dealloc_observer(objc_instance)
         return objc_instance
 
     def release(self):
+        if not self.is_valid:
+            return
+
         self._retained = False
         send_message(self, "release")
 
@@ -1308,8 +1385,22 @@ class ObjCInstance:
 
         If we are retaining an allocation, release it.
         """
-        if self._retained:
+        if self._retained and self.is_valid:
             send_message(self, "release")
+
+    @property
+    def is_valid(self) -> bool:
+        """Return True if this wrapper still represents the current native object."""
+        return self._cached_objects.get(self.ptr.value) is self
+
+    def matches_native_class(self) -> bool:
+        """Return True if the pointer's current ObjC class matches this wrapper.
+
+        This is a diagnostic helper.  It calls ``object_getClass`` and should
+        not be used in hot paths.
+        """
+        native_class = c_void_p(objc.object_getClass(self.ptr))
+        return native_class.value == self.objc_class.ptr.value
 
     def associate(self, name: str, obj: Any):
         """Associate a Python object to the Objective-C instance with the given name.
@@ -1320,6 +1411,9 @@ class ObjCInstance:
         _set_dealloc_observer(self, name, obj)
 
     def __repr__(self):
+        if not self.is_valid:
+            return "<ObjCInstance %#x: deallocated %s at %s>" % (id(self), self.objc_class.name, str(self.ptr.value))
+
         if self.objc_class.name == b'NSCFString':
             # Display contents of NSString objects
             from .cocoalibs import cfstring_to_string
@@ -1333,6 +1427,10 @@ class ObjCInstance:
 
         This is only called when the name doesn't exist in __dict__.
         """
+        if not self.is_valid:
+            msg = f'Cannot access {name!r} on deallocated Objective-C object {self!r}'
+            raise ReferenceError(msg)
+
         # Search for named instance method in the class object and if it
         # exists, return callable object with self as hidden argument.
         # Note: you should give self and not self.ptr as a parameter to
@@ -1369,11 +1467,10 @@ def get_cached_instances():
     return [(obj.objc_class.name, obj._retained, obj.pool, obj) for obj in ObjCInstance._cached_objects.values()]
 
 
-def convert_method_arguments(encoding, args):
+def convert_method_arguments(arg_encodings, args):
     """Used by ObjCSubclass to convert Objective-C method arguments to
     Python values before passing them on to the Python-defined method."""
     new_args = []
-    arg_encodings = parse_type_encoding(encoding)[3:]
     for e, a in zip(arg_encodings, args):
         if e == b'@':
             new_args.append(ObjCInstance(a))
@@ -1488,18 +1585,20 @@ class ObjCSubclass:
 
         return decorator
 
-    def method(self, encoding):
+    def method(self, encoding: bytes | str):
         """Function decorator for instance methods."""
         # Add encodings for hidden self and cmd arguments.
-        encoding = ensure_bytes(encoding)
-        typecodes = parse_type_encoding(encoding)
+        encoding_bytes = ensure_bytes(encoding)
+        typecodes = parse_type_encoding(encoding_bytes)
         typecodes.insert(1, b'@:')
-        encoding = b''.join(typecodes)
+        encoding_bytes = b''.join(typecodes)
 
         def decorator(f):
+            arg_encoding = parse_type_encoding(encoding_bytes)[3:]
+
             def objc_method(objc_self, objc_cmd, *args):
                 py_self = ObjCInstance(objc_self)
-                args = convert_method_arguments(encoding, args)
+                args = convert_method_arguments(arg_encoding, args)
                 result = f(py_self, *args)
                 if isinstance(result, ObjCClass):
                     result = result.ptr.value
@@ -1508,7 +1607,7 @@ class ObjCSubclass:
                 return result
 
             name = f.__name__.replace('_', ':')
-            self.add_method(objc_method, name, encoding)
+            self.add_method(objc_method, name, encoding_bytes)
             return objc_method
 
         return decorator
@@ -1522,9 +1621,10 @@ class ObjCSubclass:
         encoding = b''.join(typecodes)
 
         def decorator(f):
+            arg_encoding = parse_type_encoding(encoding)[3:]
             def objc_class_method(objc_cls, objc_cmd, *args):
                 py_cls = ObjCClass(objc_cls)
-                args = convert_method_arguments(encoding, args)
+                args = convert_method_arguments(arg_encoding, args)
                 result = f(py_cls, *args)
                 if isinstance(result, ObjCClass):
                     result = result.ptr.value
@@ -1542,15 +1642,19 @@ class ObjCSubclass:
 ######################################################################
 
 _dealloc_argtype = [c_void_p]  # Just to prevent list creation every call.
+_cache_dealloc_argtypes = [c_void_p, c_void_p]
 
 # Cache Python objects we want to keep when associating with an instance.
 _python_objects = {}
 
-# Instances of DeallocationObserver are associated with every
-# Objective-C object that gets wrapped inside an ObjCInstance.
-# Their sole purpose is to watch for when the Objective-C object
-# is deallocated, and then remove the object from the dictionary
-# of cached ObjCInstance objects kept by the ObjCInstance class.
+# DeallocationObserver is used in two places:
+# - ObjCInstance cache observer: stores only the native ObjC pointer address
+#   in cached_object.  It does not pin any Python object; it only removes the
+#   stale address from ObjCInstance._cached_objects when Objective-C deallocs.
+# - ObjCInstance.associate observer: stores id(python_obj) in observed_object
+#   and keeps python_obj alive in _python_objects until the association is
+#   replaced or the native object is deallocated.  The value may be any Python
+#   object, not just a pointer-like object.
 #
 # The methods of the class defined below are decorated with
 # rawmethod() instead of method() because DeallocationObservers
@@ -1561,21 +1665,34 @@ _python_objects = {}
 class DeallocationObserver_Implementation:
     DeallocationObserver = ObjCSubclass('NSObject', 'DeallocationObserver', register=False)
     DeallocationObserver.add_ivar('observed_object', c_void_p)
+    DeallocationObserver.add_ivar('cached_object', c_void_p)
     DeallocationObserver.register()
 
     @DeallocationObserver.rawmethod('@@')
-    def initWithObjectId_(self, cmd, objc_ptr):
+    def initWithObjectId_(self, cmd, python_obj_id):
+        return DeallocationObserver_Implementation.initWithObjectId_cachedObject_(self, cmd, python_obj_id, 0)
+
+    @DeallocationObserver.rawmethod('@@@')
+    def initWithObjectId_cachedObject_(self, cmd, python_obj_id, cached_objc_ptr):
         self = send_super(self, 'init')
         if self is not None:
-            py_obj = cast(objc_ptr, py_object)
-            _python_objects[(self.value, objc_ptr)] = py_obj.value
-            set_instance_variable(self, 'observed_object', objc_ptr, c_void_p)
+            # python_obj_id is id(python_obj) passed as an opaque pointer-sized
+            # value.  Keeping the actual object in _python_objects is what
+            # prevents it from being garbage collected while associated.
+            if python_obj_id:
+                py_obj = cast(python_obj_id, py_object)
+                _python_objects[(self.value, python_obj_id)] = py_obj.value
+                set_instance_variable(self, 'observed_object', python_obj_id, c_void_p)
+
+            # cached_objc_ptr is the native ObjC object's address.  It is used
+            # only to remove stale wrappers from ObjCInstance._cached_objects
+            # when Objective-C deallocates the native object.
+            set_instance_variable(self, 'cached_object', cached_objc_ptr, c_void_p)
         return self.value
 
     @DeallocationObserver.rawmethod('v')
     def dealloc(self, cmd):
-        if objc_ptr := get_instance_variable(self, 'observed_object', c_void_p):
-            del _python_objects[(self, objc_ptr)]
+        _dealloc_observer_cleanup(self)
 
         send_super(self, "dealloc")
 
@@ -1586,32 +1703,67 @@ class DeallocationObserver_Implementation:
         # objc_startCollectorThread(), so probably not too much reason
         # to have this here, but I guess it can't hurt.)
         # _obj_observer_dealloc(self, 'finalize')
-        if objc_ptr := get_instance_variable(self, 'observed_object', c_void_p):
-            del _python_objects[(self, objc_ptr.value)]
+        _dealloc_observer_cleanup(self)
 
         send_super(self, 'finalize')
 
-def _obj_observer_dealloc(objc_obs, selector_name):
-    """Removes any cached ObjCInstances in Python to prevent memory leaks.
-    Manually break association as it's not implicitly mentioned that dealloc would break an association,
-    although we do not use the object after.
-    """
-    objc_ptr = get_instance_variable(objc_obs, 'observed_object', c_void_p)
-    if objc_ptr:
-        objc.objc_setAssociatedObject(objc_ptr, objc_obs, None, OBJC_ASSOCIATION_ASSIGN)
-        ObjCInstance._cached_objects.pop(objc_ptr, None)
 
-    send_super(objc_obs, selector_name)
+def _dealloc_observer_cleanup(observer):
+    if python_obj_id := get_instance_variable(observer, 'observed_object', c_void_p):
+        _python_objects.pop((observer, python_obj_id), None)
+
+    if cached_objc_ptr := get_instance_variable(observer, 'cached_object', c_void_p):
+        ObjCInstance._cached_objects.pop(cached_objc_ptr, None)
+
 
 def _assigned_internal_name(name: str):
     key = f'_internal.assign.{name}'
     return get_selector(key)
 
+
+def _cache_observer_internal_name():
+    return get_selector('_internal.objc_instance.dealloc_observer')
+
+
+def _is_objc_tagged_pointer(object_ptr):
+    """Return True for Objective-C tagged pointers.
+
+    Tagged pointers store small values directly in the pointer bits instead of
+    pointing to heap allocations.  Foundation commonly uses them for small
+    NSNumber and NSString values.  They are still valid Objective-C objects for
+    message sends, but they are not deallocated like normal objects.
+
+    Source: Apple objc4 runtime's objc-internal.h documents
+    _objc_isTaggedPointer and _OBJC_TAG_MASK:
+    https://github.com/apple-oss-distributions/objc4/blob/main/runtime/objc-internal.h
+    """
+    ptr = object_ptr.value if isinstance(object_ptr, c_void_p) else object_ptr
+    return bool(ptr and ((ptr & 1) or (__arm64__ and ptr & (1 << 63))))
+
+
+def _set_cache_dealloc_observer(self: ObjCInstance):
+    """Stop reusing this Python wrapper after Objective-C frees its object."""
+    observer_key = _cache_observer_internal_name()
+    if objc.objc_getAssociatedObject(self, observer_key):
+        return
+
+    observer = send_message('DeallocationObserver', 'alloc')
+    observer = send_message(
+        observer,
+        'initWithObjectId:cachedObject:',
+        0,
+        self.ptr.value,
+        argtypes=_cache_dealloc_argtypes,
+    )
+
+    objc.objc_setAssociatedObject(self, observer_key, observer, OBJC_ASSOCIATION_RETAIN)
+    send_message(observer, 'release')
+
+
 def _set_dealloc_observer(self, name, python_obj):
-    # Create a DeallocationObserver and associate it with this object.
-    # When the Objective-C object is deallocated, the observer will remove
-    # the ObjCInstance corresponding to the object from the cached objects
-    # dictionary, effectively destroying the ObjCInstance.
+    # Create a DeallocationObserver and associate it with this object.  The
+    # observer keeps the Python object alive until this association is replaced
+    # or the Objective-C object is deallocated.
     observer = send_message('DeallocationObserver', 'alloc')
     observer = send_message(observer, 'initWithObjectId:', id(python_obj), argtypes=_dealloc_argtype)
 
@@ -1622,11 +1774,6 @@ def _set_dealloc_observer(self, name, python_obj):
     # object is deallocated.
     send_message(observer, 'release')
     return observer
-
-
-def _remove_dealloc_observer(objc_ptr):
-    observer = objc_ptr._observer
-    objc.objc_setAssociatedObject(objc_ptr, observer, None, OBJC_ASSOCIATION_RETAIN)
 
 
 @contextmanager
@@ -1642,3 +1789,46 @@ def AutoReleasePool():
         yield
     finally:
         objc.objc_autoreleasePoolPop(pool)
+
+def get_callback_block(func: Callable, *, encoding: list[bytes | str]):
+    """Creates a block to handle callbacks from ObjC."""
+    bytes_list = [ensure_bytes(char) for char in encoding]
+    return ObjCBlock(func, encoding=bytes_list)
+
+class ObjCBlock:
+    """A basic implementation of a Global ObjC Block.
+
+    You must keep this object alive and referenced.
+    """
+    def __init__(self, func: Callable, *, encoding: list[bytes]):
+        if not callable(func):
+            raise TypeError("Blocks must be callable")
+
+        self.func = func
+
+        # Signature is return, block, args
+        desc_signature = encoding[0] + b"@?" + b"".join(encoding[1:])
+
+        cfunc_type = cfunctype_for_encoding(desc_signature)
+
+        self.cfunc_wrapper = cfunc_type(self._wrapper)
+
+        self._descriptor = Block_descriptor_1(
+            reserved=0,
+            Block_size=sizeof(Block_literal_1),
+            signature=desc_signature,
+        )
+
+        self.literal = Block_literal_1(
+            isa=addressof(_NSConcreteGlobalBlock),
+            flags=BLOCK_IS_GLOBAL | BLOCK_HAS_SIGNATURE,
+            reserved=0,
+            invoke=cast(self.cfunc_wrapper, c_void_p),
+            descriptor=self._descriptor,
+        )
+
+        self.block = cast(byref(self.literal), c_void_p)
+        self._as_parameter_ = self.block  # for ctypes to treat this as the block.
+
+    def _wrapper(self, _block, *args):
+        return self.func(*args)

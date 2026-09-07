@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import signal
 import time
 
 from pyglet import app
-from pyglet.app.base import PlatformEventLoop, EventLoop
+from pyglet.app.base import EventLoop, PlatformEventLoop
 from pyglet.libs.darwin import cocoapy, AutoReleasePool, ObjCSubclass, PyObjectEncoding, ObjCInstance, send_super, \
-    ObjCClass, get_selector
+    ObjCClass, get_selector, set_realtime_thread_policy
 
 NSApplication = cocoapy.ObjCClass('NSApplication')
 NSMenu = cocoapy.ObjCClass('NSMenu')
@@ -14,7 +16,6 @@ NSEvent = cocoapy.ObjCClass('NSEvent')
 NSUserDefaults = cocoapy.ObjCClass('NSUserDefaults')
 NSTimer = cocoapy.ObjCClass('NSTimer')
 NSRunningApplication = cocoapy.ObjCClass('NSRunningApplication')
-
 
 def add_menu_item(menu, title, action, key):
     with AutoReleasePool():
@@ -27,6 +28,8 @@ def add_menu_item(menu, title, action, key):
 
         # cleanup
         menuItem.release()
+        cocoapy.cf.CFRelease(title)
+        cocoapy.cf.CFRelease(key)
 
 
 def create_menu():
@@ -155,10 +158,12 @@ class CocoaAlternateEventLoop(EventLoop):
         if self.platform_event_loop is not None:
             self.platform_event_loop.nsapp_stop()
 
+
 class CocoaPlatformEventLoop(PlatformEventLoop):
 
     def __init__(self):
         super().__init__()
+        set_realtime_thread_policy()
         self._timer = None
 
         with AutoReleasePool():
@@ -170,17 +175,11 @@ class CocoaPlatformEventLoop(PlatformEventLoop):
             if not self.NSApp.mainMenu():
                 create_menu()
             self.NSApp.setActivationPolicy_(cocoapy.NSApplicationActivationPolicyRegular)
-            # Prevent Lion / Mountain Lion from automatically saving application state.
-            # If we don't do this, new windows will not display on 10.8 after finishLaunching
-            # has been called.
             defaults = NSUserDefaults.standardUserDefaults()
-            ignoreState = cocoapy.CFSTR("ApplePersistenceIgnoreState")
-            if not defaults.objectForKey_(ignoreState):
-                defaults.setBool_forKey_(True, ignoreState)
-
             holdEnabled = cocoapy.CFSTR("ApplePressAndHoldEnabled")
             if not defaults.objectForKey_(holdEnabled):
                 defaults.setBool_forKey_(False, holdEnabled)
+            cocoapy.cf.CFRelease(holdEnabled)
 
             self.appdelegate = _AppDelegate.alloc().init(self)
             self.NSApp.setDelegate_(self.appdelegate)
