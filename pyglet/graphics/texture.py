@@ -952,9 +952,15 @@ class _TextureRegionShared:
     width: int
     height: int
     owner: Texture
+    tex_type: TextureType
     region_class: type[TextureRegion]
     tex_coords: tuple[float, float, float, float, float, float, float, float, float, float, float, float]  # noqa: E501
     tex_coords_order: tuple[int, int, int, int]
+
+    if TYPE_CHECKING:
+        # Provided by Texture in backend classes.
+        def _validate_pbo_region(self, x: int, y: int, width: int | None, height: int | None,
+                                 z: int, level: int) -> tuple[int, int]: ...
 
     def _init_region(self, x: int, y: int, z: int, width: int, height: int, owner: Texture) -> None:
         self.x = x
@@ -1084,7 +1090,7 @@ class _Texture3DShared(_TextureSequenceItems[TRegion], Generic[TRegion]):
             for item, image in zip(self[index], images):  # Needs a test.
                 self.upload(image, 0, 0, item.z)
         else:
-            image: ImageData =value
+            image: ImageData = value
             self.upload(image, 0, 0, self[index].z)
 
 
