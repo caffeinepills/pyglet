@@ -717,10 +717,6 @@ class GLTexture(Texture):
     def get_pbo_upload_size(self, image: ImageData | ImageDataRegion) -> int:
         return image.width * image.height * len(self._get_pbo_upload_format(image)) * calcsize(image.data_type)
 
-    def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
-        width, height = self._validate_pbo_region(0, 0, None, None, z, level)
-        return width * height * 4
-
     def upload_to_pbo(self, pbo, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
                       level: int = 0) -> None:
         self._validate_pbo_region(x, y, image.width, image.height, z, level)
@@ -778,22 +774,6 @@ class GLTexture(Texture):
                         self._set_readback_framebuffer_attachment(0, z, level)
         finally:
             pbo.unbind()
-
-    def fetch_from_pbo(self, pbo, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
-                       width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
-        width, height = self._validate_pbo_region(x, y, width, height, z, level)
-        mip_width, mip_height, _ = self._get_mipmap_dimensions(level)
-        size = self.get_pbo_fetch_size(z, level=level)
-        assert pbo.size >= size, f"Pixel pack buffer is too small for fetch ({pbo.size} < {size})."
-        pbo._set_data_uploaded()
-        try:
-            data = pbo.get_bytes_region(0, size)
-        finally:
-            pbo.unbind()
-        image_data = ImageData(mip_width, mip_height, "RGBA", data)
-        if x or y or width != mip_width or height != mip_height:
-            return image_data.get_region(x, y, width, height)
-        return image_data
 
     def _update_subregion(self, image_data: ImageData | ImageDataRegion, x: int, y: int, z: int,
                           level: int = 0) -> None:

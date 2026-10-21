@@ -15,6 +15,10 @@ from pyglet.graphics.api.webgl.gl import (
     GL_DEPTH_STENCIL,
     GL_FRAMEBUFFER,
     GL_FRAMEBUFFER_COMPLETE,
+    GL_READ_FRAMEBUFFER,
+    GL_READ_FRAMEBUFFER_BINDING,
+    GL_DRAW_FRAMEBUFFER,
+    GL_DRAW_FRAMEBUFFER_BINDING,
     GL_LINEAR_MIPMAP_LINEAR,
     GL_PACK_ALIGNMENT,
     GL_PIXEL_PACK_BUFFER,
@@ -80,6 +84,7 @@ from pyglet.graphics.api.webgl.gl import (
     GL_UNPACK_ROW_LENGTH,
     GL_UNPACK_SKIP_PIXELS,
     GL_UNPACK_SKIP_ROWS,
+    GL_UNPACK_SKIP_IMAGES,
     GL_UNSIGNED_BYTE,
 )
 from pyglet.graphics import UnsupportedBackendError
@@ -482,111 +487,71 @@ class WebGLTexture(Texture):
                 )
 
     def get_pbo_upload_size(self, image: ImageData | ImageDataRegion) -> int:
-        return len(image.convert(image.format, abs(image._current_pitch)))
-
-    def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
-        return self.width * self.height * self.images * len("RGBA")
+        upload_fmt = _normalize_upload_format(self.internal_format.value)
+        return image.width * image.height * len(upload_fmt)
 
     def upload_to_pbo(self, pbo, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
                       level: int = 0) -> None:
-        if z != 0 and self.target == GL_TEXTURE_2D:
-            raise NotImplementedError("PBO texture uploads with z offsets require a 3D or array texture.")
-
-        data_format = image.format
-        data_pitch = abs(image._current_pitch)
-        data = image.convert(data_format, data_pitch)
+        self._validate_pbo_region(x, y, image.width, image.height, z, level)
+        data_format = _normalize_upload_format(self.internal_format.value)
+        data_pitch = image.width * len(data_format)
+        data = image.get_bytes(data_format, data_pitch)
         assert pbo.size >= len(data), f"Pixel unpack buffer is too small for upload ({pbo.size} < {len(data)})."
-        if pbo.size == len(data):
-            pbo.set_bytes(data)
-        else:
-            pbo.invalidate()
-            pbo.bind()
-            self._gl.bufferSubData(pbo.target, 0, js.Uint8Array.new(data))
-            pbo._set_data_uploaded()
+        try:
+            if pbo.size == len(data):
+                pbo.set_bytes(data)
+            else:
+                pbo.invalidate()
+                pbo.bind()
+                with zero_copy(data) as js_array:
+                    self._gl.bufferSubData(pbo.target, 0, js_array)
+                pbo._set_data_uploaded()
 
-        fmt, gl_type = _get_pixel_format(image)
-        self.bind()
-        pbo.bind()
-        self._gl.pixelStorei(GL_UNPACK_ALIGNMENT, 1)
-        self._gl.pixelStorei(GL_UNPACK_ROW_LENGTH, 0)
-        if self.target == GL_TEXTURE_3D or self.target == GL_TEXTURE_2D_ARRAY:
-            self._gl.texSubImage3D(
-                self.target, level, x, y, z,
-                image.width, image.height, 1, fmt, gl_type, 0,
-            )
-        else:
-            self._gl.texSubImage2D(
-                self.target, level, x, y,
-                image.width, image.height, fmt, gl_type, 0,
-            )
-        pbo.unbind()
+            fmt, gl_type = _get_gl_format_and_type(data_format)
+            self.bind()
+            pbo.bind()
+            self._gl.pixelStorei(GL_UNPACK_ALIGNMENT, 1)
+            self._gl.pixelStorei(GL_UNPACK_ROW_LENGTH, 0)
+            self._gl.pixelStorei(GL_UNPACK_SKIP_PIXELS, 0)
+            self._gl.pixelStorei(GL_UNPACK_SKIP_ROWS, 0)
+            if self.target == GL_TEXTURE_3D or self.target == GL_TEXTURE_2D_ARRAY:
+                self._gl.pixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0)
+                self._gl.pixelStorei(GL_UNPACK_SKIP_IMAGES, 0)
+                self._gl.texSubImage3D(
+                    self.target, level, x, y, z,
+                    image.width, image.height, 1, fmt, gl_type, 0,
+                )
+            else:
+                self._gl.texSubImage2D(
+                    self.target, level, x, y,
+                    image.width, image.height, fmt, gl_type, 0,
+                )
+        finally:
+            pbo.unbind()
         self._mark_mipmap_valid(level)
 
     def fetch_to_pbo(self, pbo, z: int = 0, level: int = 0) -> None:
         size = self.get_pbo_fetch_size(z, level=level)
         assert pbo.size >= size, f"Pixel pack buffer is too small for fetch ({pbo.size} < {size})."
-        pbo.invalidate()
-        pbo.bind()
-
-        self.bind()
-        self._gl.pixelStorei(GL_PACK_ALIGNMENT, 1)
+        width, height, _ = self._get_mipmap_dimensions(level)
+        read_framebuffer = self._gl.getParameter(GL_READ_FRAMEBUFFER_BINDING)
+        draw_framebuffer = self._gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING)
+        alignment = self._gl.getParameter(GL_PACK_ALIGNMENT)
         fbo = self._gl.createFramebuffer()
-        self._gl.bindFramebuffer(GL_FRAMEBUFFER, fbo)
-        self._attach_texture_to_fbo(z, level)
-
-        if self._gl.checkFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
-            raise Exception("Framebuffer is incomplete.")
-
-        self._gl.readPixels(0, 0, self.width, self.height, GL_RGBA, GL_UNSIGNED_BYTE, 0)
-        self._gl.bindFramebuffer(GL_FRAMEBUFFER, None)
-        self._gl.deleteFramebuffer(fbo)
-        pbo.unbind()
-
-    def fetch_from_pbo(self, pbo, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
-                       width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
-        pbo._set_data_uploaded()
-        size = self.get_pbo_fetch_size(z, level=level)
-        image_data = ImageData(self.width, self.height, "RGBA", pbo.get_bytes_region(0, size))
-        if self.images > 1:
-            image_data = image_data.get_region(0, z * self.height, self.width, self.height)
-
-        width = self.width if width is None else width
-        height = self.height if height is None else height
-        if x or y or width != image_data.width or height != image_data.height:
-            image_data = image_data.get_region(x, y, width, height)
-        return image_data
-
-    @staticmethod
-    def _get_image_alignment(image_data: ImageData) -> tuple[int, int]:
-        """Image alignment and row length information on an Image to upload.
-
-        Args:
-            image_data: The image data to get the alignment from.
-
-        Returns:
-            (align, row_length)
-                align: 1, 2, 4, or 8 \
-                row_length: 0 if tightly packed.
-        """
-        components = len(image_data.format)
-        width = image_data.width
-        packed_row_bytes = width * components
-        pitch = abs(image_data._current_pitch)
-        if packed_row_bytes % 8 == 0:
-            align = 8
-        elif packed_row_bytes % 4 == 0:
-            align = 4
-        elif packed_row_bytes % 2 == 0:
-            align = 2
-        else:
-            align = 1
-
-        if pitch == packed_row_bytes:
-            row_length = 0
-        else:
-            row_length = pitch // components
-
-        return align, row_length
+        try:
+            pbo.invalidate()
+            self._gl.pixelStorei(GL_PACK_ALIGNMENT, 1)
+            self._gl.bindFramebuffer(GL_FRAMEBUFFER, fbo)
+            self._attach_texture_to_fbo(z, level)
+            if self._gl.checkFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+                raise ImageException("Texture readback framebuffer is incomplete.")
+            self._gl.readPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0)
+        finally:
+            self._gl.bindFramebuffer(GL_READ_FRAMEBUFFER, read_framebuffer)
+            self._gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_framebuffer)
+            self._gl.pixelStorei(GL_PACK_ALIGNMENT, alignment)
+            self._gl.deleteFramebuffer(fbo)
+            pbo.unbind()
 
     @classmethod
     def create_from_image(cls,

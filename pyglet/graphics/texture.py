@@ -638,7 +638,8 @@ class Texture(_AbstractImage, GraphicsResource[Any, TextureKey]):
 
     def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
         """Return the pixel pack buffer size required to fetch texture data."""
-        raise NotImplementedError
+        width, height = self._validate_pbo_region(0, 0, None, None, z, level)
+        return width * height * 4
 
     def upload_to_pbo(self, pbo: Any, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
                       level: int = 0) -> None:
@@ -652,7 +653,19 @@ class Texture(_AbstractImage, GraphicsResource[Any, TextureKey]):
     def fetch_from_pbo(self, pbo: Any, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
                        width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
         """Map a completed backend pixel pack buffer into image data."""
-        raise NotImplementedError
+        width, height = self._validate_pbo_region(x, y, width, height, z, level)
+        mip_width, mip_height, _ = self._get_mipmap_dimensions(level)
+        size = self.get_pbo_fetch_size(z, level=level)
+        assert pbo.size >= size, f"Pixel pack buffer is too small for fetch ({pbo.size} < {size})."
+        pbo._set_data_uploaded()
+        try:
+            data = pbo.get_bytes_region(0, size)
+        finally:
+            pbo.unbind()
+        image_data = ImageData(mip_width, mip_height, "RGBA", data)
+        if x or y or width != mip_width or height != mip_height:
+            return image_data.get_region(x, y, width, height)
+        return image_data
 
     def _delete_resource(self) -> None:
         raise NotImplementedError
