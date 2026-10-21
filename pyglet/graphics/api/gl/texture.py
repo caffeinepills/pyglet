@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from ctypes import byref, Array, c_void_p, sizeof
+from struct import calcsize
 from typing import cast, Iterator, Sequence, TYPE_CHECKING
 
 import pyglet
@@ -707,83 +708,91 @@ class GLTexture(Texture):
         )
         return PixelData(width, height, ComponentFormat.RGBA, data_type, data)
 
+    def _get_pbo_upload_format(self, image: ImageData | ImageDataRegion) -> str:
+        upload_fmt = _get_upload_format(self._context, image.format)
+        if self._context.info.get_opengl_api() in (GraphicsAPI.OPENGL_ES_2, GraphicsAPI.OPENGL_ES_3):
+            upload_fmt = self.internal_format.value
+        return upload_fmt
+
     def get_pbo_upload_size(self, image: ImageData | ImageDataRegion) -> int:
-        upload_fmt = image.format
-        upload_pitch = image.width * len(upload_fmt)
-        return len(image.convert(upload_fmt, upload_pitch))
+        return image.width * image.height * len(self._get_pbo_upload_format(image)) * calcsize(image.data_type)
 
     def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
-        return self.width * self.height * self.images * len("RGBA")
+        width, height = self._validate_pbo_region(0, 0, None, None, z, level)
+        return width * height * 4
 
     def upload_to_pbo(self, pbo, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
                       level: int = 0) -> None:
-        if z != 0:
-            raise NotImplementedError("PBO texture uploads currently support 2D textures.")
-
-        upload_fmt = image.format
-        upload_pitch = image.width * len(upload_fmt)
-        upload_data = image.convert(upload_fmt, upload_pitch)
+        self._validate_pbo_region(x, y, image.width, image.height, z, level)
+        upload_fmt = self._get_pbo_upload_format(image)
+        upload_pitch = image.width * len(upload_fmt) * calcsize(image.data_type)
+        upload_data = image.get_bytes(upload_fmt, upload_pitch)
         assert pbo.size >= len(upload_data), f"Pixel unpack buffer is too small for upload ({pbo.size} < {len(upload_data)})."
-        if pbo.size == len(upload_data):
-            pbo.set_bytes(upload_data)
-        else:
-            pbo.invalidate()
+        try:
+            if pbo.size == len(upload_data):
+                pbo.set_bytes(upload_data)
+            else:
+                pbo.invalidate()
+                pbo.bind()
+                self._context.glBufferSubData(pbo.target, 0, len(upload_data), upload_data)
+                pbo._set_data_uploaded()
+
+            fmt, gl_type = _get_gl_format_and_type(upload_fmt, image.data_type)
+            self.bind()
             pbo.bind()
-            self._context.glBufferSubData(pbo.target, 0, len(upload_data), upload_data)
-            pbo._set_data_uploaded()
-
-        fmt, gl_type = _get_pixel_format(image)
-        fmt = fmt or GL_RGBA
-        gl_type = gl_type or GL_UNSIGNED_BYTE
-
-        self.bind()
-        pbo.bind()
-        self._context.glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
-        self._context.glPixelStorei(GL_UNPACK_ROW_LENGTH, 0)
-        self._context.glTexSubImage2D(
-            self.target,
-            level,
-            x,
-            y,
-            image.width,
-            image.height,
-            fmt,
-            gl_type,
-            c_void_p(0),
-        )
-        pbo.unbind()
+            self._context.glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+            if self._context.info.pixel_transfer.unpack_row_length:
+                self._context.glPixelStorei(GL_UNPACK_ROW_LENGTH, 0)
+                self._context.glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0)
+                self._context.glPixelStorei(GL_UNPACK_SKIP_ROWS, 0)
+            if self.tex_type in (TextureType.TYPE_3D, TextureType.TYPE_2D_ARRAY):
+                self._context.glPixelStorei(gl.GL_UNPACK_IMAGE_HEIGHT, 0)
+                self._context.glPixelStorei(gl.GL_UNPACK_SKIP_IMAGES, 0)
+                self._context.glTexSubImage3D(
+                    self.target, level, x, y, z, image.width, image.height, 1, fmt, gl_type, c_void_p(0),
+                )
+            else:
+                self._context.glTexSubImage2D(
+                    self.target, level, x, y, image.width, image.height, fmt, gl_type, c_void_p(0),
+                )
+        finally:
+            pbo.unbind()
         self._mark_mipmap_valid(level)
 
     def fetch_to_pbo(self, pbo, z: int = 0, level: int = 0) -> None:
         size = self.get_pbo_fetch_size(z, level=level)
         assert pbo.size >= size, f"Pixel pack buffer is too small for fetch ({pbo.size} < {size})."
-        pbo.invalidate()
-        pbo.bind()
-
-        self.bind()
-        self._context.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-        if self._context.info.get_opengl_api() in (GraphicsAPI.OPENGL_ES_2, GraphicsAPI.OPENGL_ES_3):
-            self._context.gles_pixel_fbo.bind()
-            self._attach_gles_fbo_texture(z, level)
-            self._context.glReadPixels(0, 0, self.width, self.height, GL_RGBA, GL_UNSIGNED_BYTE, c_void_p(0))
-            self._context.gles_pixel_fbo.unbind()
-        else:
-            self._context.glGetTexImage(self.target, level, GL_RGBA, GL_UNSIGNED_BYTE, c_void_p(0))
-
-        pbo.unbind()
+        width, height, _ = self._get_mipmap_dimensions(level)
+        try:
+            pbo.invalidate()
+            self.bind()
+            with self._context.pixel_readback._pack_state():
+                framebuffer = self._context.pixel_readback.get_framebuffer()
+                with framebuffer:
+                    self._set_readback_framebuffer_attachment(self.handle, z, level)
+                    try:
+                        if not framebuffer.is_complete:
+                            raise GraphicsAPIError("Texture readback framebuffer is incomplete.")
+                        self._context.glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, c_void_p(0))
+                    finally:
+                        self._set_readback_framebuffer_attachment(0, z, level)
+        finally:
+            pbo.unbind()
 
     def fetch_from_pbo(self, pbo, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
                        width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
-        pbo._set_data_uploaded()
+        width, height = self._validate_pbo_region(x, y, width, height, z, level)
+        mip_width, mip_height, _ = self._get_mipmap_dimensions(level)
         size = self.get_pbo_fetch_size(z, level=level)
-        image_data = ImageData(self.width, self.height, "RGBA", pbo.get_bytes_region(0, size))
-        if self.images > 1:
-            image_data = image_data.get_region(0, z * self.height, self.width, self.height)
-
-        width = self.width if width is None else width
-        height = self.height if height is None else height
-        if x or y or width != image_data.width or height != image_data.height:
-            image_data = image_data.get_region(x, y, width, height)
+        assert pbo.size >= size, f"Pixel pack buffer is too small for fetch ({pbo.size} < {size})."
+        pbo._set_data_uploaded()
+        try:
+            data = pbo.get_bytes_region(0, size)
+        finally:
+            pbo.unbind()
+        image_data = ImageData(mip_width, mip_height, "RGBA", data)
+        if x or y or width != mip_width or height != mip_height:
+            return image_data.get_region(x, y, width, height)
         return image_data
 
     def _update_subregion(self, image_data: ImageData | ImageDataRegion, x: int, y: int, z: int,

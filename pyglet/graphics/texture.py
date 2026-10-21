@@ -261,6 +261,7 @@ class TextureStreamer(EventDispatcher):
 
     def queue_upload(self, texture: Texture, image: ImageData | ImageDataRegion, x: int = 0, y: int = 0,
                      z: int = 0, level: int = 0) -> TextureUploadJob:
+        texture._validate_pbo_region(x, y, image.width, image.height, z, level)
         region = texture.get_region(x, y, image.width, image.height)
         job = TextureUploadJob(texture, [(image, x, y, z, level)], region=region, regions=[region])
         self._queued_uploads.append(job)
@@ -276,6 +277,7 @@ class TextureStreamer(EventDispatcher):
             image, x, y, *rest = upload
             z = rest[0] if len(rest) > 0 else 0
             level = rest[1] if len(rest) > 1 else 0
+            texture._validate_pbo_region(x, y, image.width, image.height, z, level)
             normalized_uploads.append((image, x, y, z, level))
             regions.append(texture.get_region(x, y, image.width, image.height))
 
@@ -285,6 +287,11 @@ class TextureStreamer(EventDispatcher):
 
     def queue_download(self, texture: Texture, x: int = 0, y: int = 0, width: int | None = None,
                        height: int | None = None, z: int = 0, level: int = 0) -> TextureDownloadJob:
+        """Queue a mip-level rectangle.
+
+        Omitted dimensions extend to the view edge.
+        """
+        width, height = texture._validate_pbo_region(x, y, width, height, z, level)
         job = TextureDownloadJob(texture, x, y, width, height, z, level)
         self._queued_downloads.append(job)
         return job
@@ -605,6 +612,25 @@ class Texture(_AbstractImage, GraphicsResource[Any, TextureKey]):
                 The mipmap level of the texture to retrieve.
         """
         raise NotImplementedError
+
+    def _validate_pbo_region(self, x: int, y: int, width: int | None, height: int | None,
+                             z: int, level: int) -> tuple[int, int]:
+        """Validate a transfer against this view's mipmap dimensions."""
+        if level < 0 or level >= self.owner.mipmap_count:
+            msg = f"Mipmap level {level} is not initialized."
+            raise ImageException(msg)
+        mip_width, mip_height, depth = self._get_mipmap_dimensions(level)
+        if self.owner is not self:
+            depth = 1
+        width = mip_width - x if width is None else width
+        height = mip_height - y if height is None else height
+        if not 0 <= z < depth:
+            msg = f"Texture layer {z} is outside the valid range 0..{depth - 1}."
+            raise ImageException(msg)
+        if x < 0 or y < 0 or width <= 0 or height <= 0 or x + width > mip_width or y + height > mip_height:
+            msg0 = f"Transfer rectangle {(x, y, width, height)} exceeds mipmap size {mip_width}x{mip_height}."
+            raise ImageException(msg0)
+        return width, height
 
     def get_pbo_upload_size(self, image: ImageData | ImageDataRegion) -> int:
         """Return the pixel unpack buffer size required to upload image data."""
@@ -987,26 +1013,33 @@ class _TextureRegionShared:
         return self.owner.get_pbo_upload_size(image)
 
     def get_pbo_fetch_size(self, z: int = 0, level: int = 0) -> int:
-        return self.owner.get_pbo_fetch_size(self.z + z, level=level)
+        self._validate_pbo_region(0, 0, None, None, z, level)
+        return self.owner.get_pbo_fetch_size(self._get_pbo_region_offset(level)[2] + z, level=level)
 
     def upload_to_pbo(self, pbo: Any, image: ImageData | ImageDataRegion, x: int, y: int, z: int,
                       level: int = 0) -> None:
-        assert image.width <= self._width and image.height <= self._height, f"{image} is larger than {self}"
-        self.owner.upload_to_pbo(pbo, image, x + self.x, y + self.y, z + self.z, level=level)
+        self._validate_pbo_region(x, y, image.width, image.height, z, level)
+        offset_x, offset_y, offset_z = self._get_pbo_region_offset(level)
+        self.owner.upload_to_pbo(pbo, image, x + offset_x, y + offset_y, z + offset_z, level=level)
+
+    def _get_pbo_region_offset(self, level: int) -> tuple[int, int, int]:
+        z = self.z >> level if self.tex_type == TextureType.TYPE_3D else self.z
+        return self.x >> level, self.y >> level, z
 
     def fetch_to_pbo(self, pbo: Any, z: int = 0, level: int = 0) -> None:
-        self.owner.fetch_to_pbo(pbo, self.z + z, level=level)
+        self._validate_pbo_region(0, 0, None, None, z, level)
+        self.owner.fetch_to_pbo(pbo, self._get_pbo_region_offset(level)[2] + z, level=level)
 
     def fetch_from_pbo(self, pbo: Any, z: int = 0, level: int = 0, x: int = 0, y: int = 0,
                        width: int | None = None, height: int | None = None) -> ImageData | ImageDataRegion:
-        width = self.width if width is None else width
-        height = self.height if height is None else height
+        width, height = self._validate_pbo_region(x, y, width, height, z, level)
+        offset_x, offset_y, offset_z = self._get_pbo_region_offset(level)
         return self.owner.fetch_from_pbo(
             pbo,
-            z=self.z + z,
+            z=offset_z + z,
             level=level,
-            x=self.x + x,
-            y=self.y + y,
+            x=offset_x + x,
+            y=offset_y + y,
             width=width,
             height=height,
         )
