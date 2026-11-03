@@ -91,7 +91,7 @@ class WaylandDisplay(Display):
             self._query_done.wait()
             # Make Screen instance with the now-filled-in values:
             self._screens.append(
-                WaylandScreen(self, self._geo, self._modes, self._scale, self._name, self._descript, i == 0),
+                WaylandScreen(self, self._geo, self._modes, self._scale, self._name, self._descript, i == 0, wl_output),
             )
             # Keep the output bound so wl_surface enter/leave events can refer to its proxy and be mapped back to the
             # corresponding screen.
@@ -133,7 +133,7 @@ class WaylandDisplay(Display):
 
 class WaylandScreen(Screen):
 
-    def __init__(self, display, geometry, modes, scale, name, description, is_primary):
+    def __init__(self, display, geometry, modes, scale, name, description, is_primary, wl_output):
         self._is_primary = is_primary
         self.name = name
         self.description = description
