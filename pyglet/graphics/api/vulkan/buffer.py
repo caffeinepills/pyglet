@@ -216,6 +216,8 @@ class FrameLocalBuffer(FrameLocalResource[BufferFrameStateT]):
         return self.get_frame_slice(frame_index)
 
 class VulkanBufferObject(AbstractBuffer):
+    _handle: VkBuffer | None
+    allocation_generation: int
     devices: VulkanDevices | None
     buffer: VulkanBufferResource | None
 
@@ -233,6 +235,7 @@ class VulkanBufferObject(AbstractBuffer):
         self.sharing_mode = sharing_mode
         self.devices = None
         self.buffer = None
+        self.allocation_generation = 0
         self._persistent_map_ptr: int | None = None
 
     def create(self, devices: VulkanDevices) -> None:
@@ -248,6 +251,7 @@ class VulkanBufferObject(AbstractBuffer):
         )
         self.buffer.bind()
         self._handle = vk_buffer
+        self.allocation_generation += 1
 
     def _ensure_created(self) -> None:
         return
@@ -854,13 +858,6 @@ class VulkanUniformBufferObject(UniformBufferObject):
     def _delete_tracked_instances(cls) -> None:
         for ubo in tuple(cls._live_ubos):
             ubo.delete()
-
-    @property
-    def id(self) -> int:
-        self._ensure_buffer_created()
-        if self.buffer and self.buffer.buffer and self.buffer.buffer.vk_buffer:
-            return int(self.buffer.buffer.vk_buffer.value)
-        return 0
 
     def bind(self) -> None:
         # Vulkan UBO usage is controlled through descriptor set writes/binds.

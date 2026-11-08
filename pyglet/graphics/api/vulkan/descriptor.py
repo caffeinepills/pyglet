@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 import pyglet
 from pyglet.graphics.api.vulkan import c_array_list
 from pyglet.graphics.api.vulkan.frame_local import FrameLocalResource
-from pyglet.graphics.resource import BufferKey, TextureKey
+from pyglet.graphics.resource import BufferKey, ResourceKey, TextureKey
 from pyglet.libs.shared.vulkan_lib.exceptions import (
     VulkanFragmentedPoolException,
     VulkanOutOfPoolMemoryException,
@@ -132,11 +132,11 @@ class DescriptorResourceKey:
     set_index: int
     binding: int
     descriptor_type: int
-    descriptor_generation_id: int
 
 
 @dataclass(frozen=True, slots=True)
 class UniformBindingKey(DescriptorResourceKey):
+    descriptor_generation_id: int
     buffer_key: BufferKey
     offset: int
     range_size: int
@@ -158,6 +158,7 @@ class DescriptorSetCacheKey:
 
 @dataclass(frozen=True, slots=True)
 class UniformCacheKey(DescriptorResourceKey):
+    descriptor_generation_id: int
     buffer_key: BufferKey
 
 
@@ -487,8 +488,8 @@ class DescriptorManager:
         self.frames_in_flight = 0
         self.descriptor_set_cache: dict[DescriptorSetCacheKey, DescriptorSetObject] = {}
         self._retired_descriptor_sets: list[DescriptorSetObject] = []
-        self._ubo_generation_ids: weakref.WeakKeyDictionary[VulkanUniformBufferObject, int] = weakref.WeakKeyDictionary()
-        self._ubo_generation_tokens: weakref.WeakKeyDictionary[VulkanUniformBufferObject, tuple[int, int]] = weakref.WeakKeyDictionary()
+        self._resource_descriptor_sets: dict[ResourceKey, set[DescriptorSetObject]] = {}
+        self._descriptor_set_cache_keys: dict[DescriptorSetObject, DescriptorSetCacheKey] = {}
 
         if self._supports_update_after_bind():
             print("(Vulkan) Descriptor pool using UPDATE_AFTER_BIND (descriptor indexing path).")
@@ -612,6 +613,10 @@ class DescriptorManager:
         """
         active_frame = frame_index % max(1, self.frames_in_flight)
         normalized_uniform_bindings = tuple(uniform_bindings or ())
+        # Validate even when a caller supplied resource keys or found a cache hit.
+        # A deleted texture must never be accepted for a new draw submission.
+        for state in resource_states:
+            self._get_state_resource_key(state)
         normalized_resources = tuple(resources or self.build_resource_keys(
             resource_states,
             normalized_uniform_bindings,
@@ -625,7 +630,9 @@ class DescriptorManager:
         owner_key = id(owner) if owner is not None else None
         key = DescriptorSetCacheKey(
             set_layouts.key,
-            cache_resources,
+            # A different buffer slice needs its own set: rewriting a set
+            # already bound earlier in this recording invalidates the commands.
+            normalized_resources,
             owner_key,
         )
         if key in self.descriptor_set_cache:
@@ -642,7 +649,7 @@ class DescriptorManager:
             msg = "Cannot allocate descriptor sets for an empty descriptor set layout list."
             raise RuntimeError(msg)
 
-        self.descriptor_set_cache[key] = dset = DescriptorSetObject(
+        dset = DescriptorSetObject(
             self.device,
             self.descriptor_pool.allocate_descriptor_sets(
                 list(set_layouts.layouts),
@@ -652,7 +659,10 @@ class DescriptorManager:
             descriptor_pool=self.descriptor_pool,
             owner_context=owner,
         )
+        self.descriptor_set_cache[key] = dset
+        self._descriptor_set_cache_keys[dset] = key
         dset.cache_resources = cache_resources
+        self._track_descriptor_set_resources(dset)
         dset.update_bound_resources(
             resource_states=resource_states,
             uniform_bindings=normalized_uniform_bindings,
@@ -692,20 +702,10 @@ class DescriptorManager:
     def _resource_sort_key(resource: DescriptorResourceKey) -> tuple[int, int, int]:
         return resource.set_index, resource.binding, resource.descriptor_type
 
-    @staticmethod
-    def _ubo_descriptor_token(ubo: VulkanUniformBufferObject) -> int:
-        return id(ubo.buffer.buffer)
-
     def _get_ubo_generation_id(self, ubo: VulkanUniformBufferObject) -> int:
-        token = self._ubo_descriptor_token(ubo)
-        generation = self._ubo_generation_ids.get(ubo)
-        if generation is None:
-            generation = 1
-        elif self._ubo_generation_tokens.get(ubo) != token:
-            generation += 1
-        self._ubo_generation_ids[ubo] = generation
-        self._ubo_generation_tokens[ubo] = token
-        return generation
+        # BufferKey identifies the logical buffer across reallocations; the
+        # allocation generation distinguishes its retired native storage.
+        return ubo.buffer.allocation_generation
 
     def _get_uniform_binding_key(
         self,
@@ -750,6 +750,7 @@ class DescriptorManager:
     @staticmethod
     def _get_sampler_key(texture: VulkanTexture, binding: int, set_index: int) -> SamplerKey:
         owner = texture.owner
+        owner._assert_not_deleted()
         sampler = texture.sampler
         image_view = texture.image_view
         vk_sampler = sampler.vk_sampler if sampler is not None else None
@@ -758,7 +759,6 @@ class DescriptorManager:
             set_index=set_index,
             binding=binding,
             descriptor_type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            descriptor_generation_id=owner.descriptor_generation_id,
             texture_key=owner.key,
             sampler_id=vk_sampler.value or 0 if vk_sampler is not None else 0,
             image_view_id=vk_image_view.value or 0 if vk_image_view is not None else 0,
@@ -784,8 +784,35 @@ class DescriptorManager:
             descriptor_pool=self.descriptor_pool,
         )
 
+    @staticmethod
+    def _resource_keys(resources: Sequence[DescriptorResourceKey]) -> set[ResourceKey]:
+        return {
+            resource.texture_key if isinstance(resource, SamplerKey) else resource.buffer_key
+            for resource in resources
+            if isinstance(resource, (SamplerKey, UniformCacheKey))
+        }
+
+    def _track_descriptor_set_resources(self, descriptor_set: DescriptorSetObject) -> None:
+        for resource_key in self._resource_keys(descriptor_set.cache_resources):
+            self._resource_descriptor_sets.setdefault(resource_key, set()).add(descriptor_set)
+
+    def _untrack_descriptor_set(self, descriptor_set: DescriptorSetObject) -> None:
+        for resource_key in self._resource_keys(descriptor_set.cache_resources):
+            descriptor_sets = self._resource_descriptor_sets.get(resource_key)
+            if descriptor_sets is None:
+                continue
+            descriptor_sets.discard(descriptor_set)
+            if not descriptor_sets:
+                del self._resource_descriptor_sets[resource_key]
+        self._descriptor_set_cache_keys.pop(descriptor_set, None)
+
+    def _descriptor_sets_for_resource(self, resource_key: ResourceKey) -> tuple[DescriptorSetObject, ...]:
+        descriptor_sets = self._resource_descriptor_sets.get(resource_key, set())
+        return tuple(descriptor_set for descriptor_set in descriptor_sets if descriptor_set.descriptor_sets_frames)
+
     def _retire_descriptor_set(self, descriptor_set: DescriptorSetObject, immediate: bool = False) -> None:
         if immediate:
+            self._untrack_descriptor_set(descriptor_set)
             descriptor_set.delete()
             if descriptor_set in self._retired_descriptor_sets:
                 self._retired_descriptor_sets.remove(descriptor_set)
@@ -799,6 +826,7 @@ class DescriptorManager:
         owner = descriptor_set.owner_context
         if owner is not None:
             def release() -> None:
+                self._untrack_descriptor_set(descriptor_set)
                 descriptor_set.delete()
                 if descriptor_set in self._retired_descriptor_sets:
                     self._retired_descriptor_sets.remove(descriptor_set)
@@ -808,75 +836,48 @@ class DescriptorManager:
 
         if self.device is not None and self.device.vk_device:
             self.device.vkDeviceWaitIdle(self.device.vk_device)
+        self._untrack_descriptor_set(descriptor_set)
         descriptor_set.delete()
         self._retired_descriptor_sets.remove(descriptor_set)
 
-    def _evict_matching(self, predicate, *, immediate: bool = False) -> int:
-        evicted: list[DescriptorSetObject] = []
-        for cache_key, descriptor_set in list(self.descriptor_set_cache.items()):
-            if predicate(cache_key):
-                self.descriptor_set_cache.pop(cache_key, None)
-                evicted.append(descriptor_set)
-
-        for descriptor_set in dict.fromkeys(evicted):
-            self._retire_descriptor_set(descriptor_set, immediate=immediate)
-        return len(evicted)
-
-    def _get_resource_owner_contexts(self, predicate) -> tuple[object, ...]:
-        owners: dict[int, object] = {}
-        descriptor_sets = list(self.descriptor_set_cache.values())
-        descriptor_sets.extend(
-            descriptor_set
-            for descriptor_set in self._retired_descriptor_sets
-            if descriptor_set.descriptor_sets_frames
-        )
+    def _invalidate_resource(self, resource_key: ResourceKey, *, immediate: bool = False) -> tuple[object, ...]:
+        """Retire cached sets for a resource and return contexts still using it."""
+        descriptor_sets = self._descriptor_sets_for_resource(resource_key)
+        owners = {
+            id(descriptor_set.owner_context): descriptor_set.owner_context
+            for descriptor_set in descriptor_sets
+            if descriptor_set.owner_context is not None
+        }
         for descriptor_set in descriptor_sets:
-            if any(predicate(resource) for resource in descriptor_set.cache_resources):
-                context = descriptor_set.owner_context
-                if context is not None:
-                    owners[id(context)] = context
+            cache_key = self._descriptor_set_cache_keys.get(descriptor_set)
+            if cache_key is not None:
+                self.descriptor_set_cache.pop(cache_key, None)
+            if descriptor_set not in self._retired_descriptor_sets:
+                self._retire_descriptor_set(descriptor_set, immediate=immediate)
         return tuple(owners.values())
 
     def invalidate_texture(self, texture: VulkanTexture, *, immediate: bool = False) -> tuple[object, ...]:
         """Evict sets that reference a texture whose descriptor resources are retiring."""
-        owner = texture.owner
-        texture_key = owner.key
-
-        def references_texture(resource) -> bool:
-            return isinstance(resource, SamplerKey) and resource.texture_key == texture_key
-
-        owners = self._get_resource_owner_contexts(references_texture)
-        self._evict_matching(
-            lambda cache_key: any(
-                references_texture(resource) for resource in cache_key.resources
-            ),
-            immediate=immediate,
-        )
-        return owners
+        return self._invalidate_resource(texture.owner.key, immediate=immediate)
 
     def invalidate_buffer(self, buffer, *, immediate: bool = False) -> tuple[object, ...]:
         """Evict sets that reference a retiring uniform-buffer resource."""
-        buffer_key = buffer.key
-
-        def references_buffer(resource) -> bool:
-            return isinstance(resource, UniformCacheKey) and resource.buffer_key == buffer_key
-
-        owners = self._get_resource_owner_contexts(references_buffer)
-        self._evict_matching(
-            lambda cache_key: any(
-                references_buffer(resource) for resource in cache_key.resources
-            ),
-            immediate=immediate,
-        )
-        return owners
+        return self._invalidate_resource(buffer.key, immediate=immediate)
 
     def invalidate_owner(self, owner: object, *, immediate: bool = False) -> int:
         """Evict all descriptor sets owned by a surface context."""
         owner_key = id(owner)
-        return self._evict_matching(
-            lambda cache_key: cache_key.owner_key == owner_key,
-            immediate=immediate,
+        descriptor_sets = tuple(
+            descriptor_set
+            for cache_key, descriptor_set in self.descriptor_set_cache.items()
+            if cache_key.owner_key == owner_key
         )
+        for descriptor_set in descriptor_sets:
+            cache_key = self._descriptor_set_cache_keys.get(descriptor_set)
+            if cache_key is not None:
+                self.descriptor_set_cache.pop(cache_key, None)
+            self._retire_descriptor_set(descriptor_set, immediate=immediate)
+        return len(descriptor_sets)
 
     def delete(self) -> None:
         if self.layout_cache:
@@ -886,6 +887,8 @@ class DescriptorManager:
         self.frames_in_flight = 0
         self.descriptor_set_cache.clear()
         self._retired_descriptor_sets.clear()
+        self._resource_descriptor_sets.clear()
+        self._descriptor_set_cache_keys.clear()
         self.layout_cache = None
         self.descriptor_pool = None
 
@@ -967,7 +970,7 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         self._uniform_binding_refs: tuple[
             tuple[weakref.ReferenceType[VulkanUniformBufferObject], int, int], ...
         ] = ()
-        self._uniform_binding_ids: tuple[tuple[int, int, int], ...] = ()
+        self._uniform_binding_keys: tuple[tuple[BufferKey, int, int], ...] = ()
         self._resource_keys_by_frame: list[tuple[DescriptorResourceKey, ...]] = [() for _ in self.frame_states]
         #self.name_to_binding = {}  # Mapping of resource name to (binding, type)
 
@@ -996,7 +999,7 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         self._resource_state_refs = ()
         self._resource_state_ids = ()
         self._uniform_binding_refs = ()
-        self._uniform_binding_ids = ()
+        self._uniform_binding_keys = ()
         self._resource_keys_by_frame = []
         self.descriptor_pool = None
         self.owner_context = None
@@ -1040,15 +1043,30 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         normalized_resource_states = tuple(resource_states)
         normalized_uniform_bindings = tuple(uniform_bindings)
         normalized_resources = tuple(resources or ())
+        if (
+            normalized_resources
+            and normalized_resources == self._resource_keys_by_frame[resolved_frame]
+            and self.get_frame_state(resolved_frame).uploaded_version >= 0
+        ):
+            # Equivalent groups can have different State identities. The GPU
+            # descriptors are already correct, even if another frame changed
+            # the shared upload version. Do not rewrite a potentially bound set.
+            return
         resource_state_ids = tuple(id(state) for state in normalized_resource_states)
-        uniform_binding_ids = tuple(
-            (id(ubo), binding, set_index)
+        uniform_binding_keys = tuple(
+            (ubo.key, binding, set_index)
+            for ubo, binding, set_index in normalized_uniform_bindings
+        )
+        # Wrappers can change while still referring to the same BufferKey.
+        # Refresh their weak references without treating that as a GPU change.
+        self._uniform_binding_refs = tuple(
+            (weakref.ref(ubo), binding, set_index)
             for ubo, binding, set_index in normalized_uniform_bindings
         )
 
         if (
             resource_state_ids != self._resource_state_ids
-            or uniform_binding_ids != self._uniform_binding_ids
+            or uniform_binding_keys != self._uniform_binding_keys
             or (
                 normalized_resources
                 and normalized_resources != self._resource_keys_by_frame[resolved_frame]
@@ -1056,11 +1074,7 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         ):
             self._resource_state_refs = tuple(weakref.ref(state) for state in normalized_resource_states)
             self._resource_state_ids = resource_state_ids
-            self._uniform_binding_refs = tuple(
-                (weakref.ref(ubo), binding, set_index)
-                for ubo, binding, set_index in normalized_uniform_bindings
-            )
-            self._uniform_binding_ids = uniform_binding_ids
+            self._uniform_binding_keys = uniform_binding_keys
             if normalized_resources:
                 self._resource_keys_by_frame[resolved_frame] = normalized_resources
             self.mark_data_updated()
@@ -1189,6 +1203,7 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         desc_set: int = 0,
         frame_idx: int = 0,
     ) -> None:
+        texture.owner._assert_not_deleted()
         resolved_frame = self._resolve_frame_idx(frame_idx)
         image_info = VkDescriptorImageInfo(
             sampler=texture.sampler.vk_sampler,
@@ -1226,7 +1241,7 @@ class DescriptorSetObject(FrameLocalResource[DescriptorFrameState]):
         frame_slice = ubo.get_frame_slice(resolved_frame)
         dst_set = self.get_frame_state(resolved_frame).descriptor_sets[desc_set]
         buffer_info = VkDescriptorBufferInfo(
-            buffer=ubo.buffer.buffer.vk_buffer,
+            buffer=ubo.handle,
             offset=frame_slice.offset,
             range=frame_slice.size,
         )

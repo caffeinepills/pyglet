@@ -556,9 +556,8 @@ class VulkanTextureRegion(TextureRegion):
 
 
 class VulkanTexture(Texture):
+    _handle: VkImage | None
     _all_textures: ClassVar[weakref.WeakSet[VulkanTexture]] = weakref.WeakSet()
-
-    _next_descriptor_generation: ClassVar[int] = 1
 
     tex_coords = (0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0)
     tex_coords_order: tuple[int, int, int, int] = (0, 1, 2, 3)
@@ -573,12 +572,13 @@ class VulkanTexture(Texture):
                  address_mode: AddressMode = AddressMode.REPEAT,
                  anisotropic_level: int = 0,
                  depth: int = 1,
-                 layer_count: int = 1) -> None:
+                 layer_count: int = 1, *, context=None) -> None:
+        context = pyglet.graphics.api.core.resolve_context(context)
         super().__init__(width, height, None, tex_type, internal_format, internal_format_size, internal_format_type,
-                         filters, address_mode, anisotropic_level)
+                         filters, address_mode, anisotropic_level, context=context)
         self._depth = max(1, int(depth))
         self._layer_count = max(1, int(layer_count))
-        self.descriptor_generation_id = self._claim_descriptor_generation()
+        self._is_deleted = False
         if self.tex_type == TextureType.TYPE_3D:
             self.images = self._depth
         elif self.tex_type == TextureType.TYPE_2D_ARRAY:
@@ -586,7 +586,7 @@ class VulkanTexture(Texture):
 
         self._shadow_mipmaps: dict[int, bytearray] = {}
 
-        devices = pyglet.graphics.api.core.devices
+        devices = context.devices
         self.devices = devices
         self.image = VulkanImage(
             width,
@@ -620,14 +620,14 @@ class VulkanTexture(Texture):
         self._ensure_shadow_level(0)
         self._all_textures.add(self)
 
-    @classmethod
-    def _claim_descriptor_generation(cls) -> int:
-        generation = cls._next_descriptor_generation
-        cls._next_descriptor_generation += 1
-        return generation
+    @property
+    def is_deleted(self) -> bool:
+        """Whether this texture can no longer be used for new draw work."""
+        return self._is_deleted
 
-    def _bump_descriptor_generation(self) -> None:
-        self.descriptor_generation_id = self._claim_descriptor_generation()
+    def _assert_not_deleted(self) -> None:
+        if self._is_deleted:
+            raise RuntimeError("Cannot use a deleted Vulkan texture.")
 
     @classmethod
     def create_from_image(cls,
@@ -666,7 +666,7 @@ class VulkanTexture(Texture):
                blank_data: bool = True,
                context=None) -> VulkanTexture:
         texture = cls(width, height, tex_type, internal_format, internal_format_size, internal_format_type,
-                      filters, address_mode, anisotropic_level)
+                      filters, address_mode, anisotropic_level, context=context)
         if blank_data:
             texture._mark_mipmap_valid(0)
         return texture
@@ -808,10 +808,10 @@ class VulkanTexture(Texture):
 
     def delete(self) -> None:
         type(self)._all_textures.discard(self)
+        self._is_deleted = True
         if self.handle is None and self.image is None and self.image_view is None:
             return
 
-        self._bump_descriptor_generation()
         image = self.image
         image_view = self.image_view
         self.image_view = None
@@ -864,6 +864,7 @@ class VulkanTexture3D(_Texture3DShared[VulkanTextureRegion, Any], VulkanTexture,
             anisotropic_level,
             depth=len(images),
             layer_count=1,
+            context=context,
         )
         texture.images = len(images)
         texture.item_width = item_width
@@ -905,7 +906,7 @@ class VulkanTextureArray(_TextureArrayShared[VulkanTextureArrayRegion, Any], Vul
                  internal_format_type: str = "B",
                  filters: TextureFilter | tuple[TextureFilter, TextureFilter] | None = None,
                  address_mode: AddressMode = AddressMode.REPEAT,
-                 anisotropic_level: int = 0) -> None:
+                 anisotropic_level: int = 0, *, context=None) -> None:
         super().__init__(
             width,
             height,
@@ -918,6 +919,7 @@ class VulkanTextureArray(_TextureArrayShared[VulkanTextureArrayRegion, Any], Vul
             anisotropic_level,
             depth=1,
             layer_count=max_depth,
+            context=context,
         )
         self.max_depth = max_depth
         self.images = max_depth
@@ -938,7 +940,7 @@ class VulkanTextureArray(_TextureArrayShared[VulkanTextureArrayRegion, Any], Vul
         assert max_depth <= max_depth_limit, f"TextureArray max_depth supported is {max_depth_limit}."
 
         return cls(width, height, max_depth, internal_format, internal_format_size,
-                   internal_format_type, filters, address_mode, anisotropic_level)
+                   internal_format_type, filters, address_mode, anisotropic_level, context=ctx)
 
     @classmethod
     def create_for_images(cls, images: Sequence[ImageData],

@@ -104,6 +104,7 @@ class _FrameSyncBase:
 
     command_buffers: list[dict[int, CommandBuffer]]
     submit_command_buffer_ids: list[list[int]]
+    timeline_enabled: bool = False
 
     def __init__(self, device: VulkanLogicalDevice,
                  swapchain: VulkanSwapchain | VulkanOffscreenSwapchain,
@@ -124,7 +125,6 @@ class _FrameSyncBase:
         self.image_sync_values: list[int] = []
         self.counter = 0
         self._wait_stages = c_array_list([VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT], c_uint32)
-        self.timeline_enabled = bool(getattr(self, "timeline_enabled", False))
         self.timeline_semaphore: VkSemaphore | None = None
         self._has_acquired_image = False
         self.last_acquired_image_index: int | None = None

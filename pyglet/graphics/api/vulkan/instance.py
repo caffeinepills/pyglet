@@ -68,6 +68,7 @@ from pyglet.graphics.shader import ShaderType, UniformBlockDesc
 from pyglet.math import Mat4
 
 if TYPE_CHECKING:
+    from pyglet.graphics.api.vulkan.shader import VulkanShaderProgram
     from ctypes import *
 
     from pyglet.config.vulkan import VulkanSurfaceConfig
@@ -285,7 +286,6 @@ class VulkanSurfaceContext(SurfaceContext):
 
         self.surface = None
         self.swapchain = None
-        self.renderpass = None
         self.descriptor_pool = None
         self.pipeline = None
         self.command_buffers = None
@@ -502,8 +502,7 @@ class VulkanSurfaceContext(SurfaceContext):
 
 class VulkanInstanceFuncs:
     """Container for Vulkan instance functions for type hinting."""
-
-    vkDestroyInstance: InstanceFunc.vkDestroyInstance
+    vkDestroyInstance: InstanceFunc.vkDestroyInstance  # noqa: N815
     vkDestroyInstance: InstanceFunc.vkDestroyInstance
     vkEnumeratePhysicalDevices: InstanceFunc.vkEnumeratePhysicalDevices
     vkGetPhysicalDeviceFeatures: InstanceFunc.vkGetPhysicalDeviceFeatures

@@ -420,7 +420,7 @@ class GraphicsPipelineManager:
                      depth_compare_op: int = VK_COMPARE_OP_LESS,
                      ):
         key = (
-            shader_program,
+            shader_program.key,
             renderpass,
             geometry_mode,
             width,
@@ -456,7 +456,7 @@ class GraphicsPipelineManager:
                depth_compare_op: int = VK_COMPARE_OP_LESS):
 
         key = (
-            shader_program,
+            shader_program.key,
             renderpass,
             geometry_mode,
             width,

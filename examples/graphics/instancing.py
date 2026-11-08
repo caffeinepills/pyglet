@@ -72,6 +72,15 @@ _fragment_source: str = """#version 330 core
     }
 """
 
+_vulkan_fragment_source = """#version 450 core
+layout(location = 0) in vec4 vertex_colors;
+layout(location = 0) out vec4 final_colors;
+void main()
+{
+    final_colors = vertex_colors;
+}
+"""
+
 vertex_source = _vulkan_vertex_source if pyglet.options.backend == GraphicsAPI.VULKAN else _vertex_source
 fragment_source = _vulkan_fragment_source if pyglet.options.backend == GraphicsAPI.VULKAN else _fragment_source
 program = pyglet.graphics.ShaderProgram(pyglet.graphics.Shader(vertex_source, "vertex"),

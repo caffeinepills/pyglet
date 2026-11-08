@@ -140,16 +140,6 @@ _dynamic_state = [
     "blend_func", "blend_op", "scissor", "viewport",
 ]
 
-# States that need to be called before the vertex draw.
-_callable_states = {
-    "shader_uniform": "push_constant",
-    "shader_uniforms": "push_constants",
-    "texture": "bind_texture",
-    "textures": "bind_textures",
-    "ubo": "bind_ubo",
-    "ubos": "bind_ubos",
-}
-
 
 def get_group_resource_states(group: Group):
     states = getattr(group, "states", getattr(group, "_states", ()))

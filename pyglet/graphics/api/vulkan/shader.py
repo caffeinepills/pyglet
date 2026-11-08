@@ -185,6 +185,8 @@ def _is_glsl_content(content: str) -> bool:
     return any(keyword in content for keyword in glsl_keywords)
 
 class VulkanShader(Shader):
+    _handle: VkShaderModule | None
+
     @classmethod
     def supported_shaders(cls: type[Shader]) -> tuple[ShaderType, ...]:
         return 'vertex', 'fragment', 'compute', 'geometry', 'tesscontrol', 'tessevaluation'
@@ -238,6 +240,10 @@ class VulkanShader(Shader):
         return None
 
     def attach(self, device: VulkanLogicalDevice) -> None:
+        if self._shader_module is not None:
+            if self.device is device:
+                return
+            raise ShaderException("Shader is already attached to another Vulkan device.")
         self.device = device
         """Attach a shader to a device."""
 
@@ -267,6 +273,7 @@ class VulkanShader(Shader):
             self.device.vkDestroyShaderModule(self.device.vk_device, self._shader_module, None)
             self._shader_module = None
             self._handle = None
+            self.info = None
             self.device = None
 
     def __repr__(self) -> str:

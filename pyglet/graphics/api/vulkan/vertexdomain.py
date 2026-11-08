@@ -4,6 +4,7 @@ import ctypes
 from typing import TYPE_CHECKING, Any, Sequence
 
 import pyglet
+from pyglet.graphics.resource import VertexArrayResource
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.graphics.api.vulkan.buffer import AttributeBufferObject, IndexBufferObject
 from pyglet.graphics.api.vulkan.shader import get_vulkan_format
@@ -36,7 +37,12 @@ if TYPE_CHECKING:
     from pyglet.graphics.api.vulkan.instance import VulkanSurfaceContext
 
 
-class _NullVAO:
+class _NullVAO(VertexArrayResource):
+    """Logical vertex-input identity; Vulkan has no native vertex-array handle."""
+
+    def delete(self) -> None:
+        self._handle = None
+
     def bind(self) -> None:
         pass
 
@@ -175,7 +181,7 @@ class VulkanVertexStream(VertexStream):
         if binding_start is None:
             binding_start = self.buffers[0].index
 
-        buffers = [buffer.buffer.vk_buffer for buffer in self.buffers]
+        buffers = [buffer.handle for buffer in self.buffers]
         offsets = [0] * len(buffers)
         buffer_array = (VkBuffer * len(buffers))(*buffers)
         offset_array = (ctypes.c_uint64 * len(offsets))(*offsets)
@@ -196,7 +202,12 @@ class VulkanVertexStream(VertexStream):
     def get_binding_descriptions(self) -> list[VkVertexInputBindingDescription]:
         return self._binding_desc
 
-    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
+    def get_attribute_descriptions(self, shader_attributes=None) -> list[VkVertexInputAttributeDescription]:
+        if shader_attributes is not None:
+            return [VkVertexInputAttributeDescription(
+                location=shader_attributes[buffer.attribute.name].location,
+                binding=buffer.index, format=buffer.attribute.vk_format, offset=0,
+            ) for buffer in self.buffers if buffer.attribute.name in shader_attributes]
         return self._attrib_desc
 
     def delete(self) -> None:
@@ -556,10 +567,10 @@ class VulkanInstancedVertexDomain(BaseInstancedVertexDomain, VulkanVertexDomain)
         return bindings
 
     def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
-        attributes = list(self.vertex_buffers.get_attribute_descriptions())
+        attributes = list(self.vertex_buffers.get_attribute_descriptions(self.shader_attributes))
         inst_stream = self._get_instance_stream()
         if inst_stream is not None:
-            attributes.extend(inst_stream.get_attribute_descriptions())
+            attributes.extend(inst_stream.get_attribute_descriptions(self.shader_attributes))
         return attributes
 
     def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanInstanceVertexList) -> None:
@@ -615,10 +626,10 @@ class VulkanInstancedIndexedVertexDomain(BaseInstancedIndexedVertexDomain, Vulka
         return bindings
 
     def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
-        attributes = list(self.vertex_buffers.get_attribute_descriptions())
+        attributes = list(self.vertex_buffers.get_attribute_descriptions(self.shader_attributes))
         inst_stream = self._get_instance_stream()
         if inst_stream is not None:
-            attributes.extend(inst_stream.get_attribute_descriptions())
+            attributes.extend(inst_stream.get_attribute_descriptions(self.shader_attributes))
         return attributes
 
     def _draw_subset_command(
