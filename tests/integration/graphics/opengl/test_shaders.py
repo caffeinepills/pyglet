@@ -2,7 +2,9 @@ import pytest
 
 import pyglet
 
-from tests.annotations import skip_graphics_api, GraphicsAPIGroups
+from tests.annotations import skip_graphics_api, GraphicsAPIGroups, require_graphics_api
+
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 _MATRIX_UNIFORMS = (
     ("mat2", 4),

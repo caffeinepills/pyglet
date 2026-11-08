@@ -13,7 +13,7 @@ from pyglet.enums import GraphicsAPI
 if TYPE_CHECKING:
     from pyglet.graphics.api import OpenGLBackend
     from pyglet.config import OpenGLUserConfig
-    from pyglet.window.headless import HeadlessWindow
+    from pyglet.window.headless import EGLHeadlessWindow
     from pyglet.window.wayland import WaylandWindow
 
 _fake_gl_attributes = {
@@ -27,7 +27,7 @@ _fake_gl_attributes = {
 }
 
 
-def match(config: OpenGLUserConfig, window: HeadlessWindow | WaylandWindow) -> EGLSurfaceConfig:
+def match(config: OpenGLUserConfig, window: EGLHeadlessWindow | WaylandWindow) -> EGLSurfaceConfig:
     display_connection = window.egl_display_connection  # noqa: SLF001
     assert display_connection is not None
 
@@ -119,4 +119,3 @@ class EGLSurfaceConfig(GLSurfaceConfig['HeadlessWindow | WaylandWindow']):
 
     def apply_format(self) -> None:
         pass
-

@@ -2145,7 +2145,11 @@ if TYPE_CHECKING or IS_DOC_BUILD:
 else:
     # Try to determine which platform to use.
     if pyglet.options.headless:
-        from pyglet.window.headless import EGLHeadlessWindow as Window
+        from pyglet.enums import GraphicsAPI  # noqa: PLC0415
+        if pyglet.options.backend == GraphicsAPI.VULKAN:
+            from pyglet.window.headless import EGLHeadlessWindow as Window
+        else:
+            from pyglet.window.headless import EGLHeadlessWindow as Window
     elif pyglet.compat_platform == 'darwin':
         from pyglet.window.apple.cocoa import CocoaWindow as Window
     elif pyglet.compat_platform == 'ios':

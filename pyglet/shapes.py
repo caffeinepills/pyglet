@@ -89,6 +89,8 @@ elif pyglet.options.backend in (GraphicsAPI.OPENGL_2, GraphicsAPI.OPENGL_ES_2):
     from pyglet.graphics.api.gl2.shapes import get_default_shader
 elif pyglet.options.backend == GraphicsAPI.WEBGL:
     from pyglet.graphics.api.webgl.shapes import get_default_shader
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
+    from pyglet.graphics.api.vulkan.shapes import get_default_shader
 
 
 def _rotate_point(center: tuple[float, float], point: tuple[float, float], angle: float) -> tuple[float, float]:
@@ -493,6 +495,7 @@ class ShapeBase(ABC):
         draw_ctx = DrawContext(
             surface_ctx=ctx,
             backend_ctx=None,
+            frame_context=ctx.frame_context,
             draw_pass=BatchDrawOptions().resolve(ctx),
             renderer=ctx.renderer,
         )

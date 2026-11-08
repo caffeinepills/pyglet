@@ -156,4 +156,4 @@ class EGLHeadlessWindow(HeadlessWindow):
         self.egl_display_connection = None
 
 
-__all__ = ['EGLHeadlessWindow', 'HeadlessWindow']
+__all__ = ['EGLHeadlessWindow', 'HeadlessWindow', 'EGLHeadlessWindow']

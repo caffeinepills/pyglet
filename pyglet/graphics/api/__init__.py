@@ -37,6 +37,9 @@ elif pyglet.options.backend == GraphicsAPI.WEBGL:
 
     core = WebGLBackend()
 
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
+    from pyglet.graphics.api.vulkan.instance import VulkanGlobal
+    core = VulkanGlobal()
 else:
     raise Exception(f"Invalid rendering backend. Choose one of {[str(a) for a in GraphicsAPI]}.")
 
@@ -79,3 +82,11 @@ def get_default_shader() -> ShaderProgram:
     from pyglet.graphics.shader import get_default_shader as _get_default_shader
 
     return _get_default_shader()
+
+
+def get_current_context() -> SurfaceContext:
+    return core.resolve_context()
+
+
+def resolve_context(context: SurfaceContext | None = None) -> SurfaceContext:
+    return core.resolve_context(context)

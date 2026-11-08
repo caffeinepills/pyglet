@@ -32,7 +32,11 @@ if IS_DOC_BUILD:
 else:
     from pyglet import compat_platform, options
     if options['headless']:
-        from pyglet.display.headless import EGLHeadlessDisplay as Display
+        from pyglet.enums import GraphicsAPI  # noqa: PLC0415
+        if options.backend == GraphicsAPI.VULKAN:
+            from pyglet.display.headless import EGLHeadlessDisplay as Display
+        else:
+            from pyglet.display.headless import EGLHeadlessDisplay as Display
         from pyglet.display.headless import HeadlessScreen as Screen
     elif compat_platform == 'darwin':
         from pyglet.display.cocoa import CocoaDisplay as Display

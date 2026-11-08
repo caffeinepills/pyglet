@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import atexit
 import os
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, get_type_hints
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, get_type_hints, Protocol, Sequence
 
 from pyglet.customtypes import WindowT
 from pyglet.enums import GraphicsAPI, PixelFormat
@@ -33,6 +32,7 @@ class BackendGlobalObject(ABC, Generic[ConfigT_co]):  # Temp name for now.
     Meant to be accessed from a global level.
     """
     windows: weakref.WeakKeyDictionary[Window, SurfaceContext]
+    current_context: SurfaceContext | NullContext
     _have_context: bool = False
     current_context: Any
     graphics_api: GraphicsAPI | None
@@ -41,10 +41,31 @@ class BackendGlobalObject(ABC, Generic[ConfigT_co]):  # Temp name for now.
         self.graphics_api = graphics_api
         self.windows = weakref.WeakKeyDictionary()
         self._current_window = None
+        self.current_context = NullContext()
 
     @property
     def have_context(self) -> bool:
         return self._have_context
+
+    def set_current_context(self, context: SurfaceContext) -> None:
+        """Mark the provided surface context as active for this backend."""
+        self.current_context = context
+        self._current_window = context.window
+
+    def clear_current_context(self, context: SurfaceContext | None = None) -> None:
+        """Clear the active context, optionally only if it matches `context`."""
+        if context is None or self.current_context is context:
+            self.current_context = NullContext()
+            self._current_window = None
+
+    def resolve_context(self, context: SurfaceContext | None = None) -> SurfaceContext:
+        """Return an explicit context or the backend's active context."""
+        resolved = context if context is not None else self.current_context
+        if isinstance(resolved, NullContext):
+            msg = ("A rendering Context has not yet been created, or has already been deleted. Please ensure "
+                   "a context exists (create a Window) before attempting to perform any GPU related activities.")
+            raise RuntimeError(msg)
+        return resolved
 
     @abstractmethod
     def get_surface_context(
@@ -370,28 +391,90 @@ class SurfaceInfo(ABC):
         )
 
 
-@dataclass
-class FrameSlotData:
-    """Resources and fence state for one frame-in-flight slot."""
+class _EmptyBackendFrameContext:
+    has_pending_retirements = False
 
+    def release_retired_resources(self) -> None:
+        pass
+
+
+class BackendFrameContext(Protocol):
+    """Backend-owned state associated with one reusable frame slot."""
+
+    @property
+    def has_pending_retirements(self) -> bool:
+        """Whether this slot owns deferred resource cleanup."""
+        ...
+
+    def release_retired_resources(self) -> None:
+        """Release cleanup deferred until this slot became reusable."""
+        ...
+
+
+BackendFrameContextT = TypeVar("BackendFrameContextT", bound=BackendFrameContext)
+
+
+@dataclass
+class FrameContext(Generic[BackendFrameContextT]):
+    """Per-frame data for one reusable frame slot."""
+
+    backend_ctx: BackendFrameContextT
+    frame_index: int = 0
+    slot_index: int = 0
     fence: Any | None = None
     ubo_ranges: list[BufferRange] = field(default_factory=list)
     ubo_range_ids: set[int] = field(default_factory=set)
+    buffer_ranges: list[BufferRange] = field(default_factory=list)
+
+    @property
+    def has_tracked_uses(self) -> bool:
+        return bool(self.ubo_ranges or self.buffer_ranges)
+
+    @property
+    def has_pending_retirements(self) -> bool:
+        return self.backend_ctx.has_pending_retirements
+
+    @property
+    def needs_completion(self) -> bool:
+        """Whether slot reuse must wait for submitted work to complete."""
+        return self.has_tracked_uses or self.has_pending_retirements
 
 
-class FrameResourceManager:
-    """Tracks in-flight GPU-visible resource ranges by frame."""
 
-    def __init__(self, surface_ctx: SurfaceContext, slots: int = 3) -> None:
+class FrameResourceManager(Generic[BackendFrameContextT]):
+    """Tracks CPU-side resource reuse against submitted GPU frames.
+
+    This manager is backend-neutral. It does not submit work, allocate command
+    buffers, or own API synchronization primitives. Instead, it records which
+    CPU-visible resources were used by a frame slot and asks the active
+    ``SurfaceContext`` for a completion handle when those resources are
+    submitted.
+
+    The shared use case is ring-buffer backed uniform data: a ``BufferRange``
+    cannot be overwritten until the frame that used it is complete.
+
+    Backend-specific systems that are already explicitly frame-local, such as
+    Vulkan command buffers or descriptor-set arrays, should keep their own
+    frame-indexed storage.
+    """
+    slots: list[FrameContext[BackendFrameContextT]]
+
+    def __init__(self, surface_ctx: SurfaceContext[BackendFrameContextT], slots: int = 3) -> None:
         self.surface_ctx = surface_ctx
-        self.slots = [FrameSlotData() for _ in range(max(1, int(slots)))]
+        self.slots = [
+            FrameContext(
+                backend_ctx=surface_ctx.create_backend_frame_context(slot_index),
+                slot_index=slot_index,
+            )
+            for slot_index in range(max(1, int(slots)))
+        ]
         self._active_slot = self.slots[0]
 
     @property
-    def active_slot(self) -> FrameSlotData:
+    def active_slot(self) -> FrameContext[BackendFrameContextT]:
         return self._active_slot
 
-    def _release_slot(self, slot: FrameSlotData) -> None:
+    def _release_slot(self, slot: FrameContext[BackendFrameContextT]) -> None:
         if slot.fence is not None:
             self.surface_ctx.delete_frame_fence(slot.fence)
             slot.fence = None
@@ -400,6 +483,8 @@ class FrameResourceManager:
             ubo_range.in_use = ubo_range.frame_use_count > 0
         slot.ubo_ranges.clear()
         slot.ubo_range_ids.clear()
+        slot.buffer_ranges.clear()
+        slot.backend_ctx.release_retired_resources()
 
     def frame_begin(self, frame_index: int) -> None:
         slot_index = frame_index % len(self.slots)
@@ -412,28 +497,43 @@ class FrameResourceManager:
                 assert _debug_print(f"CPU caught up to GPU on frame slot: {slot_index}, frame index: {frame_index}.")
                 self.surface_ctx.wait_frame_fence(slot.fence)
             self._release_slot(slot)
+        elif slot.needs_completion:
+            # Some backends may not expose a completion primitive. In that case
+            # resource tracking degrades to frame-slot reuse without blocking.
+            self._release_slot(slot)
 
+        slot.frame_index = frame_index
         self._active_slot = slot
 
-    def allocate_ubo(self, ubo_range: BufferRange) -> None:
-        if ubo_range.in_use:
-            msg = "Trying to allocate a UBO range that is already in use by a submitted frame."
+    def allocate_buffer_range(self, buffer_range: BufferRange) -> None:
+        """Mark a newly selected ring-buffer range as used by the active frame."""
+        if buffer_range.in_use:
+            msg = "Trying to allocate a buffer range that is already in use by a submitted frame."
             raise GraphicsIntegrationError(msg)
 
-        self.use_ubo(ubo_range)
+        self.use_ubo(buffer_range)
 
-    def use_ubo(self, ubo_range: BufferRange) -> None:
-        ubo_range_id = id(ubo_range)
+    def use_buffer_range(self, buffer_range: BufferRange) -> None:
+        """Mark an existing ring-buffer range as referenced by the active frame."""
+        ubo_range_id = id(buffer_range)
         if ubo_range_id in self._active_slot.ubo_range_ids:
             return
 
-        ubo_range.frame_use_count += 1
-        ubo_range.in_use = True
-        self._active_slot.ubo_ranges.append(ubo_range)
+        buffer_range.frame_use_count += 1
+        buffer_range.in_use = True
+        self._active_slot.ubo_ranges.append(buffer_range)
         self._active_slot.ubo_range_ids.add(ubo_range_id)
 
-    def frame_submit(self) -> None:
-        if not self._active_slot.ubo_ranges:
+    def allocate_ubo(self, ubo_range: BufferRange) -> None:
+        """Compatibility alias for UBO-backed ring-buffer allocation."""
+        self.allocate_buffer_range(ubo_range)
+
+    def use_ubo(self, ubo_range: BufferRange) -> None:
+        """Compatibility alias for UBO-backed ring-buffer usage."""
+        self.use_buffer_range(ubo_range)
+
+    def frame_submit(self, *, force_completion: bool = False) -> None:
+        if not force_completion and not self._active_slot.needs_completion:
             return
         self._active_slot.fence = self.surface_ctx.create_frame_fence()
 
@@ -452,13 +552,15 @@ class SurfaceContext(ABC, Generic[WindowT]):  # Temp name for now.
     window: WindowT
     default_batch: Batch
 
-    def __init__(self, global_ctx: BackendGlobalObject, window: WindowT, config: Any) -> None:
+    def __init__(self, global_ctx: BackendGlobalObject, window: WindowT, config: Any,
+                 frames_in_flight: int = 3) -> None:
         self.core = global_ctx
         self.window = window
         self.config = config
+        self.frames_in_flight = max(1, int(frames_in_flight))
         self.frame_index = 0
         self._frame_active = False
-        self.frame_resources = FrameResourceManager(self)
+        self.frame_resources = FrameResourceManager[BackendFrameContextT](self, self.frames_in_flight)
 
     @property
     @abstractmethod
@@ -494,6 +596,20 @@ class SurfaceContext(ABC, Generic[WindowT]):  # Temp name for now.
     def frame_active(self) -> bool:
         return self._frame_active
 
+    @property
+    def active_frame(self) -> int:
+        """Current reusable frame slot for frame-local backend resources."""
+        return self.frame_index % self.frames_in_flight
+
+    @property
+    def frame_context(self) -> FrameContext[BackendFrameContextT]:
+        """Active frame-local data for this context."""
+        return self.frame_resources.active_slot
+
+    def create_backend_frame_context(self, _slot_index: int) -> BackendFrameContextT:
+        """Create backend-specific data attached to one reusable frame context."""
+        return _EmptyBackendFrameContext()
+
     @abstractmethod
     def destroy(self) -> None:
         """Destroys the graphical context."""
@@ -508,7 +624,11 @@ class SurfaceContext(ABC, Generic[WindowT]):  # Temp name for now.
         self.frame_resources.frame_submit()
 
     def create_frame_fence(self) -> Any | None:
-        """Create a backend fence for submitted frame resources."""
+        """Create a backend completion handle for submitted frame resources.
+
+        The returned object is owned by ``FrameResourceManager`` unless the
+        backend documents otherwise in ``delete_frame_fence``.
+        """
         return None
 
     def poll_frame_fence(self, fence: Any) -> bool:
@@ -522,7 +642,7 @@ class SurfaceContext(ABC, Generic[WindowT]):  # Temp name for now.
         """
 
     def delete_frame_fence(self, fence: Any) -> None:
-        """Delete a submitted frame fence."""
+        """Release a completion handle returned by :meth:`create_frame_fence`."""
 
     def frame_end(self) -> None:
         """Finalize the current frame, present, and advance frame index."""

@@ -105,6 +105,11 @@ elif pyglet.options.backend == GraphicsAPI.WEBGL:
         get_default_multitexture_shader,
         get_default_shader,
     )
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
+    from pyglet.graphics.api.vulkan.sprite import get_default_shader, get_default_array_shader
+    def get_default_multitexture_shader():
+        raise NotImplementedError("Vulkan multi-texture sprites are not implemented.")
+
 
 
 
@@ -139,6 +144,10 @@ class SpriteGroup(Group):
         self.set_shader_program(program)
         self.set_blend(blend_src, blend_dest)
         self.set_texture(self.texture, 0)
+
+
+if pyglet.options.backend == GraphicsAPI.VULKAN:
+    from pyglet.graphics.api.vulkan.sprite import SpriteGroup
 
 
 class Sprite(event.EventDispatcher):
@@ -829,6 +838,7 @@ class Sprite(event.EventDispatcher):
         draw_ctx = DrawContext(
             surface_ctx=ctx,
             backend_ctx=None,
+            frame_context=ctx.frame_context,
             draw_pass=BatchDrawOptions().resolve(ctx),
             renderer=ctx.renderer,
         )
@@ -1102,4 +1112,3 @@ class MultiTextureSprite(Sprite):
 
 
 Sprite.register_event_type('on_animation_end')
-

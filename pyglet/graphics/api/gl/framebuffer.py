@@ -262,6 +262,10 @@ class GLFramebuffer(FramebufferResource):
         """
         self._context.glBindFramebuffer(self._gl_target, self._context.default_framebuffer)
 
+    def finalize(self) -> None:
+        """Finalize backend attachments (OpenGL attachments remain mutable)."""
+        pass
+
     def __enter__(self) -> GLFramebuffer:  # noqa: PYI034
         if self.target == FramebufferTarget.FRAMEBUFFER:
             draw_binding = gl.GLint()

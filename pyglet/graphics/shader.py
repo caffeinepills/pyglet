@@ -82,12 +82,31 @@ class PushConstants:
 
 
 @dataclass
-class Sampler:
+class DescriptorBinding:
     name: str
     desc_set: int
     binding: int
     count: int = 1
     stages: Sequence[ShaderType] = ("fragment",)
+
+
+@dataclass
+class SampledTextureBinding(DescriptorBinding):
+    """Combined sampled texture binding metadata."""
+
+
+@dataclass
+class SamplerBinding(DescriptorBinding):
+    """Separate sampler binding metadata."""
+
+
+@dataclass
+class TextureBinding(DescriptorBinding):
+    """Separate sampled image/texture binding metadata."""
+
+
+# Backward-compatible alias.
+Sampler = SampledTextureBinding
 
 
 UniformBlockT = TypeVar("UniformBlockT", bound="UniformBlock | type[UniformBlock]")
@@ -102,6 +121,9 @@ class _AbstractShaderProgram(GraphicsResource[Any, ShaderProgramKey], ABC, Gener
     _uniform_blocks: dict[str, UniformBlockT]
     _samplers: dict[str, Sampler]
     _attribute_key: tuple[Any, ...]
+    _sampled_textures: dict[str, SampledTextureBinding]
+    _sampler_bindings: dict[str, SamplerBinding]
+    _texture_bindings: dict[str, TextureBinding]
     _attribute_keys: tuple[tuple[Any, ...], ...]
     _domain_layout: VertexLayout
     _legacy_instance_layout: VertexLayout | None
@@ -128,7 +150,9 @@ class _AbstractShaderProgram(GraphicsResource[Any, ShaderProgramKey], ABC, Gener
         self._uniform_blocks = {}
 
         # Sampler descriptions
-        self._samplers = {}
+        self._sampled_textures = {}
+        self._sampler_bindings = {}
+        self._texture_bindings = {}
 
     @property
     def is_defined(self) -> bool:
@@ -272,9 +296,21 @@ class _AbstractShaderProgram(GraphicsResource[Any, ShaderProgramKey], ABC, Gener
         for ub in uniform_blocks:
             self._uniform_blocks[ub.__class__.__name__] = self.get_uniform_block_cls()
 
-    def set_samplers(self, *samplers: Sampler) -> None:
-        for sampler in samplers:
-            self._samplers[sampler.name] = sampler
+    def set_sampled_textures(self, *sampled_textures: SampledTextureBinding) -> None:
+        for sampled_texture in sampled_textures:
+            self._sampled_textures[sampled_texture.name] = sampled_texture
+
+    def set_sampler_bindings(self, *sampler_bindings: SamplerBinding) -> None:
+        for sampler_binding in sampler_bindings:
+            self._sampler_bindings[sampler_binding.name] = sampler_binding
+
+    def set_texture_bindings(self, *texture_bindings: TextureBinding) -> None:
+        for texture_binding in texture_bindings:
+            self._texture_bindings[texture_binding.name] = texture_binding
+
+    def set_samplers(self, *samplers: SampledTextureBinding) -> None:
+        # Backward-compatible entry point.
+        self.set_sampled_textures(*samplers)
 
     def get_uniform_block_cls(self) -> type[UniformBlock]:
         return UniformBlock
@@ -315,13 +351,28 @@ class _AbstractShaderProgram(GraphicsResource[Any, ShaderProgramKey], ABC, Gener
         return self._uniform_blocks
 
     @property
-    def samplers(self) -> dict[str, Sampler]:
+    def sampled_textures(self) -> dict[str, SampledTextureBinding]:
+        """A dictionary of sampled texture bindings."""
+        return self._sampled_textures
+
+    @property
+    def sampler_bindings(self) -> dict[str, SamplerBinding]:
+        """A dictionary of separate sampler bindings."""
+        return self._sampler_bindings
+
+    @property
+    def texture_bindings(self) -> dict[str, TextureBinding]:
+        """A dictionary of separate texture bindings."""
+        return self._texture_bindings
+
+    @property
+    def samplers(self) -> dict[str, SampledTextureBinding]:
         """A dictionary of introspected samplers.
 
         This property returns a dictionary of
-        :py:class:`~pyglet.graphics.shader.Sampler` instances keyed by sampler name.
+        :py:class:`~pyglet.graphics.shader.SampledTextureBinding` instances keyed by sampler name.
         """
-        return self._samplers
+        return self._sampled_textures
 
     @property
     def uniforms(self) -> dict[str, Any]:
@@ -1308,6 +1359,13 @@ if not pyglet.IS_DOC_BUILD and not TYPE_CHECKING:
             WebGLTransformFeedbackShaderProgram as TransformFeedbackShaderProgram,
         )
         from pyglet.graphics.api.webgl.shader import get_default_shader
+    elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan.shader import (
+            VulkanShader as Shader,
+            VulkanShaderProgram as ShaderProgram,
+            VulkanComputeShaderProgram as ComputeShaderProgram,
+        )
+        from pyglet.graphics.api.vulkan.shader import get_default_shader
     else:
         msg = f"Unsupported backend: {pyglet.options.backend}"
         raise RuntimeError(msg)

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from pyglet.libs.shared.vulkan_lib import InstanceFunc, DeviceFunc
 from pyglet.libs.shared.vulkan_lib import exceptions
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VK_SUCCESS, VkExtensionProperties, \
-    vkEnumerateInstanceLayerProperties, VkLayerProperties, \
+    vkEnumerateInstanceExtensionProperties, vkEnumerateInstanceLayerProperties, VkLayerProperties, \
     VkDevice, VkInstance, VkInstanceCreateInfo, vkCreateInstance, VkPhysicalDevice, VkDeviceCreateInfo, \
     VkAllocationCallbacks, VkQueueFamilyProperties, VkSurfaceKHR, VkSurfaceCapabilitiesKHR, \
     VkSurfaceFormatKHR, VkPresentModeKHR, VkSwapchainKHR, VkImage, VkBool32
@@ -56,6 +56,19 @@ def EnumerateInstanceLayerProperties() -> list[VkLayerProperties]:
 
     return pProperties[:]
 
+def EnumerateInstanceExtensionProperties(pLayerName: bytes | None = None) -> list[VkExtensionProperties]:
+    pPropertyCount = c_uint32()
+    result = vkEnumerateInstanceExtensionProperties(pLayerName, byref(pPropertyCount), None)
+    if result != VK_SUCCESS:
+        raise Exception(result)
+
+    pProperties = (VkExtensionProperties * pPropertyCount.value)()
+    result = vkEnumerateInstanceExtensionProperties(pLayerName, byref(pPropertyCount), pProperties)
+    if result != VK_SUCCESS:
+        raise Exception(result)
+
+    return list(pProperties)
+
 def EnumerateDeviceExtensionProperties(instance: VulkanInstance, physicalDevice: VkPhysicalDevice, pLayerName: bytes | None) -> list[VkExtensionProperties]:
     pPropertyCount = c_uint32()
     result = instance.vkEnumerateDeviceExtensionProperties(physicalDevice, pLayerName, byref(pPropertyCount), None)
@@ -76,7 +89,6 @@ def GetPhysicalDeviceQueueFamilyProperties(physicalDevice: VkPhysicalDevice) -> 
     pQueueFamilyProperties = (VkQueueFamilyProperties * pQueueFamilyPropertyCount.value)()
     InstanceFunc.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, byref(pQueueFamilyPropertyCount), pQueueFamilyProperties)
 
-    print(list(pQueueFamilyProperties))
     return list(pQueueFamilyProperties)
 
 def GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR) -> VkSurfaceCapabilitiesKHR:
@@ -88,12 +100,9 @@ def GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice: VkPhysicalDevice, su
 
 def GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR | None) -> list[VkSurfaceFormatKHR]:
     pSurfaceFormatCount = c_uint32()
-    print("ONE?", pSurfaceFormatCount)
     result = InstanceFunc.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, byref(pSurfaceFormatCount), None)
     if result != VK_SUCCESS:
         raise Exception(result)
-
-    print("TWO?", pSurfaceFormatCount)
 
     pSurfaceFormats = (VkSurfaceFormatKHR * pSurfaceFormatCount.value)()
     if result := InstanceFunc.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, byref(pSurfaceFormatCount), pSurfaceFormats) != VK_SUCCESS:
@@ -102,13 +111,10 @@ def GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice: VkPhysicalDevice, surface
     return list(pSurfaceFormats)
 
 def GetPhysicalDeviceSurfacePresentModesKHR(physicalDevice: VkPhysicalDevice, surface: VkSurfaceKHR | None) -> list[VkPresentModeKHR]:
-    print("YO?")
     pPresentModeCount = c_uint32()
     result = InstanceFunc.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, byref(pPresentModeCount), None)
     if result != VK_SUCCESS:
         raise Exception(result)
-
-    print("PRESENT MODES?", pPresentModeCount)
 
     pPresentModes = (VkPresentModeKHR * pPresentModeCount.value)()
     result = InstanceFunc.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, byref(pPresentModeCount), pPresentModes)

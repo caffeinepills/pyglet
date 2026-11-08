@@ -310,7 +310,7 @@ class Options:
     .. versionadded:: 3.0.0
     """
 
-    backend: Literal["opengl", "gl2", "gles3", "gles2", "webgl"] | GraphicsAPI = GraphicsAPI.OPENGL
+    backend: Literal["opengl", "gl2", "gles3", "gles2", "webgl", "vulkan"] | GraphicsAPI = GraphicsAPI.VULKAN
     """Specify the graphics API backend."""
 
     opengl_persistent_buffers: bool = False

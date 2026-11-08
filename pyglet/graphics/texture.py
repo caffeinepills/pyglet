@@ -1385,4 +1385,22 @@ if not pyglet.IS_DOC_BUILD and not TYPE_CHECKING:
             WebGLTextureGrid as TextureGrid,  # noqa: F401
         )
     elif pyglet.options.backend == GraphicsAPI.VULKAN:
-        raise NotImplementedError("Vulkan is not yet implemented")
+        from pyglet.graphics.api.vulkan.framebuffer import (  # noqa: F401
+            VulkanFramebuffer as Framebuffer,
+            VulkanRenderbuffer as Renderbuffer,
+            get_max_color_attachments,
+            get_screenshot,
+        )
+        from pyglet.graphics.api.vulkan.texture import (
+            VulkanTexture,
+            VulkanTexture as Texture,  # noqa: F401
+            VulkanTextureRegion as TextureRegion,  # noqa: F401
+            VulkanTexture3D,
+            VulkanTexture3D as Texture3D,  # noqa: F401
+            VulkanTextureArray,
+            VulkanTextureArray as TextureArray,  # noqa: F401
+            VulkanTextureArrayRegion,
+            VulkanTextureArrayRegion as TextureArrayRegion,  # noqa: F401
+            VulkanTextureGrid,
+            VulkanTextureGrid as TextureGrid,  # noqa: F401
+        )

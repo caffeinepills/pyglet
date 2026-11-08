@@ -11,8 +11,7 @@ from pyglet.graphics import VertexLayout
 from tests.annotations import GraphicsAPIGroups, skip_graphics_api
 
 
-pytestmark = [skip_graphics_api(GraphicsAPIGroups.GL2)]
-
+pytestmark = require_graphics_api(GraphicsAPIGroups.GL3)
 
 _vertex_source: str = """#version 330 core
     in vec3 position;

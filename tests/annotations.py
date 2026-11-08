@@ -37,6 +37,8 @@ class GraphicsAPIGroups:
     GL2 = ("gl2", "gles2")
     GLES = ("gles2", "gles3")
     MODERN_DESKTOP_GL = ("opengl",)
+    DESKTOP_GL = ("opengl",)
+    VULKAN = ("vulkan",)
 
 
 def require_platform(platform: list[str]):

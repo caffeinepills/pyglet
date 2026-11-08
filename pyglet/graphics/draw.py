@@ -118,6 +118,7 @@ class DrawContext(Generic[SurfaceContextT, BackendContextT]):
     backend_ctx: BackendContextT
     draw_pass: DrawPass
     renderer: BackendRenderer
+    frame_context: Any = None
     camera_stack: list[CameraScopeProtocol] = field(default_factory=list)
     viewport_stack: list[_BaseViewportState] = field(default_factory=list)
     scissor_stack: list[_BaseScissorState] = field(default_factory=list)
@@ -583,6 +584,27 @@ class Group(metaclass=_GroupMeta):
         """
         assert not self._assigned_batches, "New states cannot be set once a group is in a batch."
         self._state_names.pop(MultiTextureSamplerState.__name__, None)
+        if pyglet.options.backend == GraphicsAPI.VULKAN and texture_unit == 0:
+            # For Vulkan, OpenGL-style "unit 0" defaults can be wrong when the
+            # shader declares samplers on non-zero descriptor bindings.
+            program_state = self._state_names.get("ShaderProgramState")
+            program = getattr(program_state, "program", None) if program_state else None
+            sampled_textures = getattr(program, "sampled_textures", None)
+            if sampled_textures is None:
+                sampled_textures = getattr(program, "samplers", None)
+
+            sampler_list = []
+            if isinstance(sampled_textures, dict):
+                sampler_list = list(sampled_textures.values())
+            elif sampled_textures is not None:
+                sampler_list = list(sampled_textures)
+
+            # Only infer automatically when a single sampler exists.
+            if len(sampler_list) == 1:
+                sampler = sampler_list[0]
+                texture_unit = sampler.binding
+                set_id = sampler.desc_set
+
         self.set_state(TextureState.from_texture(texture, texture_unit, set_id))
 
     def set_textures(
@@ -1516,6 +1538,7 @@ class Batch:
         return DrawContext(
             surface_ctx=self._context,
             backend_ctx=self._create_backend_draw_context(),
+            frame_context=self._context.frame_context,
             draw_pass=draw_pass.resolve(self._context),
             renderer=self._context.renderer,
         )
@@ -1975,6 +1998,14 @@ if not pyglet.IS_DOC_BUILD and not TYPE_CHECKING:
             WebGLBatch as Batch,
         )
         from pyglet.graphics.api.webgl.draw import (
+            get_default_batch as _backend_get_default_batch,
+        )
+        get_default_batch = _backend_get_default_batch
+    elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan.draw import (
+            VulkanBatch as Batch,
+        )
+        from pyglet.graphics.api.vulkan.draw import (
             get_default_batch as _backend_get_default_batch,
         )
         get_default_batch = _backend_get_default_batch

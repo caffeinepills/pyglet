@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, Sequence, Union
 
 from pyglet.graphics.resource import BufferKey, GraphicsResource
 
+import pyglet
+
 if TYPE_CHECKING:
     from pyglet.customtypes import CType, CTypesPointer, DataTypes
 

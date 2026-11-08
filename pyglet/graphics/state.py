@@ -24,9 +24,6 @@ class State:
     #: Flag whether this state has a function to call when it leaves scope.
     unsets_state: bool = False
 
-    #: Flag whether this state needs resolution during the draw phase.
-    resolves_state: bool = True
-
     #: Flag whether this state is to be used to calculate the group hash and comparison.
     group_hash: bool = True
 
@@ -268,6 +265,8 @@ else:
         from pyglet.graphics.api.gl2 import state as _backend_state
     elif pyglet.options.backend == GraphicsAPI.WEBGL:
         from pyglet.graphics.api.webgl import state as _backend_state
+    elif pyglet.options.backend == GraphicsAPI.VULKAN:
+        from pyglet.graphics.api.vulkan import state as _backend_state
     else:
         msg = f"Unsupported backend: {pyglet.options.backend}"
         raise RuntimeError(msg)

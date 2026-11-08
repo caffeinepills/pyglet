@@ -14,7 +14,7 @@ class WINDOW_OPEN(InteractiveTestCase):
         window.switch_to()
         window.context.set_clear_color(*colour)
         window.clear()
-        window.flip()
+        window.present()
 
     def test_open_window(self):
         """Test that a window can be opened.

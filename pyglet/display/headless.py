@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from typing import Literal
-
-import warnings
 from ctypes import byref
+import warnings
 
 import pyglet
 

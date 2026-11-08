@@ -211,7 +211,13 @@ elif not TYPE_CHECKING and pyglet.options.backend == GraphicsAPI.WEBGL:
         get_screenshot,  # noqa: F401
         get_viewport,
     )
-
+elif pyglet.options.backend == GraphicsAPI.VULKAN:
+    from pyglet.graphics.api.vulkan.framebuffer import (
+        VulkanFramebuffer as Framebuffer,
+        VulkanRenderbuffer as Renderbuffer,
+        get_screenshot,  # noqa: F401
+        get_viewport,
+    )
 
 class _TextureRenderTargetBase:
     """Shared framebuffer and camera state for texture render targets."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import weakref
+from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 from pyglet.customtypes import WindowT
@@ -35,6 +36,18 @@ if TYPE_CHECKING:
     from pyglet.graphics.api.gl.win32.wgl_info import WGLInfo
     from pyglet.graphics.api.gl.global_opengl import OpenGLBackend
 
+
+
+@dataclass
+class GLFrameContext:
+    """GL data scoped to one reusable frame slot, to do later."""
+
+    @property
+    def has_pending_retirements(self) -> bool:
+        return False
+
+    def release_retired_resources(self) -> None:
+        return
 
 class OpenGLSurfaceContext(SurfaceContext[WindowT], GLFunctions):
     """A base OpenGL context for drawing.
@@ -96,6 +109,9 @@ class OpenGLSurfaceContext(SurfaceContext[WindowT], GLFunctions):
 
             self._pixel_readback = GLPixelReadback(self)
         return self._pixel_readback
+
+    def create_backend_frame_context(self, _slot_index: int) -> GLFrameContext:
+        return GLFrameContext()
 
     def resized(self, width, height):
         ...
@@ -173,7 +189,7 @@ class OpenGLSurfaceContext(SurfaceContext[WindowT], GLFunctions):
         deletion while another Context was active.
         """
         # Not per-thread
-        self.core.current_context = self
+        self.core.set_current_context(self)
 
         if not self._info.was_queried:
             self._initialize_gl_functions()
@@ -247,7 +263,7 @@ class OpenGLSurfaceContext(SurfaceContext[WindowT], GLFunctions):
         self.detach()
 
         if self.core.current_context is self:
-            self.core.current_context = NullContext()
+            self.core.clear_current_context(self)
             # gl_info.remove_active_context()
 
     def _safe_to_operate_on_object_space(self) -> bool:
