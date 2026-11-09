@@ -215,6 +215,7 @@ class VulkanFrameContext:
     command_buffer: Any | None = None
     recording: bool = False
     clear_claimed: bool = False
+    rendered_targets: set[int] = field(default_factory=set)
     retired_resources: list[Callable[[], None]] = field(default_factory=list)
 
     @property
@@ -231,6 +232,7 @@ class VulkanFrameContext:
             release()
 
     def reset_for_frame(self) -> None:
+        self.rendered_targets.clear()
         self.command_buffer = None
         self.recording = False
         self.clear_claimed = False

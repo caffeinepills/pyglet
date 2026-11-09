@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Sequence, Any
 from ctypes import byref
 
@@ -12,6 +12,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
     VK_ATTACHMENT_LOAD_OP_CLEAR,
+    VK_ATTACHMENT_LOAD_OP_LOAD,
     VK_ATTACHMENT_LOAD_OP_DONT_CARE,
     VK_ATTACHMENT_STORE_OP_DONT_CARE,
     VK_ATTACHMENT_STORE_OP_STORE,
@@ -182,13 +183,14 @@ class RenderPassSpec:
 
 class RenderPass:
     attachments: list[Attachment]
+    _preserving_pass: RenderPass | None
 
     def __init__(self, logical_device: VulkanLogicalDevice,
                  color_formats: Sequence[int],
                  depth_format: int | None=None,
                  sync: bool=False,
                  offscreen: bool=False,
-                 clear_on_load: bool = True):
+                 clear_on_load: bool = True, preserve_contents: bool = False):
         self.device = logical_device
 
         color_attachments = tuple([
@@ -196,6 +198,15 @@ class RenderPass:
             for fmt in color_formats
         ])
         depth_attachment = DepthAttachment.get_default(fmt=depth_format) if depth_format else None
+        if preserve_contents:
+            color_attachments = tuple(replace(attachment, load_op=VK_ATTACHMENT_LOAD_OP_LOAD,
+                                              initial_layout=attachment.final_layout)
+                                      for attachment in color_attachments)
+            if depth_attachment is not None:
+                depth_attachment = replace(depth_attachment, load_op=VK_ATTACHMENT_LOAD_OP_LOAD,
+                                           stencil_load_op=VK_ATTACHMENT_LOAD_OP_LOAD,
+                                           initial_layout=depth_attachment.final_layout)
+        self._preserving_pass = None
         self._key = RenderPassSpec(
             color_attachments=color_attachments,
             depth_attachment=depth_attachment,
@@ -228,6 +239,18 @@ class RenderPass:
     def key(self):
         return (self._key, *self.subpasses)
 
+    def preserving_pass(self) -> RenderPass:
+        """Compatible render pass that retains earlier submissions to this target."""
+        if self._preserving_pass is None:
+            self._preserving_pass = RenderPass(
+                self.device, tuple(attachment.fmt for attachment in self.color_attachments),
+                self.depth_attachment.fmt if self.depth_attachment else None,
+                sync=self._key.sync,
+                offscreen=not self.color_attachments or self.color_attachments[0].final_layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                preserve_contents=True,
+            )
+        return self._preserving_pass
+
     def create_render_pass(self) -> VkRenderPass:
         """Creates a Vulkan render pass for color attachment."""
         attachment_descs = [attachment.create_description() for attachment in self.attachments]
@@ -254,7 +277,7 @@ class RenderPass:
             srcSubpass=VK_SUBPASS_EXTERNAL,  # External operations
             dstSubpass=0,
             srcStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            srcAccessMask=0,
+            srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             dstStageMask=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             dependencyFlags=VK_DEPENDENCY_BY_REGION_BIT,
@@ -265,6 +288,9 @@ class RenderPass:
 
     def delete(self):
         """Cleans up the Vulkan render pass."""
+        if self._preserving_pass is not None:
+            self._preserving_pass.delete()
+            self._preserving_pass = None
         if self.vk_renderpass:
             self.device.vkDestroyRenderPass(self.device.vk_device, self.vk_renderpass, None)
             self.vk_renderpass = None

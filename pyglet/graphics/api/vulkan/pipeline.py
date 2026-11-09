@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ctypes
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum, IntFlag
 from typing import Sequence, TYPE_CHECKING, NewType, List, Any
 from ctypes import byref, pointer
@@ -64,6 +64,7 @@ from pyglet.libs.shared.vulkan_lib.vulkan_core import (
     VkPipelineDynamicStateCreateInfo,
     VkDynamicState,
     VK_DYNAMIC_STATE_SCISSOR,
+    VK_DYNAMIC_STATE_VIEWPORT,
     VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
     VK_COMPARE_OP_LESS,
     VK_COLOR_COMPONENT_R_BIT,
@@ -406,6 +407,7 @@ class GraphicsPipelineManager:
                 depth_test_enable,
                 depth_write_enable,
                 depth_compare_op,
+                pipeline_states=group._state_names,
             )
         return None
 
@@ -418,6 +420,7 @@ class GraphicsPipelineManager:
                      depth_test_enable: bool = False,
                      depth_write_enable: bool = False,
                      depth_compare_op: int = VK_COMPARE_OP_LESS,
+                     pipeline_states: dict | None = None,
                      ):
         key = (
             shader_program.key,
@@ -429,6 +432,7 @@ class GraphicsPipelineManager:
             depth_test_enable,
             depth_write_enable,
             int(depth_compare_op),
+            tuple((name, (pipeline_states or {}).get(name)) for name in ("BlendState", "CullFaceState", "FrontFaceState", "ColorMaskState", "StencilTestState", "StencilMaskState", "StencilFuncState", "StencilOpState", "PolygonOffsetState", "SampleCoverageState")),
         )
         if key in self.pipelines:
             return self.pipelines[key]
@@ -443,6 +447,7 @@ class GraphicsPipelineManager:
             depth_test_enable,
             depth_write_enable,
             depth_compare_op,
+            pipeline_states=pipeline_states,
         )
 
     def create(self, shader_program: VulkanShaderProgram,
@@ -453,7 +458,8 @@ class GraphicsPipelineManager:
                domain: VertexDomain,
                depth_test_enable: bool = False,
                depth_write_enable: bool = False,
-               depth_compare_op: int = VK_COMPARE_OP_LESS):
+               depth_compare_op: int = VK_COMPARE_OP_LESS,
+               pipeline_states: dict | None = None):
 
         key = (
             shader_program.key,
@@ -465,6 +471,7 @@ class GraphicsPipelineManager:
             depth_test_enable,
             depth_write_enable,
             int(depth_compare_op),
+            tuple((name, (pipeline_states or {}).get(name)) for name in ("BlendState", "CullFaceState", "FrontFaceState", "ColorMaskState", "StencilTestState", "StencilMaskState", "StencilFuncState", "StencilOpState", "PolygonOffsetState", "SampleCoverageState")),
         )
         assert key not in self.pipelines
         #render_pass_key = pipeline_key[1]
@@ -473,11 +480,13 @@ class GraphicsPipelineManager:
         pipeline = GraphicsPipeline(self.devices, self.devices.logical_device, shader_program,
                                     renderpass, geometry_mode, extent, self.descriptor_mgr, self.layout_cache, domain,
                                     depth_test_enable, depth_write_enable, depth_compare_op)
+        pipeline.configure_states(pipeline_states or {})
         pipeline.create()
         self.pipelines[key] = pipeline
         return pipeline
 
 class _GraphicsPipelineBase:
+    _sample_mask: Any
     descriptor_set_layouts: list[VkDescriptorSetLayout]
     descriptor_set_layouts_info: DescriptorSetLayouts | None
     vk_pipeline: VkPipeline | None
@@ -529,6 +538,63 @@ class _GraphicsPipelineBase:
             stencil_test_enable=False,
         )
 
+    def configure_states(self, states: dict) -> None:
+        from pyglet.enums import CullFace, FrontFace, StencilOp
+        from pyglet.libs.shared.vulkan_lib import vulkan_core as vk
+        blend = states.get("BlendState")
+        mask = states.get("ColorMaskState")
+        for index, options in enumerate(self.color_blend_state.attachment_states):
+            values = {"enabled": blend is not None}
+            if blend is not None:
+                values.update(color_src=blend.src, color_dst=blend.dst, color_op=blend.op,
+                              alpha_src=blend.src_alpha or blend.src, alpha_dst=blend.dst_alpha or blend.dst,
+                              alpha_op=blend.op_alpha or blend.op)
+            if mask is not None:
+                values["color_write_mask"] = sum(bit for enabled, bit in zip(
+                    (mask.red, mask.green, mask.blue, mask.alpha), (1, 2, 4, 8)) if enabled)
+            self.color_blend_state.attachment_states[index] = replace(options, **values)
+        self.color_blend_state.info = self.color_blend_state.get_info()
+        raster = self.rasterization_state
+        cull = states.get("CullFaceState")
+        raster.cull_mode = {CullFace.FRONT: 1, CullFace.BACK: 2, CullFace.FRONT_AND_BACK: 3}[cull.face] if cull else 0
+        front = states.get("FrontFaceState")
+        raster.front_face = 1 if front and front.face == FrontFace.CLOCKWISE else 0
+        raster.info = raster._get_info()
+        offset = states.get("PolygonOffsetState")
+        if offset is not None:
+            raster.info.depthBiasEnable = True
+            raster.info.depthBiasConstantFactor = offset.units
+            raster.info.depthBiasSlopeFactor = offset.factor
+        stencil = states.get("StencilTestState")
+        self.depth_stencil_state.info.stencilTestEnable = bool(stencil and stencil.enabled)
+        func = states.get("StencilFuncState")
+        ops = states.get("StencilOpState")
+        write = states.get("StencilMaskState")
+        operations = {StencilOp.KEEP: vk.VK_STENCIL_OP_KEEP, StencilOp.ZERO: vk.VK_STENCIL_OP_ZERO,
+                      StencilOp.REPLACE: vk.VK_STENCIL_OP_REPLACE, StencilOp.INCREMENT: vk.VK_STENCIL_OP_INCREMENT_AND_CLAMP,
+                      StencilOp.DECREMENT: vk.VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+                      StencilOp.INCREMENT_WRAP: vk.VK_STENCIL_OP_INCREMENT_AND_WRAP,
+                      StencilOp.DECREMENT_WRAP: vk.VK_STENCIL_OP_DECREMENT_AND_WRAP, StencilOp.INVERT: vk.VK_STENCIL_OP_INVERT}
+        stencil_info = vk.VkStencilOpState(
+            failOp=operations[ops.fail] if ops else vk.VK_STENCIL_OP_KEEP,
+            passOp=operations[ops.z_pass] if ops else vk.VK_STENCIL_OP_KEEP,
+            depthFailOp=operations[ops.z_fail] if ops else vk.VK_STENCIL_OP_KEEP,
+            compareOp=compare_op_map[func.func] if func else vk.VK_COMPARE_OP_ALWAYS,
+            compareMask=func.mask if func else 0xFFFFFFFF,
+            writeMask=write.mask if write else 0xFFFFFFFF, reference=func.ref if func else 0,
+        )
+        self.depth_stencil_state.info.front = stencil_info
+        self.depth_stencil_state.info.back = stencil_info
+        coverage = states.get("SampleCoverageState")
+        if coverage is not None:
+            samples = int(self.multisample_state.info.rasterizationSamples)
+            covered = round(max(0.0, min(1.0, coverage.value)) * samples)
+            mask = (1 << covered) - 1
+            if coverage.invert:
+                mask ^= (1 << samples) - 1
+            self._sample_mask = (ctypes.c_uint32 * 2)(mask & 0xFFFFFFFF, (mask >> 32) & 0xFFFFFFFF)
+            self.multisample_state.info.pSampleMask = self._sample_mask
+
     def create(self) -> None:
         """Create the pipeline and pipeline layout."""
         self.vk_pipeline = self._create_pipeline()
@@ -572,10 +638,10 @@ class _GraphicsPipelineBase:
             subpass=0,
         )
 
-        dynamic_states = (VkDynamicState * 1)(VK_DYNAMIC_STATE_SCISSOR)
+        dynamic_states = (VkDynamicState * 2)(VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VIEWPORT)
         dynamic_state = VkPipelineDynamicStateCreateInfo(
             sType=VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            dynamicStateCount=1,
+            dynamicStateCount=2,
             pDynamicStates=dynamic_states,
         )
         pipeline_create_info.pDynamicState = pointer(dynamic_state)
@@ -632,7 +698,8 @@ class GraphicsPipeline(_GraphicsPipelineBase):
                  render_pass: RenderPass, geometry_mode: GeometryMode, extent: VkExtent2D, descriptor_mgr: DescriptorManager,
                  layout_cache: PipelineLayoutCache, vertex_domain: VertexDomain,
                  depth_test_enable: bool = False, depth_write_enable: bool = False,
-                 depth_compare_op: int = VK_COMPARE_OP_LESS):
+                 depth_compare_op: int = VK_COMPARE_OP_LESS,
+               pipeline_states: dict | None = None):
         super().__init__(
             devices,
             device,
@@ -652,7 +719,7 @@ class GraphicsPipeline(_GraphicsPipelineBase):
         vertex_binding_descrip = self.vertex_domain.get_binding_descriptions()
         vbd_array = c_array_list(vertex_binding_descrip, VkVertexInputBindingDescription)
 
-        attribute_descrips = self.vertex_domain.get_attribute_descriptions()
+        attribute_descrips = self.vertex_domain.get_attribute_descriptions(self.program.attributes)
         vad_array = c_array_list(attribute_descrips, VkVertexInputAttributeDescription)
 
         return VkPipelineVertexInputStateCreateInfo(

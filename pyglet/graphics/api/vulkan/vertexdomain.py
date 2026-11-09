@@ -261,18 +261,25 @@ class VulkanVertexArrayBinding(VertexArrayBinding):
         pass
 
 
-class VulkanVertexList(BaseVertexList):
+class _VulkanVertexListDraw:
+    """Route direct draws through Vulkan's scoped command recording."""
+
+    def draw(self, mode: GeometryMode) -> None:
+        self.domain.batch._draw_vertex_lists([self], mode)
+
+
+class VulkanVertexList(_VulkanVertexListDraw, BaseVertexList):
     domain: VulkanVertexDomain
 
     def __init__(self, domain: VulkanVertexDomain, group: Group, start: int, count: int) -> None:  # noqa: D107
         super().__init__(domain, group, start, count)
 
 
-class VulkanInstanceVertexList(BaseInstanceVertexList):
+class VulkanInstanceVertexList(_VulkanVertexListDraw, BaseInstanceVertexList):
     domain: VulkanInstancedVertexDomain
 
 
-class VulkanIndexedVertexList(BaseIndexedVertexList):
+class VulkanIndexedVertexList(_VulkanVertexListDraw, BaseIndexedVertexList):
     domain: VulkanIndexedVertexDomain
 
     def __init__(
@@ -287,7 +294,7 @@ class VulkanIndexedVertexList(BaseIndexedVertexList):
         super().__init__(domain, group, start, count, index_start, index_count)
 
 
-class VulkanInstanceIndexedVertexList(BaseInstanceIndexedVertexList):
+class VulkanInstanceIndexedVertexList(_VulkanVertexListDraw, BaseInstanceIndexedVertexList):
     domain: VulkanInstancedIndexedVertexDomain
 
     def delete(self) -> None:
@@ -320,11 +327,12 @@ class VulkanVertexDomain(BaseVertexDomain):
     def get_binding_descriptions(self) -> list[VkVertexInputBindingDescription]:
         return self.vertex_buffers.get_binding_descriptions()
 
-    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
+    def get_attribute_descriptions(self, shader_attributes=None) -> list[VkVertexInputAttributeDescription]:
+        shader_attributes = shader_attributes if shader_attributes is not None else self.shader_attributes
         return [VkVertexInputAttributeDescription(
-            location=self.shader_attributes[buffer.attribute.name].location,
+            location=shader_attributes[buffer.attribute.name].location,
             binding=buffer.index, format=buffer.attribute.vk_format, offset=0,
-        ) for buffer in self.vertex_buffers.buffers if buffer.attribute.name in self.shader_attributes]
+        ) for buffer in self.vertex_buffers.buffers if buffer.attribute.name in shader_attributes]
 
     def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanVertexList) -> None:
         self.vertex_buffers.bind(command_buffer)
@@ -396,11 +404,12 @@ class VulkanIndexedVertexDomain(BaseIndexedVertexDomain):
     def get_binding_descriptions(self) -> list[VkVertexInputBindingDescription]:
         return self.vertex_buffers.get_binding_descriptions()
 
-    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
+    def get_attribute_descriptions(self, shader_attributes=None) -> list[VkVertexInputAttributeDescription]:
+        shader_attributes = shader_attributes if shader_attributes is not None else self.shader_attributes
         return [VkVertexInputAttributeDescription(
-            location=self.shader_attributes[buffer.attribute.name].location,
+            location=shader_attributes[buffer.attribute.name].location,
             binding=buffer.index, format=buffer.attribute.vk_format, offset=0,
-        ) for buffer in self.vertex_buffers.buffers if buffer.attribute.name in self.shader_attributes]
+        ) for buffer in self.vertex_buffers.buffers if buffer.attribute.name in shader_attributes]
 
     def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanIndexedVertexList) -> None:
         self.vertex_buffers.bind(command_buffer)
@@ -566,11 +575,12 @@ class VulkanInstancedVertexDomain(BaseInstancedVertexDomain, VulkanVertexDomain)
             bindings.extend(inst_stream.get_binding_descriptions())
         return bindings
 
-    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
-        attributes = list(self.vertex_buffers.get_attribute_descriptions(self.shader_attributes))
+    def get_attribute_descriptions(self, shader_attributes=None) -> list[VkVertexInputAttributeDescription]:
+        shader_attributes = shader_attributes if shader_attributes is not None else self.shader_attributes
+        attributes = list(self.vertex_buffers.get_attribute_descriptions(shader_attributes))
         inst_stream = self._get_instance_stream()
         if inst_stream is not None:
-            attributes.extend(inst_stream.get_attribute_descriptions(self.shader_attributes))
+            attributes.extend(inst_stream.get_attribute_descriptions(shader_attributes))
         return attributes
 
     def _draw_subset_command(self, command_buffer, _mode: GeometryMode, vertex_list: VulkanInstanceVertexList) -> None:
@@ -625,11 +635,12 @@ class VulkanInstancedIndexedVertexDomain(BaseInstancedIndexedVertexDomain, Vulka
             bindings.extend(inst_stream.get_binding_descriptions())
         return bindings
 
-    def get_attribute_descriptions(self) -> list[VkVertexInputAttributeDescription]:
-        attributes = list(self.vertex_buffers.get_attribute_descriptions(self.shader_attributes))
+    def get_attribute_descriptions(self, shader_attributes=None) -> list[VkVertexInputAttributeDescription]:
+        shader_attributes = shader_attributes if shader_attributes is not None else self.shader_attributes
+        attributes = list(self.vertex_buffers.get_attribute_descriptions(shader_attributes))
         inst_stream = self._get_instance_stream()
         if inst_stream is not None:
-            attributes.extend(inst_stream.get_attribute_descriptions(self.shader_attributes))
+            attributes.extend(inst_stream.get_attribute_descriptions(shader_attributes))
         return attributes
 
     def _draw_subset_command(

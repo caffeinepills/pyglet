@@ -838,14 +838,15 @@ class VulkanUniformBufferObject(UniformBufferObject):
     def set_frame_descriptor_set(self, _descriptor_set: VkDescriptorSet, _frame_index: int) -> None:
         return
 
-    def use_range(self, _range: BufferRange) -> None:
-        return
+    def use_range(self, range_: BufferRange) -> None:
+        # An unchanged region can be rebound by several frames. Each frame
+        # must retain its own use until its completion fence is released.
+        super().use_range(range_)
 
     def delete(self) -> None:
         type(self)._live_ubos.discard(self)
         if self.buffer:
-            self.buffer.delete()
-        self.buffer = None
+            super().delete()
         self.view = None
 
     def __del__(self) -> None:

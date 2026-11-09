@@ -2,11 +2,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generator, TYPE_CHECKING
 
-from pyglet.enums import BlendFactor, BlendOp, CompareOp
+from pyglet.enums import BlendFactor, BlendOp, CompareOp, CullFace, FrontFace, StencilOp
 from pyglet.graphics.api.vulkan import DeviceFunc
 from pyglet.libs.shared.vulkan_lib.vulkan_core import VkOffset2D, VkRect2D, VkExtent2D
 
-from pyglet.graphics.state import State, ViewportProtocol, _BaseViewportState
+from pyglet.graphics.state import State, ViewportProtocol, _BaseViewportState, _BaseScissorState
 
 if TYPE_CHECKING:
     from pyglet.graphics.draw import DrawContext
@@ -53,23 +53,18 @@ class ShaderProgramState(State):
 
 @dataclass(frozen=True)
 class MultiTextureSamplerState(State):
-    """Static per-program sampler bindings for multi-texture draws."""
     program: VulkanShaderProgram
-    uniforms: tuple[tuple[str, int], ...]
-
-    sets_state: bool = True
+    textures: tuple[TextureState, ...]
 
     @classmethod
-    def from_textures(
-            cls,
-            program: VulkanShaderProgram,
-            textures: dict[str, Texture],
-            first_texture_unit: int = 0, set_id: int = 0) -> MultiTextureSamplerState:
-        return cls(program, tuple((name, idx) for idx, name in enumerate(textures, first_texture_unit)))
-
-    def set_state(self, ctx: DrawContext) -> None:
-        for uniform_name, texture_unit in self.uniforms:
-            self.program[uniform_name] = texture_unit
+    def from_textures(cls, program: VulkanShaderProgram, textures: dict[str, Texture],
+                      first_texture_unit: int = 0, set_id: int = 0) -> MultiTextureSamplerState:
+        bindings = []
+        for index, (name, texture) in enumerate(textures.items(), first_texture_unit):
+            metadata = program.sampled_textures.get(name)
+            bindings.append(TextureState(texture, metadata.binding if metadata else index,
+                                         metadata.desc_set if metadata else set_id))
+        return cls(program, tuple(bindings))
 
 @dataclass(frozen=True)
 class RenderPassState(State):
@@ -82,29 +77,16 @@ class RenderAreaState(State):
     height: int
 
 
-@dataclass(frozen=True)
-class ScissorState(State):
-    spo: ScissorProtocol
-
+@dataclass(frozen=True, eq=False)
+class ScissorState(_BaseScissorState):
+    scissor: ScissorProtocol
+    owned_by_camera: bool = False
     sets_state: bool = True
+    unsets_state: bool = True
+    enforced_state: bool = True
 
-    def set_state(self, ctx: DrawContext) -> None:
-        cb = getattr(getattr(ctx, "backend_ctx", None), "command_buffer", None)
-        if cb is None:
-            frame_ctx = getattr(ctx, "frame_context", None)
-            cb = getattr(getattr(frame_ctx, "backend_ctx", None), "command_buffer", None)
-        if cb is None:
-            surface_ctx = getattr(ctx, "surface_ctx", ctx)
-            cb = getattr(surface_ctx, "_active_command_buffer", None)
-        if cb is None:
-            surface_ctx = getattr(ctx, "surface_ctx", ctx)
-            cb = surface_ctx.frame_sync.get_current_command_buffer(surface_ctx.default_cb_id).command_buffer
-        rect = VkRect2D(
-            offset=VkOffset2D(x=int(self.spo.x), y=int(self.spo.y)),
-            extent=VkExtent2D(max(0, int(self.spo.width)), max(0, int(self.spo.height))),
-        )
-        rects = (VkRect2D * 1)(rect)
-        DeviceFunc.vkCmdSetScissor(cb, 0, 1, rects)
+    def apply_to_backend(self, ctx: DrawContext) -> None:
+        ctx.apply_scissor()
 
 @dataclass(frozen=True)
 class BlendStateEnable(State):
@@ -137,15 +119,15 @@ class DepthWriteState(State):
 
 @dataclass(frozen=True)
 class StencilFuncState(State):
-    func: Callable
+    func: CompareOp
     ref: int
     mask: int
 
 @dataclass(frozen=True)
 class StencilOpState(State):
-    fail: int
-    zfail: int
-    zpass: int
+    fail: StencilOp
+    z_fail: StencilOp
+    z_pass: StencilOp
 
 @dataclass(frozen=True)
 class PolygonModeState(State):
@@ -167,8 +149,8 @@ class ViewportState(_BaseViewportState):
 
 @dataclass(frozen=True)
 class UniformBufferState(State):
-    name: str
-    binding: int
+    region: Any
+    binding_index: int | None = None
 
 @dataclass(frozen=True)
 class ShaderUniformState(State):
@@ -182,10 +164,15 @@ class ShaderUniformState(State):
     sets_state: bool = True
 
     def set_state(self, ctx: DrawContext) -> None:
-        pc = self.program.push_constants[0]
         for name, value in self.data.items():
-            #self.program[name] = value
-            setattr(pc.struct, name, value)
+            for pc in self.program.push_constants:
+                if hasattr(pc.struct, name):
+                    target = getattr(pc.struct, name)
+                    if hasattr(target, "__len__"):
+                        target[:] = value
+                    else:
+                        setattr(pc.struct, name, value)
+                    break
 
     def __hash__(self) -> int:
         return id(self)
@@ -217,10 +204,7 @@ class DepthRangeState(State):
     near: float
     far: float
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("DepthRangeState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
@@ -228,10 +212,7 @@ class PolygonOffsetState(State):
     factor: float
     units: float
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("PolygonOffsetState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
@@ -239,50 +220,35 @@ class SampleCoverageState(State):
     value: float
     invert: bool = False
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("SampleCoverageState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
 class CullFaceState(State):
     face: CullFace
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("CullFaceState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
 class FrontFaceState(State):
     face: FrontFace
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("FrontFaceState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
 class StencilTestState(State):
     enabled: bool
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("StencilTestState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
 class StencilMaskState(State):
     mask: int
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("StencilMaskState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
@@ -292,10 +258,7 @@ class ColorMaskState(State):
     blue: bool
     alpha: bool
 
-    sets_state: bool = True
-
-    def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("ColorMaskState is not yet supported by Vulkan.")
+    sets_state: bool = False
 
 
 @dataclass(frozen=True)
@@ -303,4 +266,14 @@ class StencilClearState(State):
     sets_state: bool = True
 
     def set_state(self, ctx: DrawContext) -> None:
-        raise NotImplementedError("StencilClearState is not yet supported by Vulkan.")
+        from pyglet.libs.shared.vulkan_lib import vulkan_core as vk
+        depth = ctx.backend_ctx.renderpass.depth_attachment
+        if depth is None or depth.fmt not in (vk.VK_FORMAT_D24_UNORM_S8_UINT, vk.VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                             vk.VK_FORMAT_D16_UNORM_S8_UINT):
+            return
+        attachment = vk.VkClearAttachment(aspectMask=vk.VK_IMAGE_ASPECT_STENCIL_BIT,
+                                          clearValue=vk.VkClearValue(depthStencil=vk.VkClearDepthStencilValue(1.0, 0)))
+        rect = vk.VkClearRect(rect=vk.VkRect2D(vk.VkOffset2D(0, 0), ctx.backend_ctx.extent),
+                              baseArrayLayer=0, layerCount=1)
+        from ctypes import byref
+        DeviceFunc.vkCmdClearAttachments(ctx.backend_ctx.command_buffer, 1, byref(attachment), 1, byref(rect))
