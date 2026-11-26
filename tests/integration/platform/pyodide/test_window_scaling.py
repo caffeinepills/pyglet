@@ -9,7 +9,7 @@ import pytest
 if sys.platform != 'emscripten':
     pytest.skip('requires the Emscripten/Pyodide runtime', allow_module_level=True)
 
-from js import Event, MouseEvent, Object, PointerEvent, window as browser_window
+from js import Event, MouseEvent, Object, PointerEvent, WheelEvent, window as browser_window
 from pyodide.ffi import to_js
 
 import pyglet
@@ -39,7 +39,7 @@ def test_input_paths_share_window_coordinates(mode: Literal['platform', 'stretch
         canvas.style.height = '80px'
         event = SimpleNamespace(
             clientX=70, clientY=80, button=0, buttons=0, movementX=3, movementY=4,
-            deltaX=1, deltaY=2, pointerId=42, width=5, height=6, pressure=0.5,
+            deltaMode=0, deltaX=50, deltaY=100, pointerId=42, width=5, height=6, pressure=0.5,
             shiftKey=False, ctrlKey=False, altKey=False, metaKey=False,
             preventDefault=lambda: None,
         )
@@ -63,6 +63,8 @@ def test_input_paths_share_window_coordinates(mode: Literal['platform', 'stretch
             assert events[-1][:2] == pytest.approx(expected)
             if dispatch_name == 'on_mouse_motion':
                 assert events[-1][2:] == pytest.approx((6 * scale, -10 * scale))
+            elif dispatch_name == 'on_mouse_scroll':
+                assert events[-1][2:] == (0.5, -1)
             window.pop_handlers()
         window.push_handlers(on_mouse_drag=lambda *args: events.append(args))
         event.buttons = 1
@@ -88,6 +90,32 @@ def test_input_paths_share_window_coordinates(mode: Literal['platform', 'stretch
         window.close()
         pyglet.options.dpi_scaling = previous_mode
         Object.defineProperty(browser_window, 'devicePixelRatio', descriptor)
+
+
+@pytest.mark.parametrize(('mode', 'delta_x', 'delta_y', 'expected'), [
+    (0, -100, 25, (-1.0, -0.25)),
+    (1, 3, -1.5, (1.0, 0.5)),
+    (2, 0.5, -1, (40.0, 80.0)),
+])
+def test_browser_wheel_delta_modes(
+    mode: int, delta_x: float, delta_y: float, expected: tuple[float, float],
+) -> None:
+    window = Window(width=300, height=200)
+    try:
+        scrolls: list[tuple[float, float]] = []
+
+        def on_mouse_scroll(x: int, y: int, scroll_x: float, scroll_y: float) -> None:  # noqa: ARG001
+            scrolls.append((scroll_x, scroll_y))
+
+        window.push_handlers(on_mouse_scroll=on_mouse_scroll)
+        event = WheelEvent.new('wheel', to_js({
+            'deltaMode': mode, 'deltaX': delta_x, 'deltaY': delta_y, 'cancelable': True,
+        }, dict_converter=Object.fromEntries))
+        window.canvas.dispatchEvent(event)
+        assert scrolls == [expected]
+        assert event.defaultPrevented
+    finally:
+        window.close()
 
 
 @pytest.mark.parametrize('mode', ['platform', 'stretch'])

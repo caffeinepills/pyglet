@@ -119,12 +119,17 @@ The mouse scroll wheel generates the
     def on_mouse_scroll(x, y, scroll_x, scroll_y):
         pass
 
-The `scroll_y` parameter gives the number of "clicks" the wheel moved, with
-positive numbers indicating the wheel was pushed forward.  The `scroll_x`
-parameter is 0 for most mice, however some new mice such as the Apple Mighty
-Mouse use a ball instead of a wheel; the `scroll_x` parameter gives the
-horizontal movement in this case.  The scale of these numbers is not known; it
-is typically set by the user in their operating system preferences.
+Positive ``scroll_x`` values indicate scrolling right, and positive
+``scroll_y`` values indicate scrolling forwards (or up). One wheel notch has
+a magnitude of ``1.0`` on backends that can identify notches. High-resolution
+wheel input can produce fractional deltas. Continuous input such as trackpad
+gestures is converted to approximate wheel steps.
+
+Browsers report scroll amounts in CSS pixels, lines, or pages. Pyglet uses
+100 CSS pixels or three lines per step, and 80 steps per page. The amount
+reported for a physical notch can vary with the browser and system settings.
+The operating system's scroll preferences determine how wheel movements and
+trackpad gestures map to directions.
 
 Changing the mouse cursor
 -------------------------

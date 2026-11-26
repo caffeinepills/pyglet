@@ -2,6 +2,7 @@ import pytest
 
 from pyglet.gui.layout import VBox
 from pyglet.gui.widgets import ScrollableRegion, WidgetBase
+from pyglet.window import Window
 
 
 class RecordingWidget(WidgetBase):
@@ -79,6 +80,16 @@ def test_scrollable_region_clamps_real_camera_view_offset(test_window):
 
     assert region.scroll_y == 120
     assert region.view.position == (0, -120)
+
+
+def test_scrollable_region_positive_horizontal_delta_scrolls_right(test_window: Window) -> None:
+    region = ScrollableRegion(None, 0, 0, 100, 80, camera=test_window.camera, scroll_step=20)
+    region.content = VBox(region, 0, 0, 200, 80)
+
+    region.on_mouse_scroll(15, 15, 1, 0)
+
+    assert region.scroll_x == 20
+    assert region.view.position == (-20, 0)
 
 
 def test_scrollable_region_routes_input_to_scrolled_child(test_window):

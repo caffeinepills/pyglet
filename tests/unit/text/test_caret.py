@@ -1,4 +1,5 @@
 from collections import UserList
+from types import SimpleNamespace
 from unittest.mock import Mock, NonCallableMock, MagicMock
 
 import pytest
@@ -99,6 +100,15 @@ def test_color_setter_preserves_alpha_channel_when_setting_rgb_colors(
 def test_word_selection_bounds_exclude_trailing_space():
     assert caret.Caret._get_word_bounds("This paragraph has text", 8) == (5, 14)
     assert caret.Caret._get_word_bounds("This paragraph has text", 14) == (5, 14)
+
+
+def test_positive_horizontal_scroll_moves_caret_view_right() -> None:
+    test_caret = caret.Caret.__new__(caret.Caret)
+    test_caret._layout = SimpleNamespace(view_x=0, view_y=0)
+
+    test_caret.on_mouse_scroll(0, 0, 1, 0)
+
+    assert test_caret._layout.view_x == test_caret.SCROLL_INCREMENT
 
 
 def test_select_all_motion_selects_entire_document():

@@ -74,6 +74,7 @@ class PointerEvent(MouseEvent):
     twist: float
 
 class WheelEvent(MouseEvent):
+    deltaMode: int
     deltaX: float
     deltaY: float
 
