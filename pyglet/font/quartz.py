@@ -207,6 +207,15 @@ class QuartzGlyphRenderer(GlyphRenderer):
         super().__init__(font)
         self.font = font
 
+    @staticmethod
+    def _get_glyph_image(bitmap_context: c_void_p, width: int, height: int) -> pyglet.image.ImageData:
+        pitch = cg.CGBitmapContextGetBytesPerRow(bitmap_context)
+        pixels = cg.CGBitmapContextGetData(bitmap_context)
+        if not pixels:
+            raise RuntimeError("Core Graphics bitmap buffer could not be read.")
+        # Copy before releasing the context that owns the pixel buffer.
+        return pyglet.image.ImageData(width, height, "RGBA", string_at(pixels, pitch * height), pitch)
+
     def render_index(
         self, ct_font: c_void_p, glyph_index: int, stroke_size: float = 0, stroke_join: str = "round",
     ) -> Glyph:
@@ -278,34 +287,16 @@ class QuartzGlyphRenderer(GlyphRenderer):
             positions = (cocoapy.CGPoint * 1)(*[cocoapy.CGPoint(0, 0)])
             ct.CTFontDrawGlyphs(ct_font, glyphs, positions, 1, bitmap_context)
 
-        # Create an image to get the data out.
-        image_ref = c_void_p(cg.CGBitmapContextCreateImage(bitmap_context))
+        try:
+            glyph_image = self._get_glyph_image(bitmap_context, width, height)
+        finally:
+            cg.CGContextRelease(bitmap_context)
+            cg.CGColorSpaceRelease(colorSpace)
 
-        bytes_per_row = cg.CGImageGetBytesPerRow(image_ref)
-        data_provider = c_void_p(cg.CGImageGetDataProvider(image_ref))
-        image_data = c_void_p(cg.CGDataProviderCopyData(data_provider))
-        buffer_size = cf.CFDataGetLength(image_data)
-        buffer_ptr = cf.CFDataGetBytePtr(image_data)
-        if buffer_ptr:
-            buffer = string_at(buffer_ptr, buffer_size)
+        glyph = self.font.create_glyph(glyph_image)
+        glyph.set_bearings(baseline, lsb, advance)
 
-            cg.CGImageRelease(image_ref)
-            cf.CFRelease(image_data)
-            cf.CFRelease(bitmap_context)
-            cf.CFRelease(colorSpace)
-
-            glyph_image = pyglet.image.ImageData(width, height, "RGBA", buffer, bytes_per_row)
-
-            glyph = self.font.create_glyph(glyph_image)
-            glyph.set_bearings(baseline, lsb, advance)
-
-            return glyph
-
-        cg.CGImageRelease(image_ref)
-        cf.CFRelease(image_data)
-        cf.CFRelease(bitmap_context)
-        cf.CFRelease(colorSpace)
-        raise Exception("CG Image buffer could not be read.")
+        return glyph
 
     def render(self, text: str) -> Glyph:
         # Using CTLineDraw seems to be the only way to make sure that the text
@@ -396,40 +387,22 @@ class QuartzGlyphRenderer(GlyphRenderer):
 
         ct.CTLineDraw(line, bitmap_context)
         cf.CFRelease(line)
-        # Create an image to get the data out.
-        image_ref = c_void_p(cg.CGBitmapContextCreateImage(bitmap_context))
+        try:
+            glyph_image = self._get_glyph_image(bitmap_context, width, height)
+        finally:
+            cg.CGContextRelease(bitmap_context)
+            cg.CGColorSpaceRelease(colorSpace)
 
-        bytes_per_row = cg.CGImageGetBytesPerRow(image_ref)
-        data_provider = c_void_p(cg.CGImageGetDataProvider(image_ref))
-        image_data = c_void_p(cg.CGDataProviderCopyData(data_provider))
-        buffer_size = cf.CFDataGetLength(image_data)
-        buffer_ptr = cf.CFDataGetBytePtr(image_data)
-        if buffer_ptr:
-            buffer = string_at(buffer_ptr, buffer_size)
+        glyph = self.font.create_glyph(glyph_image)
 
-            cg.CGImageRelease(image_ref)
-            cf.CFRelease(image_data)
-            cf.CFRelease(bitmap_context)
-            cf.CFRelease(colorSpace)
+        # Flip baseline if it's vulkan since it's top left based.
+        # TODO: Revisit when flipping OpenGL coordinates.
+        if pyglet.options.backend == "vulkan":
+            glyph.set_bearings(height - baseline - self.font.descent - self.font.ascent, lsb, advance)
+        else:
+            glyph.set_bearings(baseline, lsb, advance)
 
-            glyph_image = pyglet.image.ImageData(width, height, "RGBA", buffer, bytes_per_row)
-
-            glyph = self.font.create_glyph(glyph_image)
-
-            # Flip baseline if it's vulkan since it's top left based.
-            # TODO: Revisit when flipping OpenGL coordinates.
-            if pyglet.options.backend == "vulkan":
-                glyph.set_bearings(height - baseline - self.font.descent - self.font.ascent, lsb, advance)
-            else:
-                glyph.set_bearings(baseline, lsb, advance)
-
-            return glyph
-
-        cg.CGImageRelease(image_ref)
-        cf.CFRelease(image_data)
-        cf.CFRelease(bitmap_context)
-        cf.CFRelease(colorSpace)
-        raise Exception("CG Image buffer could not be read.")
+        return glyph
 
 
 class QuartzFont(Font):
@@ -858,60 +831,60 @@ class QuartzFont(Font):
         run_array = c_void_p(ct.CTLineGetGlyphRuns(line))
         all_glyphs = []
         all_positions = []
-        if run_array:
-            for run in cocoapy.cfarray_to_list(run_array):
-                count = ct.CTRunGetGlyphCount(run)
+        try:
+            if run_array:
+                for run in cocoapy.cfarray_to_list(run_array):
+                    count = ct.CTRunGetGlyphCount(run)
 
-                glyph_array = (cocoapy.CGGlyph * count)()
-                position_array = (CGPoint * count)()
+                    if not count:
+                        continue
 
-                run_attributes = c_void_p(ct.CTRunGetAttributes(run))
+                    # Core Text may return NULL for either array even on a nonempty run.
+                    # Borrowed pointers remain valid while the line is retained.
+                    glyph_array = ct.CTRunGetGlyphsPtr(run)
+                    if not glyph_array:
+                        glyph_array = (cocoapy.CGGlyph * count)()
+                        ct.CTRunGetGlyphs(run, CFRange(0, 0), glyph_array)
 
-                # Store Glyph by (font name, index ID), as run's can contain more than 1 font.
-                run_ft = c_void_p(cf.CFDictionaryGetValue(run_attributes, cocoapy.kCTFontAttributeName))
-                cfstring = c_void_p(ct.CTFontCopyPostScriptName(run_ft))
-                font_name = str(cocoapy.cfstring_to_string(cfstring))
-                cf.CFRelease(cfstring)
+                    position_array = ct.CTRunGetPositionsPtr(run)
+                    if not position_array:
+                        position_array = (CGPoint * count)()
+                        ct.CTRunGetPositions(run, CFRange(0, 0), position_array)
 
-                ct.CTRunGetGlyphs(run, cocoapy.CFRange(0, 0), glyph_array)
-                ct.CTRunGetPositions(run, cocoapy.CFRange(0, 0), position_array)
+                    run_attributes = c_void_p(ct.CTRunGetAttributes(run))
 
-                # Get the offset of the run inside the full line
-                run_start_x = position_array[0].x
-                run_start_y = position_array[0].y
+                    # Store Glyph by (font name, index ID), as run's can contain more than 1 font.
+                    run_ft = c_void_p(cf.CFDictionaryGetValue(run_attributes, cocoapy.kCTFontAttributeName))
+                    cfstring = c_void_p(ct.CTFontCopyPostScriptName(run_ft))
+                    font_name = str(cocoapy.cfstring_to_string(cfstring))
+                    cf.CFRelease(cfstring)
 
-                run_glyphs = []
-                run_positions = []
+                    first_position = position_array[0]
+                    run_start_x, run_start_y = first_position.x, first_position.y
 
-                # Ensure all glyphs are rendered and stored.
-                self._render_glyph_indices_for_font(run_ft, font_name, list(glyph_array))
+                    indices = glyph_array[:count]
+                    self._render_glyph_indices_for_font(run_ft, font_name, indices)
 
-                for i in range(count):
-                    glyph_index = glyph_array[i]
+                    current_x = current_y = 0.0
+                    for i, glyph_index in enumerate(indices):
+                        glyph = self.glyphs[(font_name, glyph_index)]
+                        all_glyphs.append(glyph)
+                        if i + 1 < count:
+                            position = position_array[i + 1]
+                            next_x = position.x - run_start_x
+                            next_y = position.y - run_start_y
+                            kerning_x = next_x - current_x - glyph.advance
+                            kerning_y = next_y - current_y
+                            current_x, current_y = next_x, next_y
+                        else:
+                            kerning_x = kerning_y = 0
 
-                    glyph = self.glyphs[(font_name, glyph_index)]
-                    run_glyphs.append(glyph)
-                    current_x = position_array[i].x - run_start_x
-                    current_y = position_array[i].y - run_start_y
-
-                    if i + 1 < count:
-                        next_x = position_array[i + 1].x - run_start_x
-                        next_y = position_array[i + 1].y - run_start_y
-                        kerning_x = next_x - current_x - run_glyphs[i].advance
-                        kerning_y = next_y - current_y
-                    else:
-                        kerning_x = 0
-                        kerning_y = 0
-
-                    run_positions.append(GlyphPosition(kerning_x, kerning_y, 0, 0))
-
-                all_glyphs.extend(run_glyphs)
-                all_positions.extend(run_positions)
-
-        cf.CFRelease(string)
-        cf.CFRelease(attributes)
-        cf.CFRelease(cf_str)
-        cf.CFRelease(line)
+                        all_positions.append(GlyphPosition(kerning_x, kerning_y, 0, 0))
+        finally:
+            cf.CFRelease(string)
+            cf.CFRelease(attributes)
+            cf.CFRelease(cf_str)
+            cf.CFRelease(line)
         return all_glyphs, all_positions
 
     def get_glyphs(self, text: str, shaping: bool = False) -> tuple[list[Glyph], list[GlyphPosition]]:

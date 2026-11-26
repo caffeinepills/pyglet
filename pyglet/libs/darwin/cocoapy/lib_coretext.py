@@ -114,8 +114,14 @@ ct.CTRunGetGlyphCount.argtypes = [CTRunRef]
 ct.CTRunGetGlyphs.restype = None
 ct.CTRunGetGlyphs.argtypes = [CTRunRef, CFRange, POINTER(CGGlyph)]
 
+ct.CTRunGetGlyphsPtr.restype = POINTER(CGGlyph)
+ct.CTRunGetGlyphsPtr.argtypes = [CTRunRef]
+
 ct.CTRunGetPositions.restype = None
 ct.CTRunGetPositions.argtypes = [CTRunRef, CFRange, POINTER(CGPoint)]
+
+ct.CTRunGetPositionsPtr.restype = POINTER(CGPoint)
+ct.CTRunGetPositionsPtr.argtypes = [CTRunRef]
 
 ct.CTRunGetAttributes.restype = c_void_p
 ct.CTRunGetAttributes.argtypes = [CTRunRef]

@@ -117,6 +117,12 @@ cg.CGContextFillRect.argtypes = [c_void_p, CGRect]
 cg.CGBitmapContextCreate.restype = c_void_p
 cg.CGBitmapContextCreate.argtypes = [c_void_p, c_size_t, c_size_t, c_size_t, c_size_t, c_void_p, CGBitmapInfo]
 
+cg.CGBitmapContextGetData.restype = c_void_p
+cg.CGBitmapContextGetData.argtypes = [CGContextRef]
+
+cg.CGBitmapContextGetBytesPerRow.restype = c_size_t
+cg.CGBitmapContextGetBytesPerRow.argtypes = [CGContextRef]
+
 cg.CGBitmapContextCreateImage.restype = c_void_p
 cg.CGBitmapContextCreateImage.argtypes = [c_void_p]
 
