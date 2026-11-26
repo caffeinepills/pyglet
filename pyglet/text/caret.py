@@ -564,7 +564,7 @@ class Caret(EventDispatcher):
         The layout viewport is scrolled by `SCROLL_INCREMENT` pixels per
         "click".
         """
-        self._layout.view_x -= scroll_x * self.SCROLL_INCREMENT  # type: ignore[assignment]
+        self._layout.view_x += scroll_x * self.SCROLL_INCREMENT  # type: ignore[assignment]
         self._layout.view_y += scroll_y * self.SCROLL_INCREMENT  # type: ignore[assignment]
         return event.EVENT_HANDLED
 

@@ -333,11 +333,11 @@ class WaylandWindow(BaseWindow['WaylandScreen']):
         else:
             self.dispatch_event('on_mouse_motion', x, y, dx, dy)
 
-    def wl_pointer_axis_value120_handler(self, axis, value120):
+    def wl_pointer_axis_value120_handler(self, axis: int, value120: int) -> None:
         # TODO: combine discreet events & dispatch with wl_pointer frame event.
         # 0: vertical axis, 1: horizontal axis
         axis = self.wl_pointer.enums['axis'][axis].value
-        scroll_x, scroll_y = {0: (0, -1), 1: (-1, 0)}[axis]
+        scroll_x, scroll_y = {0: (0, -1), 1: (1, 0)}[axis]
         scroll_x *= (value120 / 120)
         scroll_y *= (value120 / 120)
         self.dispatch_event('on_mouse_scroll', self._mouse_x, self._mouse_y, scroll_x, scroll_y)

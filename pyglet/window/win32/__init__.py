@@ -1389,10 +1389,11 @@ class Win32Window(BaseWindow['Win32Screen']):
             'on_mouse_release', button, lParam)
 
     @Win32EventHandler(constants.WM_MOUSEWHEEL)
+    @Win32EventHandler(constants.WM_MOUSEHWHEEL)
     def _event_mousewheel(self, msg: int, wParam: int, lParam: int) -> int:
-        delta = c_short(wParam >> 16).value
-        self.dispatch_event('on_mouse_scroll',
-                            self._mouse_x, self._mouse_y, 0, delta / float(constants.WHEEL_DELTA))
+        delta = c_short(wParam >> 16).value / constants.WHEEL_DELTA
+        scroll_x, scroll_y = (delta, 0) if msg == constants.WM_MOUSEHWHEEL else (0, delta)
+        self.dispatch_event('on_mouse_scroll', self._mouse_x, self._mouse_y, scroll_x, scroll_y)
         return 0
 
     @Win32EventHandler(constants.WM_CLOSE)

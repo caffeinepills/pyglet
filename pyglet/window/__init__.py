@@ -1908,10 +1908,10 @@ class BaseWindow(EventDispatcher, Generic[ScreenT], metaclass=_WindowMetaclass):
         def on_mouse_scroll(self, x: int, y: int, scroll_x: float, scroll_y: float) -> EVENT_HANDLE_STATE:
             """The mouse wheel was scrolled.
 
-            Note that most mice have only a vertical scroll wheel, so
-            scroll_x is usually 0.  An exception to this is the Apple Mighty
-            Mouse, which has a mouse ball in place of the wheel which allows
-            both ``scroll_x`` and ``scroll_y`` movement.
+            A wheel notch is one unit, when the backend can identify notches.
+            Continuous input and browser wheel deltas are converted to
+            approximate wheel units and can be fractional.
+            Scroll direction follows the operating system's scroll preferences.
 
             Args:
                 x:
@@ -1919,9 +1919,9 @@ class BaseWindow(EventDispatcher, Generic[ScreenT], metaclass=_WindowMetaclass):
                 y:
                     Distance in pixels from the bottom edge of the window.
                 scroll_x:
-                    Amount of movement on the horizontal axis.
+                    Horizontal scroll delta. Positive values scroll right.
                 scroll_y:
-                    Amount of movement on the vertical axis.
+                    Vertical scroll delta. Positive values scroll up.
 
             :event:
             """

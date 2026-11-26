@@ -29,6 +29,9 @@ if TYPE_CHECKING:
     from pyglet.graphics.api.base import SurfaceContext
     from pyglet.graphics.api.webgl.context import WebGL2SurfaceContext
 
+# CSS pixels, lines, and pages converted to approximate wheel steps.
+_wheel_step_scales = {0: 1 / 100, 1: 1 / 3, 2: 80.0}
+
 # Keymap using `event.code`
 _key_map = {
     # Alpha
@@ -868,7 +871,8 @@ class EmscriptenWindow(BaseWindow['EmscriptenScreen']):
     def _event_mouse_scroll(self, event: WheelEvent) -> None:
         event.preventDefault()
         x, y, _, _ = self._get_input_coordinates(event)
-        self.dispatch_event('on_mouse_scroll', x, y, event.deltaX, event.deltaY)
+        scale = _wheel_step_scales.get(event.deltaMode, _wheel_step_scales[0])
+        self.dispatch_event('on_mouse_scroll', x, y, event.deltaX * scale, -event.deltaY * scale)
 
     @CanvasEventHandler("mouseenter")
     async def _event_mouse_enter(self, event: MouseEvent) -> None:

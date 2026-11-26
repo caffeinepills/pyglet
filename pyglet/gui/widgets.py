@@ -1154,7 +1154,7 @@ class ScrollableRegion(WidgetBase, LayoutCell[LayoutCellStyle]):
         if self.vertical:
             self.set_scroll(y=self._scroll_y - scroll_y * self.scroll_step)
         if self.horizontal and scroll_x:
-            self.set_scroll(x=self._scroll_x - scroll_x * self.scroll_step)
+            self.set_scroll(x=self._scroll_x + scroll_x * self.scroll_step)
         cx, cy = self._content_coordinates(x, y)
         for widget in self._widgets:
             widget.on_mouse_scroll(int(cx), int(cy), scroll_x, scroll_y)

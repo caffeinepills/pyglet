@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import ceil, copysign
 from typing import TYPE_CHECKING, Any
 
 import pyglet
@@ -409,7 +410,15 @@ class PygletView(NSView):  # type: ignore[valid-type, misc]
     @objc_method('v@')
     def scrollWheel_(self, nsevent: ObjCInstance) -> None:
         x, y = getMousePosition(self, nsevent)
-        scroll_x, scroll_y = getMouseDelta(nsevent)
+        # AppKit wheel deltas are positive toward the left and up.
+        if nsevent.hasPreciseScrollingDeltas():
+            scroll_x = -nsevent.scrollingDeltaX() / 10
+            scroll_y = nsevent.scrollingDeltaY() / 10
+        else:
+            # AppKit can report a fraction for a discrete wheel tick.
+            delta_x, delta_y = -nsevent.deltaX(), nsevent.deltaY()
+            scroll_x = copysign(ceil(abs(delta_x)), delta_x)
+            scroll_y = copysign(ceil(abs(delta_y)), delta_y)
         self._window.dispatch_event('on_mouse_scroll', x, y, scroll_x, scroll_y)
 
     @objc_method('v@')
