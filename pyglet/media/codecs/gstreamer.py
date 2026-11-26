@@ -101,7 +101,7 @@ class _MessageHandler:
         return Gst.FlowReturn.OK if self.source._queue_packet(mem) else Gst.FlowReturn.FLUSHING
 
     def need_data(self, appsrc: Gst.Element, length: int) -> None:
-        """Feed the encoded bytes requested by appsrc in random-access mode."""
+        """Feed the next chunk of encoded bytes to appsrc."""
         data = self.source._input_data
         start = self.source._input_offset
         if start >= len(data):
@@ -180,7 +180,12 @@ class GStreamerSource(StreamingSource):
             self._input_data = file.read()
             self._input.set_property("size", len(self._input_data))
             self._input.set_property("format", Gst.Format.BYTES)
-            Gst.util_set_object_arg(self._input, "stream-type", "random-access")
+            if filename.endswith((".flac", ".mp3")):
+                Gst.util_set_object_arg(self._input, "stream-type", "seekable")
+                self._input.set_property("blocksize", 64 * 1024)
+            else:
+                # Preserves seek access for Ogg and MP4, seekable seems to change seeking for them.
+                Gst.util_set_object_arg(self._input, "stream-type", "random-access")
             self._input.connect("need-data", msg_handler.need_data)
             self._input.connect("seek-data", msg_handler.seek_data)
 
