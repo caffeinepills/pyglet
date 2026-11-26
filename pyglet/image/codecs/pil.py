@@ -1,4 +1,6 @@
 import os.path
+from contextlib import nullcontext
+from typing import BinaryIO
 
 from pyglet.image import ImageData
 from pyglet.image.codecs import ImageDecodeException, ImageDecoder, ImageEncodeException, ImageEncoder
@@ -15,29 +17,24 @@ class PILImageDecoder(ImageDecoder):
     # def get_animation_file_extensions(self):
     #     return ['.gif', '.ani']
 
-    def decode(self, filename, file):
-        if not file:
-            file = open(filename, 'rb')
+    def decode(self, filename: str, file: BinaryIO | None) -> ImageData:
+        with (open(filename, 'rb') if file is None else nullcontext(file)) as stream:
+            try:
+                with Image.open(stream) as source:
+                    # Convert bitmap and palette images to component
+                    image = source.convert() if source.mode in ('1', 'P') else source
+                    mode = image.mode
+                    if mode not in ('L', 'LA', 'RGB', 'RGBA'):
+                        raise ImageDecodeException('Unsupported mode "%s"' % mode)
+                    width, height = image.size
+                    # Export packed rows bottom-up without allocating a transposed image.
+                    pixels = image.tobytes('raw', mode, 0, -1)
+            except ImageDecodeException:
+                raise
+            except Exception as e:
+                raise ImageDecodeException('PIL cannot read %r: %s' % (filename or file, e)) from e
 
-        try:
-            image = Image.open(file)
-        except Exception as e:
-            raise ImageDecodeException('PIL cannot read %r: %s' % (filename or file, e))
-
-        try:
-            image = image.transpose(Image.FLIP_TOP_BOTTOM)
-        except Exception as e:
-            raise ImageDecodeException('PIL failed to transpose %r: %s' % (filename or file, e))
-
-        # Convert bitmap and palette images to component
-        if image.mode in ('1', 'P'):
-            image = image.convert()
-
-        if image.mode not in ('L', 'LA', 'RGB', 'RGBA'):
-            raise ImageDecodeException('Unsupported mode "%s"' % image.mode)
-        width, height = image.size
-
-        return ImageData(width, height, image.mode, image.tobytes())
+        return ImageData(width, height, mode, pixels)
 
 
 class PILImageEncoder(ImageEncoder):
