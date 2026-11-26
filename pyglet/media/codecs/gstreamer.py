@@ -5,10 +5,9 @@ from __future__ import annotations
 import queue
 import atexit
 import weakref
-import tempfile
 
 from threading import Event, Thread
-from typing import BinaryIO, IO, cast
+from typing import BinaryIO, cast
 
 from pyglet.util import DecodeException
 from .base import StreamingSource, AudioData, AudioFormat, StaticSource
@@ -55,7 +54,7 @@ class _MessageHandler:
         """The main message callback"""
         if message.type == Gst.MessageType.EOS:
 
-            self.source.queue.put(self.source.sentinel)
+            self.source._queue_packet(self.source.sentinel)
             if not self.source.caps:
                 raise GStreamerDecodeException("Appears to be an unsupported file")
 
@@ -93,12 +92,35 @@ class _MessageHandler:
 
     def new_sample(self, sink: Gst.Element) -> Gst.FlowReturn:
         """new-sample callback"""
-        # Pull the sample, and get its buffer:
-        buffer = sink.emit('pull-sample').get_buffer()
+        sample = sink.emit('pull-sample')
+        if sample is None:
+            return Gst.FlowReturn.FLUSHING
+        buffer = sample.get_buffer()
         # Extract a copy of the memory in the buffer:
         mem = buffer.extract_dup(0, buffer.get_size())
-        self.source.queue.put(mem)
-        return Gst.FlowReturn.OK
+        return Gst.FlowReturn.OK if self.source._queue_packet(mem) else Gst.FlowReturn.FLUSHING
+
+    def need_data(self, appsrc: Gst.Element, length: int) -> None:
+        """Feed the encoded bytes requested by appsrc in random-access mode."""
+        data = self.source._input_data
+        start = self.source._input_offset
+        if start >= len(data):
+            appsrc.emit("end-of-stream")
+            return
+
+        end = min(start + length, len(data))
+        buffer = Gst.Buffer.new_wrapped(data[start:end])
+        buffer.offset = start
+        buffer.offset_end = end
+        self.source._input_offset = end
+        appsrc.emit("push-buffer", buffer)
+
+    def seek_data(self, appsrc: Gst.Element, offset: int) -> bool:
+        """Reposition appsrc within the owned encoded bytes."""
+        if not 0 <= offset <= len(self.source._input_data):
+            return False
+        self.source._input_offset = offset
+        return True
 
     @staticmethod
     def unknown_type(uridecodebin: Gst.Element, decodebin: Gst.Element, caps: Gst.Caps) -> None:
@@ -111,16 +133,19 @@ class _MessageHandler:
 
 class GStreamerSource(StreamingSource):
     _pipeline: Gst.Pipeline
-    _file: IO[bytes]
-    filesrc: Gst.Element
+    _input: Gst.Element
+    _input_data: bytes
+    _input_offset: int
+    _bus_handler: int | None
     decoder: Gst.Element
     converter: Gst.Element
     appsink: Gst.Element
-    caps_handler: int
+    caps_handler: int | None
     pads: bool
     caps: bool
     queue: queue.Queue[bytes | object]
     _finished: Event
+    _stopping: Event
     is_ready: Event
 
     source_instances: weakref.WeakSet[GStreamerSource] = weakref.WeakSet()
@@ -128,29 +153,41 @@ class GStreamerSource(StreamingSource):
 
     def __init__(self, filename: str, file: BinaryIO | None = None) -> None:
         self._pipeline = Gst.Pipeline()
+        self._stopping = Event()
+        self._finished = Event()
+        self.is_ready = Event()
+        self.queue = queue.Queue(5)
+        self.caps_handler = None
+        self._bus_handler = None
+        self._input_data = b""
+        self._input_offset = 0
 
         msg_handler = _MessageHandler(self)
 
-        if file:
-            file.seek(0)
-            self._file = tempfile.NamedTemporaryFile(buffering=False)
-            self._file.write(file.read())
-            filename = self._file.name
-
         # Create the major parts of the pipeline:
-        self.filesrc = Gst.ElementFactory.make("filesrc", None)
+        self._input = Gst.ElementFactory.make("filesrc" if file is None else "appsrc", None)
         self.decoder = Gst.ElementFactory.make("decodebin", None)
         self.converter = Gst.ElementFactory.make("audioconvert", None)
         self.appsink = Gst.ElementFactory.make("appsink", None)
-        if not all((self.filesrc, self.decoder, self.converter, self.appsink)):
+        if not all((self._input, self.decoder, self.converter, self.appsink)):
             raise GStreamerDecodeException("Could not initialize GStreamer.")
 
-        # Set callbacks for EOS and error messages:
-        self._pipeline.bus.add_signal_watch()
-        self._pipeline.bus.connect("message", msg_handler.message)
+        if file is None:
+            self._input.set_property("location", filename)
+        else:
+            # Own the input bytes so the caller can close the file after loading.
+            file.seek(0)
+            self._input_data = file.read()
+            self._input.set_property("size", len(self._input_data))
+            self._input.set_property("format", Gst.Format.BYTES)
+            Gst.util_set_object_arg(self._input, "stream-type", "random-access")
+            self._input.connect("need-data", msg_handler.need_data)
+            self._input.connect("seek-data", msg_handler.seek_data)
 
-        # Set the file path to load:
-        self.filesrc.set_property("location", filename)
+        # Set callbacks for EOS and error messages:
+        bus = self._pipeline.get_bus()
+        self._bus_handler = bus.connect("message", msg_handler.message)
+        bus.add_signal_watch()
 
         # Set decoder callback handlers:
         self.decoder.connect("pad-added", msg_handler.pad_added)
@@ -167,12 +204,12 @@ class GStreamerSource(StreamingSource):
         self.appsink.connect("new-sample", msg_handler.new_sample)
 
         # Add all components to the pipeline:
-        self._pipeline.add(self.filesrc)
+        self._pipeline.add(self._input)
         self._pipeline.add(self.decoder)
         self._pipeline.add(self.converter)
         self._pipeline.add(self.appsink)
         # Link together necessary components:
-        self.filesrc.link(self.decoder)
+        self._input.link(self.decoder)
         self.decoder.link(self.converter)
         self.converter.link(self.appsink)
 
@@ -182,34 +219,44 @@ class GStreamerSource(StreamingSource):
         # Set by callbacks:
         self.pads = False
         self.caps = False
-        self._pipeline.set_state(Gst.State.PLAYING)
-        self.queue = queue.Queue(5)
-        self._finished = Event()
-        # Wait until the is_ready event is set by a callback:
-        self.is_ready = Event()
-        if not self.is_ready.wait(timeout=1):
+        state = self._pipeline.set_state(Gst.State.PLAYING)
+        if state == Gst.StateChangeReturn.FAILURE or not self.is_ready.wait(timeout=1):
+            self.delete()
             raise GStreamerDecodeException('Initialization Error')
 
         GStreamerSource.source_instances.add(self)
 
     def __del__(self) -> None:
-        self.delete()
+        if hasattr(self, '_pipeline'):
+            self.delete()
 
     def delete(self) -> None:
-        if hasattr(self, '_file'):
-            self._file.close()
-
+        if self._stopping.is_set():
+            return
+        self._stopping.set()
+        if self.caps_handler is not None:
+            self.appsink.get_static_pad("sink").disconnect(self.caps_handler)
+        self._pipeline.set_state(Gst.State.NULL)
+        if self._bus_handler is not None:
+            bus = self._pipeline.get_bus()
+            bus.disconnect(self._bus_handler)
+            bus.remove_signal_watch()
+        self._input_data = b""
         try:
-            while not self.queue.empty():
+            while True:
                 self.queue.get_nowait()
-            sink = self.appsink.get_static_pad("sink")
-            if sink.handler_is_connected(self.caps_handler):
-                sink.disconnect(self.caps_handler)
-            self._pipeline.set_state(Gst.State.NULL)
-            self._pipeline.bus.remove_signal_watch()
-            self.filesrc.set_property("location", None)
-        except (ImportError, AttributeError):
+        except queue.Empty:
             pass
+
+    def _queue_packet(self, packet: bytes | object) -> bool:
+        # A full queue must not keep a streaming callback alive during shutdown.
+        while not self._stopping.is_set():
+            try:
+                self.queue.put(packet, timeout=0.1)
+            except queue.Full:
+                continue
+            return True
+        return False
 
     def get_audio_data(self, num_bytes: int) -> AudioData | None:
         if self._finished.is_set():
