@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import warnings
+from contextlib import suppress
 from ctypes import (
     HRESULT,
     POINTER,
@@ -34,7 +35,7 @@ from pyglet.libs.win32.constants import (
     WINDOWS_10_ANNIVERSARY_UPDATE_OR_GREATER,
     WINDOWS_VISTA_OR_GREATER,
 )
-from pyglet.libs.win32.types import BYTE, PROPVARIANT
+from pyglet.libs.win32.types import BYTE, IStream, PROPVARIANT
 from pyglet.media import Source
 from pyglet.media.codecs import AudioData, AudioFormat, MediaDecoder, StaticSource, VideoFormat
 from pyglet.util import DecodeException, debug_print
@@ -424,12 +425,17 @@ class WMFSource(Source):
     decode_audio = True
     decode_video = True
 
+    _stream_data: bytes | None
+    _stream_obj: IStream | None
+    _imf_bytestream: IMFByteStream | None
+
     def __init__(self, filename, file=None):
         assert any([self.decode_audio, self.decode_video]), "Source must decode audio, video, or both, not none."
         self._current_video_sample = None
         self._current_video_buffer = None
         self._timestamp = 0
         self._attributes = None
+        self._stream_data = None
         self._stream_obj = None
         self._imf_bytestream = None
         self._wfx = None
@@ -438,10 +444,8 @@ class WMFSource(Source):
         # Retain the requested frame to it can be discarded before exposing auto to looping source.
         self._audio_seek_frame = None
 
-        self.set_config_attributes()
-
-        # Create SourceReader
         self._source_reader = IMFSourceReader()
+        self.set_config_attributes()
 
         # If it's a file, we need to load it as a stream.
         if file is not None:
@@ -452,19 +456,11 @@ class WMFSource(Source):
             data_len = len(data)
 
             if WINDOWS_7_OR_GREATER:
-                # Stole code from GDIPlus for older IStream support.
-                hglob = kernel32.GlobalAlloc(GMEM_MOVEABLE, data_len)
-                ptr = kernel32.GlobalLock(hglob)
-                memmove(ptr, data, data_len)
-                kernel32.GlobalUnlock(hglob)
-
-                # Create IStream
-                self._stream_obj = com.pIUnknown()
-                ole32.CreateStreamOnHGlobal(hglob, True, byref(self._stream_obj))
-
-                # MFCreateMFByteStreamOnStreamEx for future async operations exists, however Windows 8+ only. Requires new interface
-                # (Also unsure how/if new Windows async functions and callbacks work with )
-                MFCreateMFByteStreamOnStream(self._stream_obj, byref(self._imf_bytestream))
+                try:
+                    self._stream_obj = self._create_input_stream(data)
+                    MFCreateMFByteStreamOnStream(self._stream_obj, byref(self._imf_bytestream))
+                except OSError as err:
+                    raise DecodeException(err) from None
             else:
                 # Vista does not support MFCreateMFByteStreamOnStream.
                 # HACK: Create file in Windows temp folder to write our byte data to.
@@ -512,6 +508,43 @@ class WMFSource(Source):
             ole32.PropVariantClear(byref(prop))
         except OSError:
             warnings.warn(f"Could not determine duration of media file: '{filename}'.")
+
+    def _create_input_stream(self, data: bytes) -> IStream:
+        if len(data) <= 0xFFFFFFFF:  # IWICStream accepts a DWORD length.
+            from pyglet.libs.win32.wincodec import IWICStream  # noqa: PLC0415
+
+            stream = IWICStream()
+            try:
+                from pyglet.image.codecs.wic import get_factory  # noqa: PLC0415
+
+                get_factory().CreateStream(byref(stream))
+                stream.InitializeFromMemory(cast(data, POINTER(BYTE)), len(data))
+            except (ImportError, OSError):
+                if stream:
+                    stream.Release()
+            else:
+                # Media Foundation may read or seek long after opening the source.
+                self._stream_data = data
+                return stream
+
+        # Keep an owning stream for large inputs and systems without WIC.
+        stream = IStream()
+        hglob = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not hglob:
+            raise OSError("Could not allocate a Media Foundation stream buffer")
+        try:
+            ptr = kernel32.GlobalLock(hglob)
+            if not ptr:
+                raise OSError("Could not lock the Media Foundation stream buffer")
+            try:
+                memmove(ptr, data, len(data))
+            finally:
+                kernel32.GlobalUnlock(hglob)
+            ole32.CreateStreamOnHGlobal(hglob, True, byref(stream))
+        except BaseException:
+            kernel32.GlobalFree(hglob)
+            raise
+        return stream
 
     def _load_audio(self, stream=MF_SOURCE_READER_FIRST_AUDIO_STREAM):
         """Prepares the audio stream for playback by detecting if it's compressed and attempting to decompress to PCM.
@@ -847,11 +880,15 @@ class WMFSource(Source):
         if self._source_reader:
             self._source_reader.Release()
 
+        if self._imf_bytestream:
+            if self._stream_data is not None:
+                # Cancel pending I/O before dropping the borrowed buffer.
+                with suppress(OSError):
+                    self._imf_bytestream.Close()
+            self._imf_bytestream.Release()
+
         if self._stream_obj:
             self._stream_obj.Release()
-
-        if self._imf_bytestream:
-            self._imf_bytestream.Release()
 
         if self._current_video_sample:
             self._current_video_buffer.Release()
