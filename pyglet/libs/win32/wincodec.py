@@ -182,7 +182,7 @@ class IWICBitmapFrameEncode(com.pIUnknown):
         ('WritePixels',
          com.STDMETHOD(UINT, UINT, UINT, POINTER(BYTE))),
         ('WriteSource',
-         com.STDMETHOD()),
+         com.STDMETHOD(com.pIUnknown, c_void_p)),
         ('Commit',
          com.STDMETHOD()),
         ('GetMetadataQueryWriter',

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from ctypes import byref, memmove
-from typing import BinaryIO, Sequence
+from ctypes import Array, POINTER, byref, cast, memmove, sizeof
+from typing import Any, BinaryIO, Sequence
 
 from pyglet.enums import PixelFormat
 from pyglet.image import ImageData, get_default_decode_policy
@@ -16,6 +16,7 @@ from pyglet.libs.win32.wincodec import (
     GUID_ContainerFormatTiff,
     GUID_ContainerFormatWmp,
     GUID_WICPixelFormat24bppBGR,
+    GUID_WICPixelFormat24bppRGB,
     GUID_WICPixelFormat32bppBGRA,
     GUID_WICPixelFormat32bppRGBA,
     IID_IWICImagingFactory1,
@@ -27,6 +28,7 @@ from pyglet.libs.win32.wincodec import (
     IWICBitmapFlipRotator,
     IWICBitmapFrameDecode,
     IWICBitmapFrameEncode,
+    IWICBitmapSource,
     IWICFormatConverter,
     IWICImagingFactory,
     IWICImagingFactory2,
@@ -99,6 +101,13 @@ def _get_bitmap_frame(bitmap_decoder: IWICBitmapDecoder, frame_index: int) -> IW
     return bitmap
 
 _guid_null = com.GUID()
+_max_uint = (1 << 32) - 1
+_rgb_formats = {
+    "RGB": GUID_WICPixelFormat24bppRGB,
+    "BGR": GUID_WICPixelFormat24bppBGR,
+    "RGBA": GUID_WICPixelFormat32bppRGBA,
+    "BGRA": GUID_WICPixelFormat32bppBGRA,
+}
 
 
 def get_bitmap(width: int, height: int, target_fmt: com.GUID=GUID_WICPixelFormat32bppBGRA) -> IWICBitmap:
@@ -114,8 +123,8 @@ def get_bitmap(width: int, height: int, target_fmt: com.GUID=GUID_WICPixelFormat
     return bitmap
 
 
-def extract_image_data(bitmap: IWICBitmap, target_fmt: com.GUID | None = None) -> ImageData:
-    """Extra image data from IWICBitmap into ImageData, specifying target format.
+def extract_image_data(bitmap: IWICBitmapSource, target_fmt: com.GUID | None = None) -> ImageData:
+    """Extract image data from a WIC bitmap source in the requested format.
 
     .. note:: ``bitmap`` is released before this function returns.
     """
@@ -131,53 +140,39 @@ def extract_image_data(bitmap: IWICBitmap, target_fmt: com.GUID | None = None) -
     else:
         fmt = "BGRA"
 
-    native_width = UINT()
-    native_height = UINT()
-
-    bitmap.GetSize(byref(native_width), byref(native_height))
-
-    width = native_width.value
-    height = native_height.value
-
-    # Get image pixel format
-    pf = com.GUID()
-    bitmap.GetPixelFormat(byref(pf))
-
-    # If target format is not what we want (32bit BGRA) convert it.
-    if pf != target_fmt:
-        converter = IWICFormatConverter()
-        _factory.CreateFormatConverter(byref(converter))
-
-        conversion_possible = BOOL()
-        converter.CanConvert(pf, target_fmt, byref(conversion_possible))
-
-        # 99% of the time conversion will be possible to the preferred format.
-        # However, check and fall back to 24-bit BGR if it is not.
-        if not conversion_possible:
-            target_fmt = GUID_WICPixelFormat24bppBGR
-            fmt = 'BGR'
-
-        converter.Initialize(bitmap, target_fmt, WICBitmapDitherTypeNone, None, 0, WICBitmapPaletteTypeCustom)
-
-        bitmap.Release()
-        bitmap = converter
-
-    # Most images are loaded with a negative pitch, which requires list comprehension to fix.
-    # Create a flipped bitmap through the decoder rather through Python to increase performance.
+    converter = IWICFormatConverter()
     flipper = IWICBitmapFlipRotator()
-    _factory.CreateBitmapFlipRotator(byref(flipper))
+    source = bitmap
+    try:
+        native_width = UINT()
+        native_height = UINT()
+        bitmap.GetSize(byref(native_width), byref(native_height))
+        width = native_width.value
+        height = native_height.value
 
-    flipper.Initialize(bitmap, WICBitmapTransformFlipVertical)
+        pf = com.GUID()
+        bitmap.GetPixelFormat(byref(pf))
+        if pf != target_fmt:
+            _factory.CreateFormatConverter(byref(converter))
+            conversion_possible = BOOL()
+            converter.CanConvert(pf, target_fmt, byref(conversion_possible))
+            if not conversion_possible:
+                target_fmt = GUID_WICPixelFormat24bppBGR
+                fmt = 'BGR'
+            converter.Initialize(bitmap, target_fmt, WICBitmapDitherTypeNone, None, 0, WICBitmapPaletteTypeCustom)
+            source = converter
 
-    stride = len(fmt) * width
-    buffer_size = stride * height
-
-    buffer = (BYTE * buffer_size)()
-
-    flipper.CopyPixels(None, stride, buffer_size, byref(buffer))
-
-    flipper.Release()
-    bitmap.Release()  # Can be converter.
+        # Return positive pitch so texture uploads can use the pixels directly.
+        _factory.CreateBitmapFlipRotator(byref(flipper))
+        flipper.Initialize(source, WICBitmapTransformFlipVertical)
+        stride = len(fmt) * width
+        buffer_size = stride * height
+        buffer = (BYTE * buffer_size)()
+        flipper.CopyPixels(None, stride, buffer_size, byref(buffer))
+    finally:
+        for obj in (flipper, converter, bitmap):
+            if obj:
+                obj.Release()
 
     return ImageData(width, height, fmt, buffer)
 
@@ -194,27 +189,37 @@ class WICDecoder(ImageDecoder):
     def get_file_extensions(self) -> list[str]:
         return ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.ico', '.jxr', '.hdp', '.wdp']
 
-    def _load_bitmap_decoder(self, filename: str, file: BinaryIO | None = None) -> tuple[IWICBitmapDecoder, IStream]:
-        data = file.read()
+    @staticmethod
+    def _create_decode_stream(data: bytes) -> IStream:
+        if len(data) <= _max_uint:
+            stream = IWICStream()
+            _factory.CreateStream(byref(stream))
+            try:
+                stream.InitializeFromMemory(cast(data, POINTER(BYTE)), len(data))
+            except OSError:
+                stream.Release()
+                raise
+            return stream
 
+        # IWICStream takes a DWORD length. Keep the HGLOBAL path for larger inputs.
+        stream = IStream()
         # Create a HGLOBAL with image data
         hglob = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
-        ptr = kernel32.GlobalLock(hglob)
-        memmove(ptr, data, len(data))
-        kernel32.GlobalUnlock(hglob)
-
-        # Create IStream for the HGLOBAL
-        stream = IStream()
-        ole32.CreateStreamOnHGlobal(hglob, True, byref(stream))
-
-        # Load image from stream
-        decoder = IWICBitmapDecoder()
-        status = self._factory.CreateDecoderFromStream(stream, None, WICDecodeMetadataCacheOnDemand, byref(decoder))
-        if status != 0:
-            stream.Release()
-            raise ImageDecodeException('WIC cannot load %r' % (filename or file))
-
-        return decoder, stream
+        if not hglob:
+            raise OSError("Could not allocate a WIC stream buffer")
+        try:
+            ptr = kernel32.GlobalLock(hglob)
+            if not ptr:
+                raise OSError("Could not lock the WIC stream buffer")
+            try:
+                memmove(ptr, data, len(data))
+            finally:
+                kernel32.GlobalUnlock(hglob)
+            ole32.CreateStreamOnHGlobal(hglob, True, byref(stream))
+        except BaseException:
+            kernel32.GlobalFree(hglob)
+            raise
+        return stream
 
     def _load_bitmap_decoder_from_filename(self, filename: str) -> IWICBitmapDecoder:
         """Create a decoder directly from a path, without copying it through Python memory."""
@@ -225,22 +230,31 @@ class WICDecoder(ImageDecoder):
         return decoder
 
     def decode(self, filename: str, file: BinaryIO | None) -> ImageData:
-        if not file:
+        if file is None:
             bitmap_decoder = self._load_bitmap_decoder_from_filename(filename)
             try:
-                bitmap = _get_bitmap_frame(bitmap_decoder, 0)
-                image_data = extract_image_data(bitmap)
+                return extract_image_data(_get_bitmap_frame(bitmap_decoder, 0))
             finally:
                 bitmap_decoder.Release()
-        else:
-            bitmap_decoder, stream = self._load_bitmap_decoder(filename, file)
+
+        # WIC borrows this buffer until the decoder and stream are released.
+        data = file.read()
+        stream = None
+        bitmap_decoder = IWICBitmapDecoder()
+        try:
             try:
-                bitmap = _get_bitmap_frame(bitmap_decoder, 0)
-                image_data = extract_image_data(bitmap)
-            finally:
+                stream = self._create_decode_stream(data)
+                self._factory.CreateDecoderFromStream(
+                    stream, None, WICDecodeMetadataCacheOnDemand, byref(bitmap_decoder),
+                )
+            except OSError as exc:
+                raise ImageDecodeException(f"WIC cannot load {filename or file!r}") from exc
+            return extract_image_data(_get_bitmap_frame(bitmap_decoder, 0))
+        finally:
+            if bitmap_decoder:
                 bitmap_decoder.Release()
+            if stream:
                 stream.Release()
-        return image_data
 
     @staticmethod
     def get_property_value(reader: IWICMetadataQueryReader, metadata_name: str) -> int:
@@ -281,6 +295,54 @@ extension_to_container = {
 }
 
 
+def _check_pixel_buffer(data: bytes | Array[Any], size: int) -> None:
+    available = len(data) if isinstance(data, bytes) else sizeof(data)
+    if not 0 <= size <= min(_max_uint, available):
+        raise ImageEncodeException("Invalid WIC pixel buffer size")
+
+
+def _prepare_encoder_pixels(image: ImageData, fmt: str, pitch: int) -> bytes | Array[Any]:
+    source_fmt = image._current_format  # noqa: SLF001
+    source_guid = _rgb_formats.get(source_fmt)
+    top_down = image._current_pitch < 0  # noqa: SLF001
+    if image.data_type != "B" or source_guid is None or (source_fmt == fmt and top_down):
+        return image.get_bytes(fmt, -pitch)
+
+    source_pitch = image.width * len(source_fmt)
+    source_size = source_pitch * image.height
+    data = image.get_bytes(source_fmt, -source_pitch if top_down else source_pitch)
+    _check_pixel_buffer(data, source_size)
+    size = pitch * image.height
+    if not 0 <= size <= _max_uint:
+        raise ImageEncodeException("Invalid WIC pixel buffer size")
+
+    bitmap = IWICBitmap()
+    converter = IWICFormatConverter()
+    flipper = IWICBitmapFlipRotator()
+    source: IWICBitmapSource = bitmap
+    try:
+        # Borrow ctypes arrays via byref to avoid a reference cycle in cast.
+        source_pointer = cast(data if isinstance(data, bytes) else byref(data), POINTER(BYTE))
+        _factory.CreateBitmapFromMemory(
+            image.width, image.height, source_guid, source_pitch, source_size, source_pointer, byref(bitmap),
+        )
+        if source_fmt != fmt:
+            _factory.CreateFormatConverter(byref(converter))
+            converter.Initialize(source, _rgb_formats[fmt], WICBitmapDitherTypeNone, None, 0, WICBitmapPaletteTypeCustom)
+            source = converter
+        if not top_down:
+            _factory.CreateBitmapFlipRotator(byref(flipper))
+            flipper.Initialize(source, WICBitmapTransformFlipVertical)
+            source = flipper
+        pixels = (BYTE * size)()
+        source.CopyPixels(None, pitch, size, byref(pixels))
+        return pixels
+    finally:
+        for obj in (flipper, converter, bitmap):
+            if obj:
+                obj.Release()
+
+
 class WICEncoder(ImageEncoder):  # noqa: D101
     def get_file_extensions(self) -> Sequence[str]:
         return list(extension_to_container)
@@ -301,22 +363,10 @@ class WICEncoder(ImageEncoder):  # noqa: D101
         istream = None
         try:
             _factory.CreateStream(byref(wicstream))
-            # https://docs.microsoft.com/en-us/windows/win32/wic/-wic-codec-native-pixel-formats#native-image-formats
-            if container == GUID_ContainerFormatJpeg:
-                # Expects BGR, no transparency available. Hard coded.
-                fmt = 'BGR'
-                default_format = GUID_WICPixelFormat24bppBGR
-            else:
-                # Windows encodes in BGRA.
-                if len(image.format) == 3:
-                    fmt = 'BGR'
-                    default_format = GUID_WICPixelFormat24bppBGR
-                else:
-                    fmt = 'BGRA'
-                    default_format = GUID_WICPixelFormat32bppBGRA
-
+            # JPEG has no alpha channel. Other codecs can use BGRA for alpha.
+            fmt = 'BGR' if container == GUID_ContainerFormatJpeg or len(image.format) == 3 else 'BGRA'
+            default_format = _rgb_formats[fmt]
             pitch = image.width * len(fmt)
-            image_data = image.get_bytes(fmt, -pitch)
             size = pitch * image.height
 
             if file:
@@ -337,11 +387,22 @@ class WICEncoder(ImageEncoder):  # noqa: D101
             pixel_format = default_format.copy()
             frame.SetPixelFormat(byref(pixel_format))
 
-            # WritePixels consumes the buffer synchronously. Keep the backing
-            # bytearray alive until it returns.
-            data_buffer = bytearray(image_data)
-            data = (BYTE * size).from_buffer(data_buffer)
-            frame.WritePixels(image.height, pitch, size, data)
+            image_data = _prepare_encoder_pixels(image, fmt, pitch)
+            _check_pixel_buffer(image_data, size)
+            data = cast(image_data if isinstance(image_data, bytes) else byref(image_data), POINTER(BYTE))
+            if pixel_format == default_format:
+                frame.WritePixels(image.height, pitch, size, data)
+            else:
+                # Let the encoder convert the pixels if it selected a different format.
+                bitmap = IWICBitmap()
+                try:
+                    _factory.CreateBitmapFromMemory(
+                        image.width, image.height, default_format, pitch, size, data, byref(bitmap),
+                    )
+                    frame.WriteSource(bitmap, None)
+                finally:
+                    if bitmap:
+                        bitmap.Release()
             frame.Commit()
             encoder.Commit()
 
