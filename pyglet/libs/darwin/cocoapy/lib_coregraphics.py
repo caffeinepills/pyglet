@@ -24,6 +24,8 @@ kCGImagePropertyGIFDelayTime = c_void_p.in_dll(imageio, 'kCGImagePropertyGIFDela
 #     CoreGraphics.framework/Headers/CGColorSpace.h
 kCGRenderingIntentDefault = 0
 
+kCGBlendModeCopy = 17
+
 kCGTextFill = 0
 kCGTextStroke = 1
 kCGTextFillStroke = 2
@@ -53,6 +55,8 @@ kCGBitmapByteOrder32Big = 4 << 12
 
 imageio.CGImageSourceCreateWithData.restype = c_void_p
 imageio.CGImageSourceCreateWithData.argtypes = [c_void_p, c_void_p]
+imageio.CGImageSourceCreateWithURL.restype = c_void_p
+imageio.CGImageSourceCreateWithURL.argtypes = [c_void_p, c_void_p]
 imageio.CGImageSourceCreateImageAtIndex.restype = c_void_p
 imageio.CGImageSourceCreateImageAtIndex.argtypes = [c_void_p, c_size_t, c_void_p]
 imageio.CGImageSourceCopyPropertiesAtIndex.restype = c_void_p
@@ -63,6 +67,7 @@ imageio.CGImageSourceGetCount.argtypes = [c_void_p]
 # ImageIO owns these symbols; expose them through the CoreGraphics binding for
 # the existing image codec API.
 cg.CGImageSourceCreateWithData = imageio.CGImageSourceCreateWithData
+cg.CGImageSourceCreateWithURL = imageio.CGImageSourceCreateWithURL
 cg.CGImageSourceCreateImageAtIndex = imageio.CGImageSourceCreateImageAtIndex
 cg.CGImageSourceCopyPropertiesAtIndex = imageio.CGImageSourceCopyPropertiesAtIndex
 cg.CGImageSourceGetCount = imageio.CGImageSourceGetCount
@@ -138,6 +143,9 @@ cg.CGContextScaleCTM.argtypes = [CGContextRef, CGFloat, CGFloat]
 
 cg.CGContextDrawImage.restype = None
 cg.CGContextDrawImage.argtypes = [c_void_p, CGRect, c_void_p]
+
+cg.CGContextSetBlendMode.restype = None
+cg.CGContextSetBlendMode.argtypes = [CGContextRef, c_int32]
 
 cg.CGContextRelease.restype = None
 cg.CGContextRelease.argtypes = [c_void_p]

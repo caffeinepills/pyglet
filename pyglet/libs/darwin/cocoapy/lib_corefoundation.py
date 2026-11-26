@@ -36,6 +36,7 @@ cf = pyglet.lib.load_library(framework='CoreFoundation')
 
 kCFStringEncodingUTF8 = 0x08000100
 kCFAllocatorDefault = None
+kCFAllocatorNull = c_void_p.in_dll(cf, 'kCFAllocatorNull')
 kCFBooleanTrue = c_void_p.in_dll(cf, 'kCFBooleanTrue')
 
 CFAllocatorRef = c_void_p
@@ -99,6 +100,9 @@ def cfstring_to_string(cfstring: ObjCInstance | c_void_p) -> str | None:
 cf.CFDataCreate.restype = c_void_p
 cf.CFDataCreate.argtypes = [c_void_p, c_void_p, CFIndex]
 
+cf.CFDataCreateWithBytesNoCopy.restype = CFDataRef
+cf.CFDataCreateWithBytesNoCopy.argtypes = [CFAllocatorRef, c_void_p, CFIndex, CFAllocatorRef]
+
 cf.CFDataGetBytes.restype = None
 cf.CFDataGetBytes.argtypes = [c_void_p, CFRange, c_void_p]
 
@@ -134,6 +138,9 @@ cf.CFGetTypeID.argtypes = [c_void_p]
 
 cf.CFURLCreateWithFileSystemPath.restype = CFURLRef
 cf.CFURLCreateWithFileSystemPath.argtypes = [CFAllocatorRef, CFStringRef, CFURLPathStyle, c_bool]
+
+cf.CFURLCreateFromFileSystemRepresentation.restype = CFURLRef
+cf.CFURLCreateFromFileSystemRepresentation.argtypes = [CFAllocatorRef, c_void_p, CFIndex, c_bool]
 
 
 # CFNumber.h

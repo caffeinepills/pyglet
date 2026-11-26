@@ -1,17 +1,23 @@
+"""macOS image decoding through ImageIO and Core Graphics."""
 from __future__ import annotations
-from ctypes import Array, c_void_p, c_ubyte
+
+from contextlib import contextmanager
+from ctypes import Array, c_ubyte, c_void_p
+from os import fsencode
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
-from pyglet.image import ImageData, Animation, AnimationFrame
-from pyglet.image.codecs import ImageDecoder
+from pyglet.image import Animation, AnimationFrame, ImageData
+from pyglet.image.codecs import ImageDecodeException, ImageDecoder
 from pyglet.libs.darwin.cocoapy import NSMakeRect, cf, cg
-from pyglet.libs.darwin.cocoapy import cfnumber_to_number
+from pyglet.libs.darwin.cocoapy import cfnumber_to_number, kCFAllocatorNull, kCGBlendModeCopy
 from pyglet.libs.darwin.cocoapy import kCGImageAlphaPremultipliedLast
 from pyglet.libs.darwin.cocoapy import kCGImagePropertyGIFDelayTime
 from pyglet.libs.darwin.cocoapy import kCGImagePropertyGIFDictionary
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from pyglet.image.codecs import ImageEncoder
 
 
@@ -26,87 +32,116 @@ class ImageIODecoder(ImageDecoder):
     def get_animation_file_extensions(self) -> list[str]:
         return ['.gif']
 
-    def _get_pyglet_ImageData_from_source_at_index(self, sourceRef: c_void_p, index: int) -> ImageData:
-        imageRef = c_void_p(cg.CGImageSourceCreateImageAtIndex(sourceRef, index, None))
+    @staticmethod
+    @contextmanager
+    def _open_source(filename: str, file: BinaryIO | None) -> Iterator[int]:
+        if file is None:
+            path = fsencode(filename)
+            url = cf.CFURLCreateFromFileSystemRepresentation(None, path, len(path), False)
+            if url:
+                try:
+                    source = cg.CGImageSourceCreateWithURL(url, None)
+                finally:
+                    cf.CFRelease(url)
+                if source:
+                    try:
+                        yield source
+                    finally:
+                        cf.CFRelease(source)
+                    return
 
-        # Regardless of the internal format of the image (L, LA, RGB, RGBA, etc)
-        # we just automatically convert everything to an RGBA format.
-        format = 'RGBA'
-        rgbColorSpace = c_void_p(cg.CGColorSpaceCreateDeviceRGB())
-        bitsPerComponent = 8
-        width: int = cg.CGImageGetWidth(imageRef)
-        height: int = cg.CGImageGetHeight(imageRef)
-        bytesPerRow = 4 * width
+        # A failed URL open falls back to Python's file handling, preserving its I/O errors.
+        # Keep the input bytes alive until both the source and CFData are released.
+        file_bytes = Path(filename).read_bytes() if file is None else file.read()
+        data = cf.CFDataCreateWithBytesNoCopy(None, file_bytes, len(file_bytes), kCFAllocatorNull)
+        if not data:
+            message = f"Could not allocate image data for {filename!r}."
+            raise ImageDecodeException(message)
+        try:
+            source = cg.CGImageSourceCreateWithData(data, None)
+            if not source:
+                message = f"Could not open image {filename!r}."
+                raise ImageDecodeException(message)
+            try:
+                yield source
+            finally:
+                cf.CFRelease(source)
+        finally:
+            cf.CFRelease(data)
 
-        # Create a buffer to store the RGBA formatted data.
-        bufferSize = height * bytesPerRow
-        buffer: Array[c_ubyte] = (c_ubyte * bufferSize)()
+    def _decode_frame(self, source: int, index: int) -> ImageData:
+        image = cg.CGImageSourceCreateImageAtIndex(source, index, None)
+        if not image:
+            message = f"Could not decode image at index {index}."
+            raise ImageDecodeException(message)
 
-        # Create a bitmap context for the RGBA formatted data.
-        # Note that premultiplied alpha is required:
-        # http://developer.apple.com/library/mac/#qa/qa1037/_index.html
-        bitmap = c_void_p(cg.CGBitmapContextCreate(buffer,
-                                                       width, height,
-                                                       bitsPerComponent,
-                                                       bytesPerRow,
-                                                       rgbColorSpace,
-                                                       kCGImageAlphaPremultipliedLast))
+        try:
+            width: int = cg.CGImageGetWidth(image)
+            height: int = cg.CGImageGetHeight(image)
+            pitch = 4 * width
+            buffer: Array[c_ubyte] = (c_ubyte * (height * pitch))()
 
-        # Write the image data into the bitmap.
-        cg.CGContextDrawImage(bitmap, NSMakeRect(0,0,width,height), imageRef)
+            # Normalize to 8-bit premultiplied RGBA for all input formats.
+            color_space = cg.CGColorSpaceCreateDeviceRGB()
+            if not color_space:
+                raise ImageDecodeException("Could not create RGB color space.")
+            try:
+                # Create a bitmap context for the RGBA formatted data.
+                # Note that premultiplied alpha is required:
+                # http://developer.apple.com/library/mac/#qa/qa1037/_index.html
+                bitmap = cg.CGBitmapContextCreate(buffer, width, height, 8, pitch, color_space,
+                                                  kCGImageAlphaPremultipliedLast)
+                if not bitmap:
+                    raise ImageDecodeException("Could not create image bitmap.")
+                try:
+                    # The image covers the entire new bitmap, so blending is unnecessary.
+                    cg.CGContextSetBlendMode(bitmap, kCGBlendModeCopy)
+                    cg.CGContextDrawImage(bitmap, NSMakeRect(0, 0, width, height), image)
+                finally:
+                    cg.CGContextRelease(bitmap)
+            finally:
+                cg.CGColorSpaceRelease(color_space)
+        finally:
+            cg.CGImageRelease(image)
 
-        cg.CGImageRelease(imageRef)
-        cg.CGContextRelease(bitmap)
-        cg.CGColorSpaceRelease(rgbColorSpace)
-
-        pitch = bytesPerRow
-        return ImageData(width, height, format, buffer, -pitch)
+        return ImageData(width, height, 'RGBA', buffer, -pitch)
 
     def decode(self, filename: str, file: BinaryIO | None) -> ImageData:
-        file_bytes = Path(filename).read_bytes() if file is None else file.read()
-        data = c_void_p(cf.CFDataCreate(None, file_bytes, len(file_bytes)))
-        # Second argument is an options dictionary.  It might be a good idea to provide
-        # a value for kCGImageSourceTypeIdentifierHint here using filename extension.
-        sourceRef = c_void_p(cg.CGImageSourceCreateWithData(data, None))
-        image = self._get_pyglet_ImageData_from_source_at_index(sourceRef, 0)
-
-        cf.CFRelease(data)
-        cf.CFRelease(sourceRef)
-
-        return image
+        with self._open_source(filename, file) as source:
+            return self._decode_frame(source, 0)
 
     def decode_animation(self, filename: str, file: BinaryIO | None) -> Animation:
         # If file is not an animated GIF, it will be loaded as a single-frame animation.
-        file_bytes = Path(filename).read_bytes() if file is None else file.read()
-        data = c_void_p(cf.CFDataCreate(None, file_bytes, len(file_bytes)))
-        sourceRef = c_void_p(cg.CGImageSourceCreateWithData(data, None))
-
-        # Get number of frames in the animation.
-        count: int = cg.CGImageSourceGetCount(sourceRef)
-
         frames: list[AnimationFrame] = []
+        with self._open_source(filename, file) as source:
+            count: int = cg.CGImageSourceGetCount(source)
+            if not count:
+                message = f"No image frames found in {filename!r}."
+                raise ImageDecodeException(message)
 
-        for index in range(count):
-            # Try to determine frame duration from GIF properties dictionary.
-            duration: float | None = 0.1  # default duration if none found
-            props = c_void_p(cg.CGImageSourceCopyPropertiesAtIndex(sourceRef, index, None))
-            if cf.CFDictionaryContainsKey(props, kCGImagePropertyGIFDictionary):
-                gif_props = c_void_p(cf.CFDictionaryGetValue(props, kCGImagePropertyGIFDictionary))
-                if cf.CFDictionaryContainsKey(gif_props, kCGImagePropertyGIFDelayTime):
-                    duration = cfnumber_to_number(c_void_p(cf.CFDictionaryGetValue(gif_props, kCGImagePropertyGIFDelayTime)))
-
-            cf.CFRelease(props)
-            image = self._get_pyglet_ImageData_from_source_at_index(sourceRef, index)
-            frames.append( AnimationFrame(image, duration) )
-
-        cf.CFRelease(data)
-        cf.CFRelease(sourceRef)
+            for index in range(count):
+                duration = 0.1
+                props = cg.CGImageSourceCopyPropertiesAtIndex(source, index, None)
+                if props:
+                    try:
+                        gif_props = cf.CFDictionaryGetValue(props, kCGImagePropertyGIFDictionary)
+                        if gif_props:
+                            delay = cf.CFDictionaryGetValue(gif_props, kCGImagePropertyGIFDelayTime)
+                            if delay:
+                                duration = cfnumber_to_number(c_void_p(delay))
+                    finally:
+                        cf.CFRelease(props)
+                image = self._decode_frame(source, index)
+                frames.append(AnimationFrame(image, duration))
 
         return Animation(frames)
 
 
 def get_decoders() -> list[ImageIODecoder]:
+    """Return the ImageIO decoder."""
     return [ImageIODecoder()]
 
+
 def get_encoders() -> list[ImageEncoder]:
+    """Return the available ImageIO encoders."""
     return []
